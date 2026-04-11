@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Union
+
+# Type alias for contexts: namespace -> property_name -> value
+Contexts = Dict[str, Dict[str, Any]]
+ContextValue = Union[str, int, float, bool, list, None]
+
+
+@dataclass
+class Value:
+    type: str
+    value: Any
+    confidential: bool = False
+    decrypt_with: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Value":
+        return cls(
+            type=data.get("type", "string"),
+            value=data.get("value"),
+            confidential=data.get("confidential", False),
+            decrypt_with=data.get("decryptWith"),
+        )
+
+
+@dataclass
+class Criterion:
+    operator: str
+    property_name: Optional[str] = None
+    value_to_match: Optional[Value] = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Criterion":
+        vtm = data.get("valueToMatch")
+        return cls(
+            operator=data["operator"],
+            property_name=data.get("propertyName"),
+            value_to_match=Value.from_dict(vtm) if vtm else None,
+        )
+
+
+@dataclass
+class Rule:
+    criteria: List[Criterion]
+    value: Optional[Value]
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Rule":
+        criteria = [Criterion.from_dict(c) for c in data.get("criteria", [])]
+        v = data.get("value")
+        return cls(
+            criteria=criteria,
+            value=Value.from_dict(v) if v else None,
+        )
+
+
+@dataclass
+class RuleSet:
+    rules: List[Rule]
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RuleSet":
+        rules = [Rule.from_dict(r) for r in data.get("rules", [])]
+        return cls(rules=rules)
+
+
+@dataclass
+class Environment:
+    id: str
+    rules: List[Rule]
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Environment":
+        rules = [Rule.from_dict(r) for r in data.get("rules", [])]
+        return cls(
+            id=data["id"],
+            rules=rules,
+        )
+
+
+@dataclass
+class ConfigResponse:
+    id: str
+    key: str
+    type: str
+    value_type: str
+    send_to_client_sdk: bool
+    default: RuleSet
+    environment: Optional[Environment] = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ConfigResponse":
+        env_data = data.get("environment")
+        default_data = data.get("default", {})
+        # Support both "default" as RuleSet and legacy format
+        if isinstance(default_data, dict):
+            default = RuleSet.from_dict(default_data)
+        else:
+            default = RuleSet(rules=[])
+
+        return cls(
+            id=str(data.get("id", "")),
+            key=str(data.get("key", "")),
+            type=str(data.get("type", "")),
+            value_type=str(data.get("valueType", "")),
+            send_to_client_sdk=bool(data.get("sendToClientSdk", False)),
+            default=default,
+            environment=Environment.from_dict(env_data) if env_data else None,
+        )
+
+
+@dataclass
+class Meta:
+    version: str
+    environment: str
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Meta":
+        return cls(
+            version=str(data.get("version", "")),
+            environment=str(data.get("environment", "")),
+        )
+
+
+@dataclass
+class ConfigEnvelope:
+    configs: List[ConfigResponse]
+    meta: Meta
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ConfigEnvelope":
+        configs = [ConfigResponse.from_dict(c) for c in data.get("configs", [])]
+        meta_data = data.get("meta", {})
+        meta = Meta.from_dict(meta_data) if meta_data else Meta(version="", environment="")
+        return cls(configs=configs, meta=meta)
+
+
+@dataclass
+class EvalResult:
+    value: Any
+    raw_value: Any
+    value_type: str
+    reason: str  # "RULE_MATCH" | "DEFAULT" | "MISSING" | "ERROR"
+    row_index: Optional[int]
+    config_id: Optional[str]
+    config_key: str
