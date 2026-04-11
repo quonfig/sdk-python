@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, date, timezone
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from datetime import date, datetime, timezone
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .types import Contexts
-from .context import get_context_value
 
 if TYPE_CHECKING:
     from .store import ConfigStore
@@ -14,6 +13,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _to_float(v: Any) -> Optional[float]:
     """Convert to float, accepting numbers and numeric strings."""
@@ -46,46 +46,63 @@ def _ensure_list(value: Any) -> list:
 # Signature: (prop_value, criterion_value, contexts, store) -> bool
 # ---------------------------------------------------------------------------
 
-def always_true(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+
+def always_true(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     return True
 
 
-def not_set(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def not_set(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     return prop_value is None
 
 
-def prop_is_one_of(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_is_one_of(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     criterion_values = _ensure_list(criterion_value)
     prop_values = _ensure_list(prop_value)
     return any(str(v1) == str(v2) for v1 in criterion_values for v2 in prop_values)
 
 
-def prop_is_not_one_of(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_is_not_one_of(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     return not prop_is_one_of(prop_value, criterion_value, contexts, store)
 
 
-def prop_ends_with_one_of(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_ends_with_one_of(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     if not isinstance(prop_value, str):
         return False
     criterion_values = _ensure_list(criterion_value)
     return any(prop_value.endswith(str(v)) for v in criterion_values)
 
 
-def prop_starts_with_one_of(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_starts_with_one_of(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     if not isinstance(prop_value, str):
         return False
     criterion_values = _ensure_list(criterion_value)
     return any(prop_value.startswith(str(v)) for v in criterion_values)
 
 
-def prop_contains_one_of(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_contains_one_of(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     if not isinstance(prop_value, str):
         return False
     criterion_values = _ensure_list(criterion_value)
     return any(str(v) in prop_value for v in criterion_values)
 
 
-def prop_matches(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_matches(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     if not isinstance(prop_value, str) or not isinstance(criterion_value, str):
         return False
     try:
@@ -95,7 +112,9 @@ def prop_matches(prop_value: Any, criterion_value: Any, contexts: Contexts, stor
         return False
 
 
-def prop_does_not_match(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_does_not_match(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     if not isinstance(prop_value, str) or not isinstance(criterion_value, str):
         return False
     try:
@@ -105,7 +124,9 @@ def prop_does_not_match(prop_value: Any, criterion_value: Any, contexts: Context
         return False
 
 
-def prop_less_than(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_less_than(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     # prop_value (from context) must be a real number, not a string
     a = _to_float_strict(prop_value)
     b = _to_float(criterion_value)
@@ -114,7 +135,9 @@ def prop_less_than(prop_value: Any, criterion_value: Any, contexts: Contexts, st
     return a < b
 
 
-def prop_greater_than(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_greater_than(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     a = _to_float_strict(prop_value)
     b = _to_float(criterion_value)
     if a is None or b is None:
@@ -122,7 +145,9 @@ def prop_greater_than(prop_value: Any, criterion_value: Any, contexts: Contexts,
     return a > b
 
 
-def prop_less_than_or_equal(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_less_than_or_equal(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     a = _to_float_strict(prop_value)
     b = _to_float(criterion_value)
     if a is None or b is None:
@@ -130,7 +155,9 @@ def prop_less_than_or_equal(prop_value: Any, criterion_value: Any, contexts: Con
     return a <= b
 
 
-def prop_greater_than_or_equal(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_greater_than_or_equal(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     a = _to_float_strict(prop_value)
     b = _to_float(criterion_value)
     if a is None or b is None:
@@ -138,7 +165,9 @@ def prop_greater_than_or_equal(prop_value: Any, criterion_value: Any, contexts: 
     return a >= b
 
 
-def in_int_range(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def in_int_range(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     """
     criterion_value should be a dict with "start" and "end" (inclusive).
     Or a list [start, end].
@@ -148,8 +177,8 @@ def in_int_range(prop_value: Any, criterion_value: Any, contexts: Contexts, stor
         return False
     try:
         if isinstance(criterion_value, dict):
-            start = float(criterion_value.get("start", criterion_value.get("low", 0)))
-            end = float(criterion_value.get("end", criterion_value.get("high", 0)))
+            start = float(criterion_value.get("start", criterion_value.get("low", 0)) or 0)
+            end = float(criterion_value.get("end", criterion_value.get("high", 0)) or 0)
         elif isinstance(criterion_value, (list, tuple)) and len(criterion_value) >= 2:
             start, end = float(criterion_value[0]), float(criterion_value[1])
         else:
@@ -168,6 +197,7 @@ def in_seg(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "Co
         return False
     # Avoid circular segment references by importing lazily
     from .evaluator import Evaluator
+
     # Use a minimal evaluator with no environment (segment configs don't use env)
     evaluator = Evaluator(store, environment_id="")
     result = evaluator.evaluate(criterion_value, contexts)
@@ -183,7 +213,9 @@ def in_seg(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "Co
     return bool(v)
 
 
-def not_in_seg(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def not_in_seg(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     return not in_seg(prop_value, criterion_value, contexts, store)
 
 
@@ -208,7 +240,9 @@ def _parse_semver(v: Any) -> Optional[tuple]:
     return (major, minor, patch)
 
 
-def prop_semver_less_than(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_semver_less_than(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     a = _parse_semver(prop_value)
     b = _parse_semver(criterion_value)
     if a is None or b is None:
@@ -216,7 +250,9 @@ def prop_semver_less_than(prop_value: Any, criterion_value: Any, contexts: Conte
     return a < b
 
 
-def prop_semver_equal(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_semver_equal(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     a = _parse_semver(prop_value)
     b = _parse_semver(criterion_value)
     if a is None or b is None:
@@ -224,7 +260,9 @@ def prop_semver_equal(prop_value: Any, criterion_value: Any, contexts: Contexts,
     return a == b
 
 
-def prop_semver_greater_than(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_semver_greater_than(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     a = _parse_semver(prop_value)
     b = _parse_semver(criterion_value)
     if a is None or b is None:
@@ -251,7 +289,9 @@ def _to_millis(value: Any) -> Optional[int]:
         return None
 
 
-def prop_before(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_before(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     context_millis = _to_millis(prop_value)
     if context_millis is None:
         return False
@@ -262,7 +302,9 @@ def prop_before(prop_value: Any, criterion_value: Any, contexts: Contexts, store
     return context_millis < criterion_millis
 
 
-def prop_after(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def prop_after(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     context_millis = _to_millis(prop_value)
     if context_millis is None:
         return False
@@ -273,7 +315,9 @@ def prop_after(prop_value: Any, criterion_value: Any, contexts: Contexts, store:
     return context_millis > criterion_millis
 
 
-def hierarchical_match(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
+def hierarchical_match(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
     if not isinstance(prop_value, str):
         return False
     if not isinstance(criterion_value, str):
@@ -293,9 +337,13 @@ OPERATOR_DISPATCH: dict = {
     "PROP_IS_NOT_ONE_OF": prop_is_not_one_of,
     "LOOKUP_KEY_NOT_IN": prop_is_not_one_of,
     "PROP_ENDS_WITH_ONE_OF": prop_ends_with_one_of,
-    "PROP_DOES_NOT_END_WITH_ONE_OF": lambda pv, cv, ctx, s: not prop_ends_with_one_of(pv, cv, ctx, s),
+    "PROP_DOES_NOT_END_WITH_ONE_OF": lambda pv, cv, ctx, s: not prop_ends_with_one_of(
+        pv, cv, ctx, s
+    ),
     "PROP_STARTS_WITH_ONE_OF": prop_starts_with_one_of,
-    "PROP_DOES_NOT_START_WITH_ONE_OF": lambda pv, cv, ctx, s: not prop_starts_with_one_of(pv, cv, ctx, s),
+    "PROP_DOES_NOT_START_WITH_ONE_OF": lambda pv, cv, ctx, s: not prop_starts_with_one_of(
+        pv, cv, ctx, s
+    ),
     "PROP_CONTAINS_ONE_OF": prop_contains_one_of,
     "PROP_DOES_NOT_CONTAIN_ONE_OF": lambda pv, cv, ctx, s: not prop_contains_one_of(pv, cv, ctx, s),
     "PROP_MATCHES": prop_matches,

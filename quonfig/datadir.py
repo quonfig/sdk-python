@@ -58,8 +58,7 @@ def load_datadir(datadir: str, environment: str) -> ConfigEnvelope:
 
     if known_environments and environment not in known_environments:
         raise RuntimeError(
-            f"Environment '{environment}' not found. "
-            f"Known environments: {known_environments}"
+            f"Environment '{environment}' not found. " f"Known environments: {known_environments}"
         )
 
     return ConfigEnvelope(

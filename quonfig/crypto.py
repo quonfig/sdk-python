@@ -29,7 +29,8 @@ def _decode_key(encryption_key: str) -> bytes:
     except Exception:
         pass
     raise QuonfigDecryptionError(
-        f"Invalid encryption key format. Expected a 64-character hex string. Got {len(encryption_key)} chars."
+        f"Invalid encryption key format. Expected a 64-character hex string."
+        f" Got {len(encryption_key)} chars."
     )
 
 

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import mmh3
 
+from .exceptions import QuonfigDecryptionError, QuonfigEnvVarNotSetError
 from .types import Contexts, Value
-from .exceptions import QuonfigEnvVarNotSetError, QuonfigDecryptionError
 
 if TYPE_CHECKING:
     from .store import ConfigStore
@@ -63,13 +63,13 @@ class Resolver:
         if source == "ENV_VAR":
             env_val = os.environ.get(lookup)
             if env_val is None:
-                raise QuonfigEnvVarNotSetError(
-                    f"Environment variable '{lookup}' is not set"
-                )
+                raise QuonfigEnvVarNotSetError(f"Environment variable '{lookup}' is not set")
             return env_val
         raise QuonfigEnvVarNotSetError(f"Unknown provided source: {source!r}")
 
-    def _resolve_weighted(self, raw: Any, value: Value, contexts: Contexts, config_key: str = "") -> Any:
+    def _resolve_weighted(
+        self, raw: Any, value: Value, contexts: Contexts, config_key: str = ""
+    ) -> Any:
         """Hash-based weighted value selection.
 
         Matches the Go/Node SDK algorithm:
@@ -99,9 +99,11 @@ class Resolver:
                 fraction = uint32_val / _MAX_UINT32
             else:
                 import random
+
                 fraction = random.random()
         else:
             import random
+
             fraction = random.random()
 
         # Select variant using running-sum >= threshold (matches Go SDK)
@@ -112,12 +114,10 @@ class Resolver:
         threshold = fraction * total_weight
         running_sum = 0
         selected = None
-        selected_idx = -1
-        for i, wv in enumerate(weighted_values):
+        for wv in weighted_values:
             running_sum += wv.get("weight", 0)
             if running_sum >= threshold:
                 selected = wv.get("value")
-                selected_idx = i
                 break
 
         # Fallback: return the first value (should not normally be reached)
@@ -153,7 +153,10 @@ class Resolver:
         return decrypt(raw, key_value)
 
     def _resolve_key_config_value(self, config: Any) -> Any:
-        """Extract the encryption key string from a config — handles plain string and provided (ENV_VAR)."""
+        """Extract the encryption key string from a config.
+
+        Handles plain string and provided (ENV_VAR).
+        """
         # Try environment rules first, then default rules
         rules = []
         for env in getattr(config, "environments", []):
@@ -218,6 +221,7 @@ class Resolver:
 
             elif vtype == "duration":
                 import isodate
+
                 if isinstance(raw, str):
                     duration = isodate.parse_duration(raw)
                     return duration.total_seconds()

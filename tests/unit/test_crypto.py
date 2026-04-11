@@ -1,4 +1,5 @@
 """Tests for AES-256-GCM encryption/decryption round-trip."""
+
 from __future__ import annotations
 
 import pytest

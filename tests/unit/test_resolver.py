@@ -1,14 +1,13 @@
 """Tests for Resolver: type coercion, ENV_VAR, weighted values, duration."""
-from __future__ import annotations
 
-import os
+from __future__ import annotations
 
 import pytest
 
 from quonfig.exceptions import QuonfigEnvVarNotSetError
 from quonfig.resolver import Resolver
 from quonfig.store import ConfigStore
-from quonfig.types import ConfigEnvelope, ConfigResponse, Meta, Rule, RuleSet, Value
+from quonfig.types import Value
 
 
 def make_store() -> ConfigStore:

@@ -7,13 +7,11 @@ import os
 import pytest
 
 from quonfig import Quonfig
-from quonfig.exceptions import (
-    QuonfigDecryptionError,
-    QuonfigEnvVarNotSetError,
-    QuonfigKeyNotFoundError,
+
+DATADIR = os.path.join(
+    os.path.dirname(__file__), "../../../integration-test-data/data/integration-tests"
 )
 
-DATADIR = os.path.join(os.path.dirname(__file__), "../../../integration-test-data/data/integration-tests")
 
 @pytest.fixture(scope="module")
 def config_client():
@@ -28,19 +26,20 @@ def config_client():
     c.init()
     return c
 
+
 def test_weighted_value_is_consistent_1(config_client):
     c = config_client
-    result = c.get_int('feature-flag.weighted', contexts={'user': {'tracking_id': 'a72c15f5'}})
+    result = c.get_int("feature-flag.weighted", contexts={"user": {"tracking_id": "a72c15f5"}})
     assert result == 1
 
 
 def test_weighted_value_is_consistent_2(config_client):
     c = config_client
-    result = c.get_int('feature-flag.weighted', contexts={'user': {'tracking_id': '92a202f2'}})
+    result = c.get_int("feature-flag.weighted", contexts={"user": {"tracking_id": "92a202f2"}})
     assert result == 2
 
 
 def test_weighted_value_is_consistent_3(config_client):
     c = config_client
-    result = c.get_int('feature-flag.weighted', contexts={'user': {'tracking_id': '8f414100'}})
+    result = c.get_int("feature-flag.weighted", contexts={"user": {"tracking_id": "8f414100"}})
     assert result == 3

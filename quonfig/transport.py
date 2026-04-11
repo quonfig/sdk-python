@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import threading
-import time
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from .types import ConfigEnvelope
+
+if TYPE_CHECKING:
+    from .store import ConfigStore
 
 QUONFIG_VERSION = "0.0.1"
 
@@ -72,7 +74,7 @@ class Transport:
 
     def start_polling(
         self,
-        store: "ConfigStore",  # type: ignore[name-defined]
+        store: "ConfigStore",
         shutdown_event: threading.Event,
         interval: float = 60.0,
     ) -> threading.Thread:

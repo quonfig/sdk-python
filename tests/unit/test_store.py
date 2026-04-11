@@ -1,10 +1,9 @@
 """Tests for ConfigStore: thread-safety, get/update, concurrent reads."""
+
 from __future__ import annotations
 
 import threading
 from typing import List
-
-import pytest
 
 from quonfig.store import ConfigStore
 from quonfig.types import ConfigEnvelope, ConfigResponse, Meta, RuleSet

@@ -1,4 +1,5 @@
 """Shared test fixtures for the Quonfig SDK unit tests."""
+
 from __future__ import annotations
 
 import pytest
@@ -32,7 +33,9 @@ def make_int_value(val: int) -> Value:
     return make_value("int", val)
 
 
-def make_criterion(operator: str, property_name: str = None, value=None, vtype: str = "string") -> Criterion:
+def make_criterion(
+    operator: str, property_name: str = None, value=None, vtype: str = "string"
+) -> Criterion:
     vtm = make_value(vtype, value) if value is not None else None
     return Criterion(operator=operator, property_name=property_name, value_to_match=vtm)
 

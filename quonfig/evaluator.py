@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .types import ConfigResponse, Criterion, EvalResult, Rule, Contexts
 from .context import get_context_value
 from .operators import evaluate_operator
+from .types import Contexts, Criterion, EvalResult, Rule
 
 if TYPE_CHECKING:
     from .store import ConfigStore
@@ -35,7 +35,11 @@ class Evaluator:
                 matching_env = env
                 break
         # Fallback to singular .environment for backward compat
-        if matching_env is None and config.environment and config.environment.id == self.environment_id:
+        if (
+            matching_env is None
+            and config.environment
+            and (config.environment.id == self.environment_id)
+        ):
             matching_env = config.environment
 
         if matching_env is not None:

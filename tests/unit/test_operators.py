@@ -1,12 +1,10 @@
 """Tests for all operator implementations."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
-
-import pytest
+from datetime import datetime, timedelta, timezone
 
 from quonfig.operators import (
-    OPERATOR_DISPATCH,
     always_true,
     evaluate_operator,
     hierarchical_match,

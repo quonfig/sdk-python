@@ -1,0 +1,55 @@
+name: Publish Python SDK to PyPI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.3"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Get local version
+        id: local_version
+        run: echo "version=$(poetry version -s)" >> $GITHUB_OUTPUT
+
+      - name: Get published version
+        id: published_version
+        run: |
+          published=$(pip index versions quonfig 2>/dev/null | grep -oP '(?<=quonfig \()[\d.]+(?=\))' | head -1 || echo "none")
+          echo "version=$published" >> $GITHUB_OUTPUT
+
+      - name: Check if version is new
+        id: version_check
+        run: |
+          local="${{ steps.local_version.outputs.version }}"
+          published="${{ steps.published_version.outputs.version }}"
+          echo "Local: $local, Published: $published"
+          if [ "$local" != "$published" ]; then
+            echo "new_version=true" >> $GITHUB_OUTPUT
+          else
+            echo "new_version=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies
+        if: steps.version_check.outputs.new_version == 'true'
+        run: poetry install --no-interaction
+
+      - name: Build and publish
+        if: steps.version_check.outputs.new_version == 'true'
+        env:
+          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
+        run: poetry publish --build --no-interaction

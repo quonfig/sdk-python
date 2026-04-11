@@ -1,5 +1,5 @@
-from .client import Quonfig
 from .bound_client import BoundQuonfig
+from .client import Quonfig
 from .exceptions import (
     QuonfigDecryptionError,
     QuonfigEnvVarNotSetError,

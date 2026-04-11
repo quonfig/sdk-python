@@ -3,9 +3,9 @@ from __future__ import annotations
 import base64
 import threading
 import time
-from typing import List, Optional
+from typing import Optional
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from ..types import Contexts, EvalResult
 from .collectors import ContextShapeCollector, EvaluationSummaryCollector
@@ -34,7 +34,9 @@ class TelemetryReporter:
         self.collect_context_shapes = collect_context_shapes
         self.interval = interval
 
-        self._eval_collector = EvaluationSummaryCollector() if collect_evaluation_summaries else None
+        self._eval_collector = (
+            EvaluationSummaryCollector() if collect_evaluation_summaries else None
+        )
         self._ctx_collector = ContextShapeCollector() if collect_context_shapes else None
 
         self._shutdown = threading.Event()
@@ -42,9 +44,7 @@ class TelemetryReporter:
         self._session = requests.Session()
 
     def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="quonfig-telemetry"
-        )
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="quonfig-telemetry")
         self._thread.start()
 
     def record_evaluation(self, result: EvalResult) -> None:
@@ -74,7 +74,10 @@ class TelemetryReporter:
                 pass
 
     def _flush(self) -> None:
-        summaries, ctx_shapes = [], []
+        from .models import ContextShape, EvaluationSummary
+
+        summaries: list[EvaluationSummary] = []
+        ctx_shapes: list[ContextShape] = []
         start_millis, end_millis = 0, 0
 
         if self._eval_collector is not None:

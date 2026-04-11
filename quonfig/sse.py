@@ -5,7 +5,7 @@ import random
 import threading
 from typing import Optional
 
-import requests
+import requests  # type: ignore[import-untyped]
 import sseclient  # type: ignore
 
 from .store import ConfigStore
@@ -26,9 +26,7 @@ class SSEClient:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="quonfig-sse"
-        )
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="quonfig-sse")
         self._thread.start()
 
     def _loop(self) -> None:

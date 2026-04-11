@@ -38,30 +38,20 @@ class BoundQuonfig:
     def get_bool(self, key: str, default: Any = _NO_DEFAULT) -> Optional[bool]:
         return self._client.get_bool(key, default=default, contexts=self._contexts)
 
-    def get_string_list(
-        self, key: str, default: Any = _NO_DEFAULT
-    ) -> Optional[List[str]]:
-        return self._client.get_string_list(
-            key, default=default, contexts=self._contexts
-        )
+    def get_string_list(self, key: str, default: Any = _NO_DEFAULT) -> Optional[List[str]]:
+        return self._client.get_string_list(key, default=default, contexts=self._contexts)
 
     def get_json(self, key: str, default: Any = _NO_DEFAULT) -> Any:
         return self._client.get_json(key, default=default, contexts=self._contexts)
 
     def get_duration(self, key: str, default: Any = _NO_DEFAULT) -> Optional[float]:
-        return self._client.get_duration(
-            key, default=default, contexts=self._contexts
-        )
+        return self._client.get_duration(key, default=default, contexts=self._contexts)
 
     def is_feature_enabled(self, key: str, default: bool = False) -> bool:
-        return self._client.is_feature_enabled(
-            key, default=default, contexts=self._contexts
-        )
+        return self._client.is_feature_enabled(key, default=default, contexts=self._contexts)
 
     def should_log(self, logger_name: str, desired_level: str) -> bool:
-        return self._client.should_log(
-            logger_name, desired_level, contexts=self._contexts
-        )
+        return self._client.should_log(logger_name, desired_level, contexts=self._contexts)
 
     def keys(self) -> List[str]:
         return self._client.keys()

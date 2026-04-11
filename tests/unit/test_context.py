@@ -1,9 +1,8 @@
 """Tests for context handling: dotted-path lookup, merging, magic props, thread-local."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
-
-import pytest
 
 from quonfig.context import (
     clear_thread_context,

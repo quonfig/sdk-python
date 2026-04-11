@@ -4,7 +4,10 @@ import contextlib
 import logging
 import os
 import threading
-from typing import Any, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
+
+if TYPE_CHECKING:
+    from .bound_client import BoundQuonfig
 
 from .context import (
     clear_thread_context,
@@ -18,7 +21,6 @@ from .exceptions import (
     QuonfigEnvVarNotSetError,
     QuonfigInitTimeoutError,
     QuonfigKeyNotFoundError,
-    QuonfigNotInitializedError,
 )
 from .resolver import LOG_LEVEL_ORDER, Resolver
 from .store import ConfigStore
@@ -138,7 +140,7 @@ class Quonfig:
         from .datadir import load_datadir
 
         try:
-            envelope = load_datadir(self._datadir, self._environment)
+            envelope = load_datadir(self._datadir or "", self._environment)
             self._store.update(envelope)
         except Exception as e:
             self._init_error = e

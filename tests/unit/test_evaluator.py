@@ -1,9 +1,9 @@
 """Tests for the Evaluator (rule matching, environment selection, etc.)"""
+
 from __future__ import annotations
 
-import pytest
-
 from quonfig.evaluator import Evaluator
+from quonfig.store import ConfigStore
 from quonfig.types import (
     ConfigEnvelope,
     ConfigResponse,
@@ -14,7 +14,6 @@ from quonfig.types import (
     RuleSet,
     Value,
 )
-from quonfig.store import ConfigStore
 
 
 def make_string_value(val: str) -> Value:
@@ -79,11 +78,13 @@ class TestBasicEvaluation:
             type="feature_flag",
             value_type="bool",
             send_to_client_sdk=True,
-            default=RuleSet(rules=[
-                make_criterion_rule(
-                    "PROP_IS_ONE_OF", "user.plan", ["pro"], make_bool_value(True)
-                )
-            ]),
+            default=RuleSet(
+                rules=[
+                    make_criterion_rule(
+                        "PROP_IS_ONE_OF", "user.plan", ["pro"], make_bool_value(True)
+                    )
+                ]
+            ),
         )
         store = make_store([config])
         evaluator = Evaluator(store, "Production")
@@ -97,12 +98,14 @@ class TestBasicEvaluation:
             type="config",
             value_type="string",
             send_to_client_sdk=True,
-            default=RuleSet(rules=[
-                make_criterion_rule(
-                    "PROP_IS_ONE_OF", "user.plan", ["pro"], make_string_value("pro-value")
-                ),
-                make_always_true_rule(make_string_value("default-value")),
-            ]),
+            default=RuleSet(
+                rules=[
+                    make_criterion_rule(
+                        "PROP_IS_ONE_OF", "user.plan", ["pro"], make_string_value("pro-value")
+                    ),
+                    make_always_true_rule(make_string_value("default-value")),
+                ]
+            ),
         )
         store = make_store([config])
         evaluator = Evaluator(store, "Production")
@@ -184,28 +187,26 @@ class TestContextMatching:
             type="feature_flag",
             value_type="bool",
             send_to_client_sdk=True,
-            default=RuleSet(rules=[
-                make_criterion_rule(
-                    "PROP_IS_ONE_OF",
-                    "user.email",
-                    ["alice@example.com"],
-                    make_bool_value(True),
-                    vtype="string_list",
-                ),
-                make_always_true_rule(make_bool_value(False)),
-            ]),
+            default=RuleSet(
+                rules=[
+                    make_criterion_rule(
+                        "PROP_IS_ONE_OF",
+                        "user.email",
+                        ["alice@example.com"],
+                        make_bool_value(True),
+                        vtype="string_list",
+                    ),
+                    make_always_true_rule(make_bool_value(False)),
+                ]
+            ),
         )
         store = make_store([config])
         evaluator = Evaluator(store, "Production")
 
-        result = evaluator.evaluate(
-            "my.flag", {"user": {"email": "alice@example.com"}}
-        )
+        result = evaluator.evaluate("my.flag", {"user": {"email": "alice@example.com"}})
         assert result.value.value is True
 
-        result = evaluator.evaluate(
-            "my.flag", {"user": {"email": "bob@example.com"}}
-        )
+        result = evaluator.evaluate("my.flag", {"user": {"email": "bob@example.com"}})
         assert result.value.value is False
 
     def test_multiple_criteria_all_must_match(self):
@@ -237,15 +238,11 @@ class TestContextMatching:
         evaluator = Evaluator(store, "Production")
 
         # Both match
-        result = evaluator.evaluate(
-            "my.flag", {"user": {"plan": "pro", "country": "US"}}
-        )
+        result = evaluator.evaluate("my.flag", {"user": {"plan": "pro", "country": "US"}})
         assert result.value.value is True
 
         # Only plan matches
-        result = evaluator.evaluate(
-            "my.flag", {"user": {"plan": "pro", "country": "UK"}}
-        )
+        result = evaluator.evaluate("my.flag", {"user": {"plan": "pro", "country": "UK"}})
         assert result.reason == "MISSING"
 
 
@@ -257,12 +254,14 @@ class TestRowIndex:
             type="config",
             value_type="string",
             send_to_client_sdk=True,
-            default=RuleSet(rules=[
-                make_criterion_rule(
-                    "PROP_IS_ONE_OF", "user.plan", ["pro"], make_string_value("pro-val")
-                ),
-                make_always_true_rule(make_string_value("default-val")),
-            ]),
+            default=RuleSet(
+                rules=[
+                    make_criterion_rule(
+                        "PROP_IS_ONE_OF", "user.plan", ["pro"], make_string_value("pro-val")
+                    ),
+                    make_always_true_rule(make_string_value("default-val")),
+                ]
+            ),
         )
         store = make_store([config])
         evaluator = Evaluator(store, "Production")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from ..types import Contexts, EvalResult
 from .models import ContextShape, EvaluationCounter, EvaluationSummary

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 
 @dataclass
@@ -24,6 +24,7 @@ class EvaluationSummary:
 @dataclass
 class ContextShape:
     """Tracks shape (field names) of a context namespace."""
+
     namespace: str
     field_names: List[str] = field(default_factory=list)
 
@@ -31,6 +32,7 @@ class ContextShape:
 @dataclass
 class TelemetryPayload:
     """Payload sent to the telemetry endpoint."""
+
     evaluation_summaries: List[EvaluationSummary] = field(default_factory=list)
     context_shapes: List[ContextShape] = field(default_factory=list)
     start_millis: int = 0
