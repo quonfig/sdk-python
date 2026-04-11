@@ -1,4 +1,4 @@
-name: Publish Python SDK to PyPI
+name: Release
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # required for OIDC trusted publishing
+
     steps:
       - uses: actions/checkout@v4
 
@@ -44,12 +48,10 @@ jobs:
             echo "new_version=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Install dependencies
+      - name: Build
         if: steps.version_check.outputs.new_version == 'true'
-        run: poetry install --no-interaction
+        run: poetry build --no-interaction
 
-      - name: Build and publish
+      - name: Publish to PyPI
         if: steps.version_check.outputs.new_version == 'true'
-        env:
-          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
-        run: poetry publish --build --no-interaction
+        uses: pypa/gh-action-pypi-publish@release/v1
