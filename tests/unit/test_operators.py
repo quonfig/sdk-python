@@ -167,7 +167,9 @@ class TestNumericOperators:
         assert op(prop_greater_than_or_equal, 2.0, 2.0) is True
 
     def test_numeric_coercion_string(self):
-        assert op(prop_less_than, "1.5", "2.0") is True
+        # Context values that are strings are rejected by numeric operators
+        # (matches cross-SDK behavior: only actual numbers are compared numerically)
+        assert op(prop_less_than, "1.5", "2.0") is False
 
     def test_non_numeric_returns_false(self):
         assert op(prop_less_than, "abc", 2.0) is False

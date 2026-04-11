@@ -89,16 +89,34 @@ class ConfigResponse:
     send_to_client_sdk: bool
     default: RuleSet
     environment: Optional[Environment] = None
+    environments: List[Environment] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ConfigResponse":
-        env_data = data.get("environment")
         default_data = data.get("default", {})
         # Support both "default" as RuleSet and legacy format
         if isinstance(default_data, dict):
             default = RuleSet.from_dict(default_data)
         else:
             default = RuleSet(rules=[])
+
+        # Support both singular "environment" and plural "environments" (array)
+        environments: List[Environment] = []
+        env_list = data.get("environments")
+        if isinstance(env_list, list):
+            for env_data in env_list:
+                if isinstance(env_data, dict):
+                    environments.append(Environment.from_dict(env_data))
+        elif isinstance(env_list, dict):
+            environments.append(Environment.from_dict(env_list))
+
+        # Also support legacy singular "environment" key
+        singular_env = data.get("environment")
+        if singular_env and isinstance(singular_env, dict):
+            environments.append(Environment.from_dict(singular_env))
+
+        # Keep backward-compat: environment points to first env if available
+        first_env = environments[0] if environments else None
 
         return cls(
             id=str(data.get("id", "")),
@@ -107,7 +125,8 @@ class ConfigResponse:
             value_type=str(data.get("valueType", "")),
             send_to_client_sdk=bool(data.get("sendToClientSdk", False)),
             default=default,
-            environment=Environment.from_dict(env_data) if env_data else None,
+            environment=first_env,
+            environments=environments,
         )
 
 

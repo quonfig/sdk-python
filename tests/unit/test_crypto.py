@@ -60,11 +60,12 @@ class TestEncryptionRoundTrip:
         with pytest.raises(QuonfigDecryptionError):
             decrypt("not--a--valid--encrypted--value", key)
 
-    def test_generate_new_key_produces_valid_base64(self):
-        import base64
-        key = generate_new_b64_key()
-        # Should decode without error and be 32 bytes
-        decoded = base64.b64decode(key)
+    def test_generate_new_key_produces_valid_hex(self):
+        key = generate_new_b64_key()  # now returns hex (legacy alias)
+        # Should be a 64-character hex string representing 32 bytes
+        assert len(key) == 64
+        # Should be valid hex
+        decoded = bytes.fromhex(key)
         assert len(decoded) == 32
 
     def test_multiple_round_trips_same_key(self):

@@ -14,6 +14,8 @@ from .context import (
 )
 from .evaluator import Evaluator
 from .exceptions import (
+    QuonfigDecryptionError,
+    QuonfigEnvVarNotSetError,
     QuonfigInitTimeoutError,
     QuonfigKeyNotFoundError,
     QuonfigNotInitializedError,
@@ -141,7 +143,9 @@ class Quonfig:
         except Exception as e:
             self._init_error = e
             logger.error("Failed to load datadir: %s", e)
-        finally:
+            self._finish_init()
+            raise
+        else:
             self._finish_init()
 
     def _load_from_api(self) -> None:
@@ -220,7 +224,10 @@ class Quonfig:
             return _NO_DEFAULT
 
         try:
-            return self._resolver.resolve(result.value, merged)
+            return self._resolver.resolve(result.value, merged, config_key=key)
+        except (QuonfigEnvVarNotSetError, QuonfigDecryptionError):
+            # These are semantic errors that callers need to handle — re-raise
+            raise
         except Exception as e:
             logger.warning("Error resolving value for key '%s': %s", key, e)
             return _NO_DEFAULT
@@ -277,7 +284,8 @@ class Quonfig:
         try:
             return int(result)
         except (TypeError, ValueError):
-            return None
+            # Coercion failed (e.g. env-var-provided value is not a valid int)
+            return self._handle_missing(key, default)
 
     def get_float(
         self,
@@ -357,14 +365,20 @@ class Quonfig:
         default: bool = False,
         contexts: Optional[Contexts] = None,
     ) -> bool:
+        """Returns True only if the config is a boolean True value.
+        Returns False for missing keys, non-boolean types, or boolean False."""
         result = self._get(key, contexts)
         if result is _NO_DEFAULT:
             return default
         if isinstance(result, bool):
             return result
         if isinstance(result, str):
-            return result.lower() in ("true", "1", "yes", "on")
-        return bool(result)
+            if result.lower() == "true":
+                return True
+            if result.lower() == "false":
+                return False
+        # Non-boolean types (int, float, list, dict, etc.) return False
+        return False
 
     def should_log(
         self,

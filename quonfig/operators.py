@@ -16,6 +16,17 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 def _to_float(v: Any) -> Optional[float]:
+    """Convert to float, accepting numbers and numeric strings."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float_strict(v: Any) -> Optional[float]:
+    """Convert to float, but reject strings (context values must be actual numbers)."""
+    if isinstance(v, str):
+        return None
     try:
         return float(v)
     except (TypeError, ValueError):
@@ -95,7 +106,8 @@ def prop_does_not_match(prop_value: Any, criterion_value: Any, contexts: Context
 
 
 def prop_less_than(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
-    a = _to_float(prop_value)
+    # prop_value (from context) must be a real number, not a string
+    a = _to_float_strict(prop_value)
     b = _to_float(criterion_value)
     if a is None or b is None:
         return False
@@ -103,7 +115,7 @@ def prop_less_than(prop_value: Any, criterion_value: Any, contexts: Contexts, st
 
 
 def prop_greater_than(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
-    a = _to_float(prop_value)
+    a = _to_float_strict(prop_value)
     b = _to_float(criterion_value)
     if a is None or b is None:
         return False
@@ -111,7 +123,7 @@ def prop_greater_than(prop_value: Any, criterion_value: Any, contexts: Contexts,
 
 
 def prop_less_than_or_equal(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
-    a = _to_float(prop_value)
+    a = _to_float_strict(prop_value)
     b = _to_float(criterion_value)
     if a is None or b is None:
         return False
@@ -119,7 +131,7 @@ def prop_less_than_or_equal(prop_value: Any, criterion_value: Any, contexts: Con
 
 
 def prop_greater_than_or_equal(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
-    a = _to_float(prop_value)
+    a = _to_float_strict(prop_value)
     b = _to_float(criterion_value)
     if a is None or b is None:
         return False
@@ -175,28 +187,49 @@ def not_in_seg(prop_value: Any, criterion_value: Any, contexts: Contexts, store:
     return not in_seg(prop_value, criterion_value, contexts, store)
 
 
+_SEMVER_PATTERN = re.compile(
+    r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
+    r"(?:-(?P<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"(?:\+(?P<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+)
+
+
+def _parse_semver(v: Any) -> Optional[tuple]:
+    """Parse a strict semver string (major.minor.patch) into a comparable tuple.
+    Returns None if invalid."""
+    if not isinstance(v, str):
+        return None
+    m = _SEMVER_PATTERN.match(v)
+    if not m:
+        return None
+    major = int(m.group("major"))
+    minor = int(m.group("minor"))
+    patch = int(m.group("patch"))
+    return (major, minor, patch)
+
+
 def prop_semver_less_than(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
-    try:
-        from packaging.version import Version
-        return Version(str(prop_value)) < Version(str(criterion_value))
-    except Exception:
+    a = _parse_semver(prop_value)
+    b = _parse_semver(criterion_value)
+    if a is None or b is None:
         return False
+    return a < b
 
 
 def prop_semver_equal(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
-    try:
-        from packaging.version import Version
-        return Version(str(prop_value)) == Version(str(criterion_value))
-    except Exception:
+    a = _parse_semver(prop_value)
+    b = _parse_semver(criterion_value)
+    if a is None or b is None:
         return False
+    return a == b
 
 
 def prop_semver_greater_than(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
-    try:
-        from packaging.version import Version
-        return Version(str(prop_value)) > Version(str(criterion_value))
-    except Exception:
+    a = _parse_semver(prop_value)
+    b = _parse_semver(criterion_value)
+    if a is None or b is None:
         return False
+    return a > b
 
 
 def _to_millis(value: Any) -> Optional[int]:

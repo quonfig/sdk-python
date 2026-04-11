@@ -28,9 +28,18 @@ class Evaluator:
                 config_key=key,
             )
 
-        # Try environment-specific rules first
-        if config.environment and config.environment.id == self.environment_id:
-            for idx, rule in enumerate(config.environment.rules):
+        # Try environment-specific rules first — search all environments for a match
+        matching_env = None
+        for env in config.environments:
+            if env.id == self.environment_id:
+                matching_env = env
+                break
+        # Fallback to singular .environment for backward compat
+        if matching_env is None and config.environment and config.environment.id == self.environment_id:
+            matching_env = config.environment
+
+        if matching_env is not None:
+            for idx, rule in enumerate(matching_env.rules):
                 if self._rule_matches(rule, contexts):
                     return EvalResult(
                         value=rule.value,

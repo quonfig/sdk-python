@@ -12,7 +12,7 @@ from .exceptions import QuonfigEnvVarNotSetError, QuonfigDecryptionError
 if TYPE_CHECKING:
     from .store import ConfigStore
 
-_MAX_32_FLOAT = 4_294_967_294.0
+_MAX_UINT32 = 4_294_967_295.0  # math.MaxUint32
 
 # Log level ordering for should_log()
 LOG_LEVEL_ORDER = {
@@ -30,7 +30,7 @@ class Resolver:
     def __init__(self, store: "ConfigStore") -> None:
         self.store = store
 
-    def resolve(self, value: Value, contexts: Contexts) -> Any:
+    def resolve(self, value: Value, contexts: Contexts, config_key: str = "") -> Any:
         """Resolve a Value object to a Python native type."""
         if value is None:
             return None
@@ -44,7 +44,7 @@ class Resolver:
 
         # Handle weighted values
         if vtype == "weighted_values":
-            return self._resolve_weighted(raw, value, contexts)
+            return self._resolve_weighted(raw, value, contexts, config_key=config_key)
 
         # Handle decryption
         if value.confidential and value.decrypt_with:
@@ -69,8 +69,14 @@ class Resolver:
             return env_val
         raise QuonfigEnvVarNotSetError(f"Unknown provided source: {source!r}")
 
-    def _resolve_weighted(self, raw: Any, value: Value, contexts: Contexts) -> Any:
-        """Hash-based weighted value selection."""
+    def _resolve_weighted(self, raw: Any, value: Value, contexts: Contexts, config_key: str = "") -> Any:
+        """Hash-based weighted value selection.
+
+        Matches the Go/Node SDK algorithm:
+        - Hash input: configKey + contextValue
+        - Hash function: Murmur3 unsigned 32-bit / MaxUint32
+        - Selection: running_sum >= threshold (inclusive)
+        """
         if not isinstance(raw, dict):
             return None
 
@@ -80,40 +86,43 @@ class Resolver:
         if not weighted_values:
             return None
 
-        # Determine hash input
+        # Determine hash fraction
         from .context import get_context_value
-        from .evaluator import Evaluator  # avoid circular at module level
 
-        hash_value, found = get_context_value(contexts, hash_by) if hash_by else (None, False)
-
-        # Compute percentage
-        if hash_value is not None and found:
-            # Use the config key + hash value as hash input
-            # We need the config key; it's not directly available here so we use hash_by value
-            to_hash = f"{hash_by}{hash_value}"
-            int_value = mmh3.hash(to_hash, signed=False)
-            percent = int_value / _MAX_32_FLOAT
+        fraction: float
+        if hash_by:
+            hash_value, found = get_context_value(contexts, hash_by)
+            if found and hash_value is not None:
+                # Hash input: configKey + contextValue (matches Go/Node SDK)
+                to_hash = f"{config_key}{hash_value}"
+                uint32_val = mmh3.hash(to_hash, signed=False)
+                fraction = uint32_val / _MAX_UINT32
+            else:
+                import random
+                fraction = random.random()
         else:
             import random
-            percent = random.random()
+            fraction = random.random()
 
-        # Select variant
+        # Select variant using running-sum >= threshold (matches Go SDK)
         total_weight = sum(wv.get("weight", 0) for wv in weighted_values)
         if total_weight == 0:
             return None
 
-        bucket = total_weight * percent
-        bucket_sum = 0.0
+        threshold = fraction * total_weight
+        running_sum = 0
         selected = None
-        for wv in weighted_values:
-            weight = wv.get("weight", 0)
-            if bucket < bucket_sum + weight:
+        selected_idx = -1
+        for i, wv in enumerate(weighted_values):
+            running_sum += wv.get("weight", 0)
+            if running_sum >= threshold:
                 selected = wv.get("value")
+                selected_idx = i
                 break
-            bucket_sum += weight
 
+        # Fallback: return the first value (should not normally be reached)
         if selected is None:
-            selected = weighted_values[-1].get("value")
+            selected = weighted_values[0].get("value") if weighted_values else None
 
         if selected is None:
             return None
@@ -121,7 +130,7 @@ class Resolver:
         # Recursively resolve the selected value
         if isinstance(selected, dict):
             inner_value = Value.from_dict(selected)
-            return self.resolve(inner_value, contexts)
+            return self.resolve(inner_value, contexts, config_key=config_key)
         return selected
 
     def _decrypt_value(self, raw: Any, decrypt_with_key: str) -> Any:
@@ -133,9 +142,8 @@ class Resolver:
             raise QuonfigDecryptionError(
                 f"Encryption key config '{decrypt_with_key}' not found in store"
             )
-        # The encryption key value is typically a plain string value
-        # Evaluate to get the key string
-        key_value = self._get_raw_string_value(key_config)
+        # Resolve the encryption key value — may be a plain string or provided (ENV_VAR)
+        key_value = self._resolve_key_config_value(key_config)
         if key_value is None:
             raise QuonfigDecryptionError(
                 f"Could not retrieve encryption key from '{decrypt_with_key}'"
@@ -144,18 +152,27 @@ class Resolver:
             raise QuonfigDecryptionError("Encrypted value must be a string")
         return decrypt(raw, key_value)
 
-    def _get_raw_string_value(self, config: Any) -> Any:
-        """Extract the first matching rule's value as a string (for encryption keys)."""
+    def _resolve_key_config_value(self, config: Any) -> Any:
+        """Extract the encryption key string from a config — handles plain string and provided (ENV_VAR)."""
         # Try environment rules first, then default rules
         rules = []
-        if config.environment:
+        for env in getattr(config, "environments", []):
+            rules.extend(env.rules)
+        if config.environment and config.environment not in getattr(config, "environments", []):
             rules.extend(config.environment.rules)
         rules.extend(config.default.rules)
+
         for rule in rules:
             if rule.value is not None:
-                v = rule.value.value
-                if isinstance(v, str):
-                    return v
+                v = rule.value
+                if v.type == "provided":
+                    # Resolve the env var
+                    try:
+                        return self._resolve_provided(v.value)
+                    except QuonfigEnvVarNotSetError:
+                        return None
+                elif isinstance(v.value, str):
+                    return v.value
         return None
 
     def _coerce(self, raw: Any, vtype: str) -> Any:
