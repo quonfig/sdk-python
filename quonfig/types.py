@@ -165,3 +165,8 @@ class EvalResult:
     row_index: Optional[int]
     config_id: Optional[str]
     config_key: str
+    # Telemetry fields — set by evaluator + client
+    config_type: str = ""
+    weighted_value_index: int = -1
+    telemetry_reason: int = 0   # 1=STATIC 2=TARGETING_MATCH 3=SPLIT
+    resolved_value: Any = None  # set by client after resolver runs

@@ -216,23 +216,25 @@ class Quonfig:
         merged = self._effective_contexts(contexts)
         result = self._evaluator.evaluate(key, merged)
 
-        # Record telemetry
-        if self._telemetry is not None:
-            self._telemetry.record_evaluation(result)
-            if merged:
-                self._telemetry.record_context(merged)
-
         if result.reason == "MISSING" or result.value is None:
             return _NO_DEFAULT
 
         try:
-            return self._resolver.resolve(result.value, merged, config_key=key)
+            resolved = self._resolver.resolve(result.value, merged, config_key=key)
         except (QuonfigEnvVarNotSetError, QuonfigDecryptionError):
-            # These are semantic errors that callers need to handle — re-raise
             raise
         except Exception as e:
             logger.warning("Error resolving value for key '%s': %s", key, e)
             return _NO_DEFAULT
+
+        # Record telemetry after resolving so resolved_value is available
+        if self._telemetry is not None:
+            result.resolved_value = resolved
+            self._telemetry.record_evaluation(result)
+            if merged:
+                self._telemetry.record_context(merged)
+
+        return resolved
 
     def _handle_missing(self, key: str, default: Any) -> Any:
         if default is not _NO_DEFAULT:
@@ -390,28 +392,16 @@ class Quonfig:
     ) -> bool:
         """
         Return True if the given logger_name should log at desired_level.
-
-        Walks the hierarchy from specific to general:
-            log-levels.app.auth -> log-levels.app -> log-levels
         """
         desired_order = LOG_LEVEL_ORDER.get(desired_level.upper())
         if desired_order is None:
             return True  # Unknown level — log it
 
-        # Build hierarchy of keys to check
-        parts = logger_name.split(".")
-        keys_to_check = []
-        for i in range(len(parts), 0, -1):
-            keys_to_check.append("log-levels." + ".".join(parts[:i]))
-        keys_to_check.append("log-levels")
-
-        for key in keys_to_check:
-            result = self._get(key, contexts)
-            if result is not _NO_DEFAULT and result is not None:
-                configured_order = LOG_LEVEL_ORDER.get(str(result).upper())
-                if configured_order is not None:
-                    return desired_order >= configured_order
-        # No config found — default to logging everything
+        result = self._get("log-level." + logger_name, contexts)
+        if result is not _NO_DEFAULT and result is not None:
+            configured_order = LOG_LEVEL_ORDER.get(str(result).upper())
+            if configured_order is not None:
+                return desired_order >= configured_order
         return True
 
     # ------------------------------------------------------------------

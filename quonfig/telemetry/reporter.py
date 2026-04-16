@@ -3,41 +3,39 @@ from __future__ import annotations
 import base64
 import threading
 import time
-from typing import Optional
+from typing import List, Optional
 
 import requests  # type: ignore[import-untyped]
 
 from ..types import Contexts, EvalResult
-from .collectors import ContextShapeCollector, EvaluationSummaryCollector
-from .models import TelemetryPayload
+from .collectors import ContextShapeCollector, EvaluationSummaryCollector, ExampleContextCollector
+from .models import TelemetryEvent, TelemetryPayload
 
 QUONFIG_VERSION = "0.0.1"
 
 
 class TelemetryReporter:
-    """
-    Daemon thread that periodically flushes evaluation summaries and context shapes
-    to the Quonfig telemetry endpoint.
-    """
+    """Daemon thread that periodically flushes telemetry to the Quonfig endpoint."""
 
     def __init__(
         self,
         telemetry_url: str,
         sdk_key: str,
+        instance_hash: str = "",
         collect_evaluation_summaries: bool = True,
-        collect_context_shapes: bool = True,
+        context_upload_mode: str = "shapes_only",
         interval: float = 30.0,
     ) -> None:
         self.telemetry_url = telemetry_url.rstrip("/")
         self.sdk_key = sdk_key
-        self.collect_evaluation_summaries = collect_evaluation_summaries
-        self.collect_context_shapes = collect_context_shapes
+        self.instance_hash = instance_hash
         self.interval = interval
 
-        self._eval_collector = (
-            EvaluationSummaryCollector() if collect_evaluation_summaries else None
+        self._eval_collector: Optional[EvaluationSummaryCollector] = (
+            EvaluationSummaryCollector(enabled=collect_evaluation_summaries)
         )
-        self._ctx_collector = ContextShapeCollector() if collect_context_shapes else None
+        self._ctx_collector = ContextShapeCollector(context_upload_mode=context_upload_mode)
+        self._example_collector = ExampleContextCollector(context_upload_mode=context_upload_mode)
 
         self._shutdown = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -52,11 +50,10 @@ class TelemetryReporter:
             self._eval_collector.record(result)
 
     def record_context(self, contexts: Contexts) -> None:
-        if self._ctx_collector is not None:
-            self._ctx_collector.record(contexts)
+        self._ctx_collector.record(contexts)
+        self._example_collector.record(contexts)
 
     def stop(self) -> None:
-        """Signal shutdown and do a final flush."""
         self._shutdown.set()
         try:
             self._flush()
@@ -74,27 +71,25 @@ class TelemetryReporter:
                 pass
 
     def _flush(self) -> None:
-        from .models import ContextShape, EvaluationSummary
-
-        summaries: list[EvaluationSummary] = []
-        ctx_shapes: list[ContextShape] = []
-        start_millis, end_millis = 0, 0
+        events: List[TelemetryEvent] = []
 
         if self._eval_collector is not None:
-            summaries, start_millis, end_millis = self._eval_collector.flush()
+            ev = self._eval_collector.drain()
+            if ev:
+                events.append(ev)
 
-        if self._ctx_collector is not None:
-            ctx_shapes = self._ctx_collector.flush()
+        ev = self._ctx_collector.drain()
+        if ev:
+            events.append(ev)
 
-        if not summaries and not ctx_shapes:
+        ev = self._example_collector.drain()
+        if ev:
+            events.append(ev)
+
+        if not events:
             return
 
-        payload = TelemetryPayload(
-            evaluation_summaries=summaries,
-            context_shapes=ctx_shapes,
-            start_millis=start_millis,
-            end_millis=end_millis,
-        )
+        payload = TelemetryPayload(instance_hash=self.instance_hash, events=events)
 
         credentials = base64.b64encode(f"1:{self.sdk_key}".encode()).decode()
         headers = {

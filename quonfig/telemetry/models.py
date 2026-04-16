@@ -1,69 +1,118 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
 class EvaluationCounter:
-    config_key: str
     config_id: str
-    value_type: str
-    row_index: Optional[int]
-    count: int = 0
+    conditional_value_index: int
+    config_row_index: int
+    selected_value: Any          # {"string": "..."}, {"bool": ...}, etc.
+    count: int
+    reason: int
+    weighted_value_index: Optional[int] = None
 
 
 @dataclass
 class EvaluationSummary:
-    config_key: str
-    config_id: str
-    value_type: str
+    key: str
+    type: str
     counters: List[EvaluationCounter] = field(default_factory=list)
 
 
 @dataclass
-class ContextShape:
-    """Tracks shape (field names) of a context namespace."""
+class EvalSummaries:
+    start: int
+    end: int
+    summaries: List[EvaluationSummary] = field(default_factory=list)
 
-    namespace: str
-    field_names: List[str] = field(default_factory=list)
+
+@dataclass
+class ContextShape:
+    name: str
+    field_types: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class ContextShapes:
+    shapes: List[ContextShape] = field(default_factory=list)
+
+
+@dataclass
+class ExampleContext:
+    timestamp: int
+    context_set: Dict[str, Any]   # {"contexts": [{"type": "user", "values": {...}}]}
+
+
+@dataclass
+class ExampleContexts:
+    examples: List[ExampleContext] = field(default_factory=list)
+
+
+@dataclass
+class TelemetryEvent:
+    summaries: Optional[EvalSummaries] = None
+    context_shapes: Optional[ContextShapes] = None
+    example_contexts: Optional[ExampleContexts] = None
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.summaries:
+            result["summaries"] = {
+                "start": self.summaries.start,
+                "end": self.summaries.end,
+                "summaries": [
+                    {
+                        "key": s.key,
+                        "type": s.type,
+                        "counters": [_counter_to_dict(c) for c in s.counters],
+                    }
+                    for s in self.summaries.summaries
+                ],
+            }
+        if self.context_shapes:
+            result["contextShapes"] = {
+                "shapes": [
+                    {"name": s.name, "fieldTypes": s.field_types}
+                    for s in self.context_shapes.shapes
+                ]
+            }
+        if self.example_contexts:
+            result["exampleContexts"] = {
+                "examples": [
+                    {
+                        "timestamp": e.timestamp,
+                        "contextSet": e.context_set,
+                    }
+                    for e in self.example_contexts.examples
+                ]
+            }
+        return result
+
+
+def _counter_to_dict(c: EvaluationCounter) -> dict:
+    d: dict = {
+        "configId": c.config_id,
+        "conditionalValueIndex": c.conditional_value_index,
+        "configRowIndex": c.config_row_index,
+        "selectedValue": c.selected_value,
+        "count": c.count,
+        "reason": c.reason,
+    }
+    if c.weighted_value_index is not None and c.weighted_value_index >= 0:
+        d["weightedValueIndex"] = c.weighted_value_index
+    return d
 
 
 @dataclass
 class TelemetryPayload:
-    """Payload sent to the telemetry endpoint."""
-
-    evaluation_summaries: List[EvaluationSummary] = field(default_factory=list)
-    context_shapes: List[ContextShape] = field(default_factory=list)
-    start_millis: int = 0
-    end_millis: int = 0
+    instance_hash: str
+    events: List[TelemetryEvent] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
-            "evaluationSummaries": [
-                {
-                    "key": s.config_key,
-                    "configId": s.config_id,
-                    "valueType": s.value_type,
-                    "counters": [
-                        {
-                            "configKey": c.config_key,
-                            "configId": c.config_id,
-                            "rowIndex": c.row_index,
-                            "count": c.count,
-                        }
-                        for c in s.counters
-                    ],
-                }
-                for s in self.evaluation_summaries
-            ],
-            "contextShapes": [
-                {
-                    "namespace": cs.namespace,
-                    "fieldNames": cs.field_names,
-                }
-                for cs in self.context_shapes
-            ],
-            "start": self.start_millis,
-            "end": self.end_millis,
+            "instanceHash": self.instance_hash,
+            "events": [e.to_dict() for e in self.events],
         }
