@@ -20,3 +20,11 @@ class QuonfigEnvVarNotSetError(QuonfigError):
 
 class QuonfigDecryptionError(QuonfigError):
     """AES-256-GCM decryption of a confidential value failed."""
+
+
+class QuonfigValueTypeError(QuonfigError):
+    """A value does not conform to the expected wire representation for its type.
+
+    Example: a ``json``-typed value arriving as a stringified JSON payload instead
+    of a native dict/list/number/bool/None.
+    """

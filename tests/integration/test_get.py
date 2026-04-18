@@ -7,11 +7,13 @@ import os
 import pytest
 
 from quonfig import Quonfig
-
-DATADIR = os.path.join(
-    os.path.dirname(__file__), "../../../integration-test-data/data/integration-tests"
+from quonfig.exceptions import (
+    QuonfigDecryptionError,
+    QuonfigEnvVarNotSetError,
+    QuonfigKeyNotFoundError,
 )
 
+DATADIR = os.path.join(os.path.dirname(__file__), "../../../integration-test-data/data/integration-tests")
 
 @pytest.fixture(scope="module")
 def config_client():
@@ -26,42 +28,41 @@ def config_client():
     c.init()
     return c
 
-
 def test_get_returns_a_found_value_for_key(config_client):
     c = config_client
-    result = c.get_string("my-test-key")
-    assert result == "my-test-value"
+    result = c.get_string('my-test-key')
+    assert result == 'my-test-value'
 
 
 def test_get_returns_nil_if_value_not_found():
     c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
     c.init()
-    result = c.get_string("my-missing-key")
+    result = c.get_string('my-missing-key')
     assert result is None
 
 
 def test_get_returns_a_default_for_a_missing_value_if_a_default_is_given(config_client):
     c = config_client
-    result = c.get_string("my-missing-key", default="DEFAULT")
-    assert result == "DEFAULT"
+    result = c.get_string('my-missing-key', default='DEFAULT')
+    assert result == 'DEFAULT'
 
 
 def test_get_ignores_a_provided_default_if_the_key_is_found(config_client):
     c = config_client
-    result = c.get_string("my-test-key", default="DEFAULT")
-    assert result == "my-test-value"
+    result = c.get_string('my-test-key', default='DEFAULT')
+    assert result == 'my-test-value'
 
 
 def test_get_can_return_a_double(config_client):
     c = config_client
-    result = c.get_float("my-double-key")
+    result = c.get_float('my-double-key')
     assert abs(result - 9.95) < 1e-9
 
 
 def test_get_can_return_a_string_list(config_client):
     c = config_client
-    result = c.get_string_list("my-string-list-key")
-    assert result == ["a", "b", "c"]
+    result = c.get_string_list('my-string-list-key')
+    assert result == ['a', 'b', 'c']
 
 
 def test_can_return_an_override_based_on_the_default_context():
@@ -70,87 +71,83 @@ def test_can_return_an_override_based_on_the_default_context():
 
 def test_can_return_a_value_provided_by_an_environment_variable(config_client):
     c = config_client
-    result = c.get_string("prefab.secrets.encryption.key")
-    assert result == "c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221"
+    result = c.get_string('prefab.secrets.encryption.key')
+    assert result == 'c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221'
 
 
 def test_can_return_a_value_provided_by_an_environment_variable_after_type_coercion(config_client):
     c = config_client
-    result = c.get_int("provided.a.number")
+    result = c.get_int('provided.a.number')
     assert result == 1234
 
 
 def test_can_decrypt_and_return_a_secret_value_with_decryption_key_in_in_env_var(config_client):
     c = config_client
-    result = c.get_string("a.secret.config")
-    assert result == "hello.world"
+    result = c.get_string('a.secret.config')
+    assert result == 'hello.world'
 
 
 def test_duration_200_ms(config_client):
     c = config_client
-    result = c.get_duration("test.duration.PT0.2S")
+    result = c.get_duration('test.duration.PT0.2S')
     assert abs(result * 1000 - 200) < 1, f"Expected {result * 1000}ms to be close to 200ms"
 
 
 def test_duration_90s(config_client):
     c = config_client
-    result = c.get_duration("test.duration.PT90S")
+    result = c.get_duration('test.duration.PT90S')
     assert abs(result * 1000 - 90000) < 1, f"Expected {result * 1000}ms to be close to 90000ms"
 
 
 def test_duration_1_5m(config_client):
     c = config_client
-    result = c.get_duration("test.duration.PT1.5M")
+    result = c.get_duration('test.duration.PT1.5M')
     assert abs(result * 1000 - 90000) < 1, f"Expected {result * 1000}ms to be close to 90000ms"
 
 
 def test_duration_0_5h(config_client):
     c = config_client
-    result = c.get_duration("test.duration.PT0.5H")
+    result = c.get_duration('test.duration.PT0.5H')
     assert abs(result * 1000 - 1800000) < 1, f"Expected {result * 1000}ms to be close to 1800000ms"
 
 
 def test_duration_test_duration_p1dt6h2m1_5s(config_client):
     c = config_client
-    result = c.get_duration("test.duration.P1DT6H2M1.5S")
-    assert (
-        abs(result * 1000 - 108121500) < 1
-    ), f"Expected {result * 1000}ms to be close to 108121500ms"
+    result = c.get_duration('test.duration.P1DT6H2M1.5S')
+    assert abs(result * 1000 - 108121500) < 1, f"Expected {result * 1000}ms to be close to 108121500ms"
 
 
 def test_json_test(config_client):
     c = config_client
-    result = c.get_json("test.json")
-    assert result == {"a": 1, "b": "c"}
+    result = c.get_json('test.json')
+    assert result == {'a': 1, 'b': 'c'}
+
+
+def test_get_returns_a_native_json_object_not_a_stringified_payload(config_client):
+    c = config_client
+    result = c.get_json('test.json')
+    assert result == {'a': 1, 'b': 'c'}
 
 
 def test_list_on_left_side_test_1(config_client):
     c = config_client
-    result = c.get_string(
-        "left.hand.list.test", contexts={"user": {"name": "james", "aka": ["happy", "sleepy"]}}
-    )
-    assert result == "correct"
+    result = c.get_string('left.hand.list.test', contexts={'user': {'name': 'james', 'aka': ['happy', 'sleepy']}})
+    assert result == 'correct'
 
 
 def test_list_on_left_side_test_2(config_client):
     c = config_client
-    result = c.get_string(
-        "left.hand.list.test", contexts={"user": {"name": "james", "aka": ["a", "b"]}}
-    )
-    assert result == "default"
+    result = c.get_string('left.hand.list.test', contexts={'user': {'name': 'james', 'aka': ['a', 'b']}})
+    assert result == 'default'
 
 
 def test_list_on_left_side_test_opposite_1(config_client):
     c = config_client
-    result = c.get_string(
-        "left.hand.test.opposite", contexts={"user": {"name": "james", "aka": ["happy", "sleepy"]}}
-    )
-    assert result == "default"
+    result = c.get_string('left.hand.test.opposite', contexts={'user': {'name': 'james', 'aka': ['happy', 'sleepy']}})
+    assert result == 'default'
 
 
 def test_list_on_left_side_test_3(config_client):
     c = config_client
-    result = c.get_string(
-        "left.hand.test.opposite", contexts={"user": {"name": "james", "aka": ["a", "b"]}}
-    )
-    assert result == "correct"
+    result = c.get_string('left.hand.test.opposite', contexts={'user': {'name': 'james', 'aka': ['a', 'b']}})
+    assert result == 'correct'

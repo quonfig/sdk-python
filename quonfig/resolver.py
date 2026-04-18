@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import TYPE_CHECKING, Any
 
 import mmh3
 
-from .exceptions import QuonfigDecryptionError, QuonfigEnvVarNotSetError
+from .exceptions import QuonfigDecryptionError, QuonfigEnvVarNotSetError, QuonfigValueTypeError
 from .types import Contexts, Value
 
 if TYPE_CHECKING:
@@ -181,7 +180,21 @@ class Resolver:
     def _coerce(self, raw: Any, vtype: str) -> Any:
         """Coerce raw value to the appropriate Python type."""
         if raw is None:
+            # JSON's `null` is a legitimate native value — allow None to pass through.
+            if vtype == "json":
+                return None
             return None
+
+        # JSON values must already be native on the wire — no stringified JSON.
+        # This check runs OUTSIDE the try/except below so it propagates to callers.
+        if vtype == "json":
+            if isinstance(raw, str):
+                raise QuonfigValueTypeError(
+                    "json value must be a native JSON type "
+                    "(dict/list/number/bool/None); stringified JSON is no longer allowed"
+                )
+            # dict / list / int / float / bool (and None handled above) all pass through.
+            return raw
 
         try:
             if vtype == "bool":
@@ -203,13 +216,6 @@ class Resolver:
 
             elif vtype == "string":
                 return str(raw)
-
-            elif vtype == "json":
-                if isinstance(raw, (dict, list)):
-                    return raw
-                if isinstance(raw, str):
-                    return json.loads(raw)
-                return raw
 
             elif vtype == "string_list":
                 if isinstance(raw, list):

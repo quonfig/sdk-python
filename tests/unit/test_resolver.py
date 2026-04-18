@@ -67,10 +67,30 @@ class TestTypeCoercion:
         v = make_value("json", data)
         assert self.resolver.resolve(v, {}) == data
 
-    def test_json_from_string(self):
+    def test_json_array_passthrough(self):
+        data = [1, 2, {"a": "b"}]
+        v = make_value("json", data)
+        assert self.resolver.resolve(v, {}) == data
+
+    def test_json_number_passthrough(self):
+        v = make_value("json", 42)
+        assert self.resolver.resolve(v, {}) == 42
+
+    def test_json_bool_passthrough(self):
+        v = make_value("json", True)
+        assert self.resolver.resolve(v, {}) is True
+
+    def test_json_null_passthrough(self):
+        v = make_value("json", None)
+        assert self.resolver.resolve(v, {}) is None
+
+    def test_json_string_rejected(self):
+        """Stringified JSON on wire is banned — must raise a clear error."""
+        from quonfig.exceptions import QuonfigValueTypeError
+
         v = make_value("json", '{"key": "value"}')
-        result = self.resolver.resolve(v, {})
-        assert result == {"key": "value"}
+        with pytest.raises(QuonfigValueTypeError, match="native JSON type"):
+            self.resolver.resolve(v, {})
 
     def test_string_list(self):
         v = make_value("string_list", ["a", "b", "c"])
