@@ -7,11 +7,13 @@ import os
 import pytest
 
 from quonfig import Quonfig
-
-DATADIR = os.path.join(
-    os.path.dirname(__file__), "../../../integration-test-data/data/integration-tests"
+from quonfig.exceptions import (
+    QuonfigDecryptionError,
+    QuonfigEnvVarNotSetError,
+    QuonfigKeyNotFoundError,
 )
 
+DATADIR = os.path.join(os.path.dirname(__file__), "../../../integration-test-data/data/integration-tests")
 
 @pytest.fixture(scope="module")
 def config_client():
@@ -26,16 +28,13 @@ def config_client():
     c.init()
     return c
 
-
 def test_get_returns_the_underlying_value_for_a_feature_flag(config_client):
     c = config_client
-    result = c.get_int("feature-flag.integer")
+    result = c.get_int('feature-flag.integer')
     assert result == 3
 
 
-def test_get_returns_the_underlying_value_for_a_feature_flag_that_matches_the_highest_precedent_rule(
-    config_client,
-):
+def test_get_returns_the_underlying_value_for_a_feature_flag_that_matches_the_highest_precedent_rule(config_client):
     c = config_client
-    result = c.get_int("feature-flag.integer", contexts={"user": {"key": "michael"}})
+    result = c.get_int('feature-flag.integer', contexts={'user': {'key': 'michael'}})
     assert result == 5
