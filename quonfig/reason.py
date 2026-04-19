@@ -28,7 +28,9 @@ def has_targeting_rules(config: "ConfigResponse") -> bool:
     return False
 
 
-def compute_telemetry_reason(rule_index: int, weighted_value_index: int, config: "ConfigResponse") -> int:
+def compute_telemetry_reason(
+    rule_index: int, weighted_value_index: int, config: "ConfigResponse"
+) -> int:
     if weighted_value_index > 0:
         return REASON_SPLIT
     if rule_index == 0 and not has_targeting_rules(config):

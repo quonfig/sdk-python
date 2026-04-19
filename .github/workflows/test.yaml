@@ -1,0 +1,50 @@
+name: Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sdk-python
+        uses: actions/checkout@v4
+        with:
+          path: sdk-python
+
+      - name: Checkout integration-test-data
+        uses: actions/checkout@v4
+        with:
+          repository: quonfig/integration-test-data
+          path: integration-test-data
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.3"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install dependencies
+        working-directory: sdk-python
+        run: poetry install --no-interaction
+
+      - name: Lint (ruff)
+        working-directory: sdk-python
+        run: poetry run ruff check .
+
+      - name: Typecheck (mypy)
+        working-directory: sdk-python
+        run: poetry run mypy quonfig
+
+      - name: Test
+        working-directory: sdk-python
+        run: poetry run pytest

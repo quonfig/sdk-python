@@ -9,7 +9,11 @@ import json
 
 from quonfig.telemetry.models import TelemetryPayload
 
-from .telemetry_helpers import EvaluationSummaryCollector, ContextShapeCollector, evaluate_for_telemetry
+from .telemetry_helpers import (
+    ContextShapeCollector,
+    EvaluationSummaryCollector,
+    evaluate_for_telemetry,
+)
 
 
 def test_evaluation_summary_json_contains_required_fields_including_reason():
@@ -88,7 +92,6 @@ def test_weighted_value_index_appears_in_json_when_present():
     collector.record(result)
 
     event = collector.drain()
-    doc = json.loads(json.dumps(event.summaries.summaries[0].counters[0].__dict__))
 
     payload = TelemetryPayload(instance_hash="x", events=[event])
     full_doc = json.loads(json.dumps(payload.to_dict()))

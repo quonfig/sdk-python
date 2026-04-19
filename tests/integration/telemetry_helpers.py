@@ -7,7 +7,6 @@ from typing import Optional
 
 from quonfig.datadir import load_datadir
 from quonfig.evaluator import Evaluator
-from quonfig.reason import compute_telemetry_reason
 from quonfig.resolver import Resolver
 from quonfig.store import ConfigStore
 from quonfig.telemetry.collectors import (

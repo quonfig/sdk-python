@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..reason import field_type_for_value, marshal_selected_value
 from ..types import Contexts, EvalResult
@@ -110,7 +110,9 @@ class EvaluationSummaryCollector:
 class ContextShapeCollector:
     """Tracks field names and their type codes per context namespace."""
 
-    def __init__(self, context_upload_mode: str = "shapes_only", max_data_size: int = 10_000) -> None:
+    def __init__(
+        self, context_upload_mode: str = "shapes_only", max_data_size: int = 10_000
+    ) -> None:
         self._enabled = context_upload_mode != "none"
         self._max_data_size = max_data_size
         self._lock = threading.Lock()

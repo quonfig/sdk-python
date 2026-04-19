@@ -102,7 +102,7 @@ class Quonfig:
                     telemetry_url=self._telemetry_url,
                     sdk_key=self._sdk_key,
                     collect_evaluation_summaries=collect_evaluation_summaries,
-                    collect_context_shapes=(context_upload_mode != "none"),
+                    context_upload_mode=context_upload_mode,
                 )
             except Exception:
                 pass  # Telemetry is optional

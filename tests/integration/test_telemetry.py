@@ -2,8 +2,6 @@
 """Telemetry aggregator integration tests with reason assertions."""
 from __future__ import annotations
 
-import pytest
-
 from .telemetry_helpers import (
     ContextShapeCollector,
     EvaluationSummaryCollector,

@@ -7,11 +7,6 @@ import os
 import pytest
 
 from quonfig import Quonfig
-from quonfig.exceptions import (
-    QuonfigDecryptionError,
-    QuonfigEnvVarNotSetError,
-    QuonfigKeyNotFoundError,
-)
 
 DATADIR = os.path.join(os.path.dirname(__file__), "../../../integration-test-data/data/integration-tests")
 
