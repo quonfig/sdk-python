@@ -35,6 +35,31 @@ with client.scoped_context({"user": {"id": "u123"}}):
     enabled = client.is_feature_enabled("my.flag")
 ```
 
+## Dynamic log levels
+
+```python
+from quonfig import Quonfig
+
+client = Quonfig(
+    sdk_key="sdk-...",
+    logger_key="log-level.my-app",  # config that drives per-logger rules
+).init()
+
+# Convenience form — SDK injects { "quonfig-sdk-logging": { "key": "my_app.auth" } }
+# into context so a single config can route by logger path.
+if client.should_log(logger_path="my_app.auth", desired_level="INFO"):
+    print("auth event")
+
+# Primitive form — for callers that want explicit control over the config key.
+# No auto-prefixing: pass the full stored key.
+if client.should_log(config_key="log-level.my-app", desired_level="DEBUG"):
+    print("debug event")
+```
+
+`logger_path` is passed through verbatim — the SDK does not normalize it, so
+callers can author config rules against whatever shape their host language
+prefers (dotted, double-colon, slash, etc.).
+
 ## Datadir mode (local files)
 
 ```python
@@ -55,3 +80,4 @@ client.init()
 | `init_timeout` | -- | `10.0` |
 | `on_init_failure` | -- | `"raise"` |
 | `on_no_default` | -- | `"error"` |
+| `logger_key` | -- | `None` |

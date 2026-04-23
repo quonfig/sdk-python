@@ -25,7 +25,11 @@ from .exceptions import (
 from .resolver import LOG_LEVEL_ORDER, Resolver
 from .store import ConfigStore
 from .transport import Transport
-from .types import Contexts
+from .types import (
+    QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP,
+    QUONFIG_SDK_LOGGING_CONTEXT_NAME,
+    Contexts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,7 @@ class Quonfig:
         context_upload_mode: str = "shapes_only",  # "none" | "shapes_only" | "periodic_example"
         on_no_default: str = "error",  # "error" | "warn" | "ignore"
         datadir: Optional[str] = None,
+        logger_key: Optional[str] = None,
     ) -> None:
         # Resolve configuration from params or env vars
         self._sdk_key = sdk_key or os.environ.get("QUONFIG_SDK_KEY", "")
@@ -82,6 +87,7 @@ class Quonfig:
         self._on_init_failure = on_init_failure
         self._on_no_default = on_no_default
         self._global_context: Contexts = global_context or {}
+        self._logger_key = logger_key
 
         self._store = ConfigStore()
         self._shutdown = threading.Event()
@@ -384,25 +390,93 @@ class Quonfig:
         # Non-boolean types (int, float, list, dict, etc.) return False
         return False
 
+    @property
+    def logger_key(self) -> Optional[str]:
+        """The config key used by ``should_log(logger_path=...)`` to look up
+        per-logger levels. ``None`` unless set at construction time."""
+        return self._logger_key
+
     def should_log(
         self,
-        logger_name: str,
-        desired_level: str,
+        config_key: Optional[str] = None,
+        desired_level: Optional[str] = None,
         contexts: Optional[Contexts] = None,
+        *,
+        logger_path: Optional[str] = None,
     ) -> bool:
+        """Return True if a message at ``desired_level`` should be emitted.
+
+        Two shapes are supported:
+
+        1. ``should_log(config_key="log-level.my-app", desired_level="info")``
+           — primitive. Evaluates the named config as a log level. The caller
+           is responsible for any per-logger routing. The full stored key is
+           required; the SDK does NOT auto-prefix "log-level.".
+
+        2. ``should_log(logger_path="MyApp.Services.Auth", desired_level="info")``
+           — convenience. Requires ``logger_key`` on the Quonfig constructor.
+           The SDK evaluates ``logger_key`` with
+           ``contexts["quonfig-sdk-logging"] = {"key": logger_path}`` merged
+           in, so a single log-level config can drive per-logger overrides
+           via the normal rule engine. ``logger_path`` is passed through
+           verbatim — no normalization.
+
+        Raises ``ValueError`` if neither or both of ``config_key`` /
+        ``logger_path`` are provided, or if ``logger_path`` is provided
+        without a configured ``logger_key``.
         """
-        Return True if the given logger_name should log at desired_level.
-        """
+        if desired_level is None:
+            raise ValueError("should_log requires `desired_level`.")
+
+        if config_key is not None and logger_path is not None:
+            raise ValueError(
+                "should_log: pass either `config_key` or `logger_path`, not both."
+            )
+
+        resolved_contexts = contexts
+
+        if logger_path is not None:
+            if not self._logger_key:
+                raise ValueError(
+                    "should_log(logger_path=...) requires the `logger_key` option on the "
+                    "Quonfig constructor. Pass `logger_key=\"log-level.<your-app>\"` or "
+                    "use the `config_key=...` form instead."
+                )
+            resolved_config_key: str = self._logger_key
+            logger_ctx: Contexts = {
+                QUONFIG_SDK_LOGGING_CONTEXT_NAME: {
+                    QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP: logger_path
+                }
+            }
+            from .context import merge_contexts as _merge
+
+            resolved_contexts = _merge(contexts or {}, logger_ctx)
+        elif config_key is not None:
+            resolved_config_key = config_key
+        else:
+            raise ValueError(
+                "should_log requires either `config_key` or `logger_path`."
+            )
+
         desired_order = LOG_LEVEL_ORDER.get(desired_level.upper())
         if desired_order is None:
-            return True  # Unknown level — log it
+            # Unknown desired level — log it (match Go/Node/Ruby).
+            return True
 
-        result = self._get("log-level." + logger_name, contexts)
-        if result is not _NO_DEFAULT and result is not None:
-            configured_order = LOG_LEVEL_ORDER.get(str(result).upper())
-            if configured_order is not None:
-                return desired_order >= configured_order
-        return True
+        # Evaluate the config; any error (missing, resolver failure) → log it.
+        try:
+            result = self._get(resolved_config_key, resolved_contexts)
+        except Exception:
+            return True
+
+        if result is _NO_DEFAULT or result is None:
+            return True
+
+        configured_order = LOG_LEVEL_ORDER.get(str(result).upper())
+        if configured_order is None:
+            return True
+
+        return desired_order >= configured_order
 
     # ------------------------------------------------------------------
     # Context scoping

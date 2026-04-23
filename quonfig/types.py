@@ -7,6 +7,15 @@ from typing import Any, Dict, List, Optional, Union
 Contexts = Dict[str, Dict[str, Any]]
 ContextValue = Union[str, int, float, bool, list, None]
 
+# Top-level context name under which Quonfig.should_log(logger_path=...)
+# injects the logger path for per-logger rule evaluation. Rules written
+# against this context use the property path
+# "quonfig-sdk-logging.key". Load-bearing for api-telemetry's example-
+# context auto-capture — do NOT rename without updating the matching
+# constants in sdk-node, sdk-javascript, sdk-go, and sdk-ruby.
+QUONFIG_SDK_LOGGING_CONTEXT_NAME = "quonfig-sdk-logging"
+QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP = "key"
+
 
 @dataclass
 class Value:

@@ -8,7 +8,11 @@ from .exceptions import (
     QuonfigKeyNotFoundError,
     QuonfigNotInitializedError,
 )
-from .types import Contexts
+from .types import (
+    QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP,
+    QUONFIG_SDK_LOGGING_CONTEXT_NAME,
+    Contexts,
+)
 
 __all__ = [
     "Quonfig",
@@ -20,4 +24,6 @@ __all__ = [
     "QuonfigEnvVarNotSetError",
     "QuonfigDecryptionError",
     "Contexts",
+    "QUONFIG_SDK_LOGGING_CONTEXT_NAME",
+    "QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP",
 ]

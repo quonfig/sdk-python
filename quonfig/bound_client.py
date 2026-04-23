@@ -50,8 +50,25 @@ class BoundQuonfig:
     def is_feature_enabled(self, key: str, default: bool = False) -> bool:
         return self._client.is_feature_enabled(key, default=default, contexts=self._contexts)
 
-    def should_log(self, logger_name: str, desired_level: str) -> bool:
-        return self._client.should_log(logger_name, desired_level, contexts=self._contexts)
+    def should_log(
+        self,
+        config_key: Optional[str] = None,
+        desired_level: Optional[str] = None,
+        contexts: Optional[Contexts] = None,
+        *,
+        logger_path: Optional[str] = None,
+    ) -> bool:
+        """Delegate to ``Quonfig.should_log`` with the bound contexts merged
+        into any per-call contexts. Supports both ``config_key=`` (primitive)
+        and ``logger_path=`` (convenience) forms — see ``Quonfig.should_log``.
+        """
+        merged = merge_contexts(self._contexts, contexts or {})
+        return self._client.should_log(
+            config_key=config_key,
+            desired_level=desired_level,
+            contexts=merged,
+            logger_path=logger_path,
+        )
 
     def keys(self) -> List[str]:
         return self._client.keys()
