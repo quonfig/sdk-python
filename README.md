@@ -60,6 +60,46 @@ if client.should_log(config_key="log-level.my-app", desired_level="DEBUG"):
 callers can author config rules against whatever shape their host language
 prefers (dotted, double-colon, slash, etc.).
 
+### Dynamic log levels with stdlib `logging`
+
+Attach `QuonfigLoggerFilter` to any logger or handler and the SDK will gate
+records against `logger_key`. The record's `name` flows into context verbatim
+as `quonfig-sdk-logging.key`, so a single config can drive per-logger rules.
+
+```python
+import logging
+from quonfig import Quonfig, QuonfigLoggerFilter
+
+client = Quonfig(sdk_key="sdk-...", logger_key="log-level.my-app").init()
+
+root = logging.getLogger()
+root.addFilter(QuonfigLoggerFilter(client))
+```
+
+### Dynamic log levels with `structlog`
+
+`QuonfigLoggerProcessor` is a structlog processor. Place it after
+`structlog.stdlib.add_log_level` so the level is populated on the event dict.
+
+```python
+import structlog
+from quonfig import Quonfig, QuonfigLoggerProcessor
+
+client = Quonfig(sdk_key="sdk-...", logger_key="log-level.my-app").init()
+
+structlog.configure(
+    processors=[
+        structlog.stdlib.add_log_level,
+        QuonfigLoggerProcessor(client),
+        structlog.processors.JSONRenderer(),
+    ],
+)
+```
+
+`structlog` is an optional dependency — `QuonfigLoggerProcessor` raises
+`ImportError` with an install hint if it isn't available. The stdlib filter
+has no optional-dep concern.
+
 ## Datadir mode (local files)
 
 ```python

@@ -8,6 +8,7 @@ from .exceptions import (
     QuonfigKeyNotFoundError,
     QuonfigNotInitializedError,
 )
+from .logging import QuonfigLoggerFilter, QuonfigLoggerProcessor
 from .types import (
     QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP,
     QUONFIG_SDK_LOGGING_CONTEXT_NAME,
@@ -26,4 +27,6 @@ __all__ = [
     "Contexts",
     "QUONFIG_SDK_LOGGING_CONTEXT_NAME",
     "QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP",
+    "QuonfigLoggerFilter",
+    "QuonfigLoggerProcessor",
 ]
