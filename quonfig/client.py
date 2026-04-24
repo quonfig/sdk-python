@@ -37,6 +37,7 @@ _NO_DEFAULT = object()
 
 # Default API URL
 _DEFAULT_API_URL = "https://api.quonfig.com"
+_DEFAULT_TELEMETRY_URL = "https://telemetry.quonfig.com"
 
 
 class Quonfig:
@@ -61,7 +62,8 @@ class Quonfig:
         environment: Optional[str] = None,
         telemetry_url: Optional[str] = None,
         collect_evaluation_summaries: bool = True,
-        context_upload_mode: str = "shapes_only",  # "none" | "shapes_only" | "periodic_example"
+        # "none" | "shapes_only" | "periodic_example"
+        context_upload_mode: str = "periodic_example",
         on_no_default: str = "error",  # "error" | "warn" | "ignore"
         datadir: Optional[str] = None,
         logger_key: Optional[str] = None,
@@ -81,7 +83,7 @@ class Quonfig:
                 self._api_urls = [_DEFAULT_API_URL]
 
         self._telemetry_url = telemetry_url or os.environ.get(
-            "QUONFIG_TELEMETRY_URL", _DEFAULT_API_URL
+            "QUONFIG_TELEMETRY_URL", _DEFAULT_TELEMETRY_URL
         )
         self._init_timeout = init_timeout
         self._on_init_failure = on_init_failure
@@ -155,6 +157,11 @@ class Quonfig:
             raise
         else:
             self._finish_init()
+
+        # Start telemetry (mirrors _load_from_api); guards for disabled telemetry
+        # are handled in __init__ where self._telemetry is set to None.
+        if self._telemetry is not None:
+            self._telemetry.start()
 
     def _load_from_api(self) -> None:
         """Start background SSE thread; initial load done via polling thread."""
