@@ -4,6 +4,7 @@ import contextlib
 import logging
 import os
 import threading
+import warnings
 from typing import TYPE_CHECKING, Any, List, Optional
 
 if TYPE_CHECKING:
@@ -76,9 +77,21 @@ class Quonfig:
         if api_urls:
             self._api_urls = api_urls
         else:
-            env_url = os.environ.get("QUONFIG_API_URL", "")
-            if env_url:
-                self._api_urls = [u.strip() for u in env_url.split(",") if u.strip()]
+            env_urls = os.environ.get("QUONFIG_API_URLS", "")
+            if not env_urls:
+                legacy = os.environ.get("QUONFIG_API_URL", "")
+                if legacy:
+                    warnings.warn(
+                        "QUONFIG_API_URL is deprecated; use QUONFIG_API_URLS "
+                        "(comma-separated) to match the other Quonfig SDKs. "
+                        "Support for QUONFIG_API_URL will be removed in a "
+                        "future release.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                    env_urls = legacy
+            if env_urls:
+                self._api_urls = [u.strip() for u in env_urls.split(",") if u.strip()]
             else:
                 self._api_urls = [_DEFAULT_API_URL]
 
