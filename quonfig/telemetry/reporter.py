@@ -7,11 +7,10 @@ from typing import List, Optional
 
 import requests  # type: ignore[import-untyped]
 
+from ..transport import QUONFIG_VERSION
 from ..types import Contexts, EvalResult
 from .collectors import ContextShapeCollector, EvaluationSummaryCollector, ExampleContextCollector
 from .models import TelemetryEvent, TelemetryPayload
-
-QUONFIG_VERSION = "0.0.1"
 
 
 class TelemetryReporter:

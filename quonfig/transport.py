@@ -11,7 +11,13 @@ from .types import ConfigEnvelope
 if TYPE_CHECKING:
     from .store import ConfigStore
 
-QUONFIG_VERSION = "0.0.1"
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+try:
+    QUONFIG_VERSION = _pkg_version("quonfig")
+except PackageNotFoundError:
+    QUONFIG_VERSION = "0.0.0-dev"
 
 
 class Transport:
