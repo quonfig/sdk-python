@@ -33,7 +33,7 @@ class SSEClient:
         backoff = 1.0
         while not self.shutdown_event.is_set():
             try:
-                url = f"{self.transport._current_url()}/api/v2/sse/config"
+                url = f"{self.transport._current_stream_url()}/api/v2/sse/config"
                 headers = self.transport._headers({"Accept": "text/event-stream"})
                 response = requests.get(
                     url,

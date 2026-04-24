@@ -3,10 +3,38 @@ from __future__ import annotations
 import base64
 import threading
 from typing import TYPE_CHECKING, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import requests  # type: ignore[import-untyped]
 
 from .types import ConfigEnvelope
+
+
+def derive_stream_url(api_url: str) -> str:
+    """Derive the SSE stream base URL by prepending ``stream.`` to the hostname.
+
+    Mirrors sdk-node's ``deriveStreamUrl`` and sdk-ruby's ``Options.derive_stream_url``:
+
+        https://primary.quonfig.com       -> https://stream.primary.quonfig.com
+        http://localhost:6550             -> http://stream.localhost:6550
+        https://api.example.com/base      -> https://stream.api.example.com/base
+
+    Scheme, port, and path are preserved.
+    """
+    parts = urlsplit(api_url)
+    if not parts.hostname:
+        return api_url
+    userinfo = ""
+    if parts.username:
+        userinfo = parts.username
+        if parts.password:
+            userinfo += f":{parts.password}"
+        userinfo += "@"
+    host = f"stream.{parts.hostname}"
+    netloc = f"{userinfo}{host}"
+    if parts.port is not None:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 if TYPE_CHECKING:
     from .store import ConfigStore
@@ -48,6 +76,9 @@ class Transport:
 
     def _current_url(self) -> str:
         return self.api_urls[self._current_url_idx % len(self.api_urls)]
+
+    def _current_stream_url(self) -> str:
+        return derive_stream_url(self._current_url())
 
     def _failover(self) -> None:
         self._current_url_idx += 1
