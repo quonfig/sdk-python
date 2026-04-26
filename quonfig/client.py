@@ -227,10 +227,14 @@ class Quonfig:
         ``_wait_initialized`` would never see an unset event.
         """
         assert self._transport is not None
+        # Bind to a local so mypy narrows inside the nested closure below;
+        # `self._transport` is reread through `self` and would lose its
+        # narrowing across the closure boundary.
+        transport = self._transport
 
         def _initial_fetch() -> None:
             try:
-                envelope = self._transport.fetch()
+                envelope = transport.fetch()
                 if envelope is not None:
                     self._store.update(envelope)
             except Exception as e:
@@ -245,11 +249,11 @@ class Quonfig:
         # Start SSE for live updates
         from .sse import SSEClient
 
-        sse = SSEClient(self._transport, self._store, self._shutdown)
+        sse = SSEClient(transport, self._store, self._shutdown)
         sse.start()
 
         # Start polling as fallback
-        self._transport.start_polling(self._store, self._shutdown)
+        transport.start_polling(self._store, self._shutdown)
 
         # Start telemetry
         if self._telemetry is not None:
