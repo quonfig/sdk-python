@@ -198,6 +198,12 @@ def _post_evaluation_summary(agg: EvaluationSummaryCollector) -> Optional[List[d
                 "count": counter.count,
                 "reason": counter.reason,
             }
+            # Always include selected_value (the proto-style {<wrapperKey>:
+            # value} dict) — the api-telemetry server expects it on every
+            # eval-summary row, and the cross-SDK YAML now asserts it
+            # uniformly. Drop it only if the collector returned None.
+            if counter.selected_value is not None:
+                row["selected_value"] = counter.selected_value
             summary_block: Dict[str, Any] = {
                 "config_row_index": counter.config_row_index,
                 "conditional_value_index": counter.conditional_value_index,
