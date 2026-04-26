@@ -163,15 +163,16 @@ class Quonfig:
         # sdk_key (the integration test points at staging-prefab.cloud
         # specifically to exercise an init-timeout, not to fetch real
         # configs). When only datadir is configured, no transport is needed.
+        # The request timeout is intentionally independent of
+        # initialization_timeout_sec: capping it at a sub-second
+        # init-timeout would surface a tiny init as a generic
+        # `requests.Timeout` from the background fetch instead of letting
+        # `_wait_initialized` raise `QuonfigInitTimeoutError`.
         self._transport: Optional[Transport] = None
         if prefab_api_url or (not self._datadir and self._sdk_key):
             self._transport = Transport(
                 api_urls=self._api_urls,
                 sdk_key=self._sdk_key,
-                # Cap the underlying request timeout at the init timeout so
-                # a tiny `initialization_timeout_sec` actually surfaces as
-                # the test suite expects.
-                timeout=min(10.0, self._init_timeout) if self._init_timeout > 0 else 10.0,
             )
 
     # ------------------------------------------------------------------
@@ -588,6 +589,11 @@ class Quonfig:
         if self._telemetry is not None:
             try:
                 self._telemetry.stop()
+            except Exception:
+                pass
+        if self._transport is not None:
+            try:
+                self._transport.close()
             except Exception:
                 pass
 

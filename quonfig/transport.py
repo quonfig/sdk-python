@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import threading
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -10,6 +11,8 @@ from urllib.parse import urlsplit, urlunsplit
 import requests  # type: ignore[import-untyped]
 
 from .types import ConfigEnvelope
+
+_LOG = logging.getLogger(__name__)
 
 
 def derive_stream_url(api_url: str) -> str:
@@ -82,6 +85,10 @@ class Transport:
     def _failover(self) -> None:
         self._current_url_idx += 1
 
+    def close(self) -> None:
+        """Release the underlying ``requests.Session``'s connection pool."""
+        self._session.close()
+
     def fetch(self, etag: Optional[str] = None) -> Optional[ConfigEnvelope]:
         """
         Fetch configs from API.
@@ -126,8 +133,10 @@ class Transport:
                     envelope = self.fetch(etag=etag)
                     if envelope is not None:
                         store.update(envelope)
-                except Exception:
-                    pass  # Polling errors are non-fatal; SSE is primary path
+                except Exception as e:
+                    # Polling errors are non-fatal; SSE is the primary path.
+                    # Log so they're visible to operators triaging stale data.
+                    _LOG.debug("Quonfig poll iteration failed: %s: %s", type(e).__name__, e)
 
         t = threading.Thread(target=_poll_loop, daemon=True, name="quonfig-poll")
         t.start()

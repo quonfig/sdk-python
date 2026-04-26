@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import threading
 from typing import Optional
@@ -11,6 +12,8 @@ import sseclient  # type: ignore
 from .store import ConfigStore
 from .transport import Transport
 from .types import ConfigEnvelope
+
+_LOG = logging.getLogger(__name__)
 
 
 class SSEClient:
@@ -51,11 +54,20 @@ class SSEClient:
                         try:
                             envelope = ConfigEnvelope.from_dict(json.loads(event.data))
                             self.store.update(envelope)
-                        except Exception:
-                            pass
-            except Exception:
+                        except Exception as e:
+                            _LOG.warning(
+                                "Quonfig SSE: dropping malformed event: %s: %s",
+                                type(e).__name__,
+                                e,
+                            )
+            except Exception as e:
                 if self.shutdown_event.is_set():
                     break
+                _LOG.debug(
+                    "Quonfig SSE connection error, reconnecting: %s: %s",
+                    type(e).__name__,
+                    e,
+                )
                 # Exponential backoff with jitter
                 self.shutdown_event.wait(backoff)
                 backoff = min(backoff * 2 * (0.8 + 0.4 * random.random()), 60.0)
