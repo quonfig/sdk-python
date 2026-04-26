@@ -5,11 +5,8 @@
 
 from __future__ import annotations
 
-import os
+from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator
 
-import pytest
-
-from .aggregator_helpers import build_aggregator, feed_aggregator, aggregator_post
 
 # reports context shape aggregation
 def test_reports_context_shape_aggregation() -> None:
@@ -36,4 +33,4 @@ def test_reports_example_contexts() -> None:
 def test_example_contexts_without_key_are_not_reported() -> None:
     agg = build_aggregator('example_contexts', {})
     feed_aggregator(agg, 'example_contexts', {'user': {'name': 'michael', 'age': 38}, 'device': {'mobile': False}, 'team': {'id': 3.5}}, contexts={})
-    assert aggregator_post(agg, 'example_contexts', endpoint='/api/v1/telemetry') == None
+    assert aggregator_post(agg, 'example_contexts', endpoint='/api/v1/telemetry') is None

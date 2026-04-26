@@ -5,11 +5,8 @@
 
 from __future__ import annotations
 
-import os
+from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator
 
-import pytest
-
-from .aggregator_helpers import build_aggregator, feed_aggregator, aggregator_post
 
 # reason is STATIC for config with no targeting rules
 def test_reason_is_static_for_config_with_no_targeting_rules() -> None:
@@ -127,7 +124,7 @@ def test_example_contexts_deduplicates_by_key_value() -> None:
 def test_telemetry_disabled_emits_nothing() -> None:
     agg = build_aggregator('evaluation_summary', {'collect_evaluation_summaries': False, 'context_upload_mode': ':none'})
     feed_aggregator(agg, 'evaluation_summary', {'keys': ['brand.new.string']}, contexts={})
-    assert aggregator_post(agg, 'evaluation_summary', endpoint='/api/v1/telemetry') == None
+    assert aggregator_post(agg, 'evaluation_summary', endpoint='/api/v1/telemetry') is None
 
 
 # shapes only mode reports shapes but not examples
@@ -141,11 +138,11 @@ def test_shapes_only_mode_reports_shapes_but_not_examples() -> None:
 def test_log_level_evaluations_are_excluded_from_telemetry() -> None:
     agg = build_aggregator('evaluation_summary', {})
     feed_aggregator(agg, 'evaluation_summary', {'keys': ['log-level.prefab.criteria_evaluator']}, contexts={})
-    assert aggregator_post(agg, 'evaluation_summary', endpoint='/api/v1/telemetry') == None
+    assert aggregator_post(agg, 'evaluation_summary', endpoint='/api/v1/telemetry') is None
 
 
 # empty context produces no context telemetry
 def test_empty_context_produces_no_context_telemetry() -> None:
     agg = build_aggregator('context_shape', {})
     feed_aggregator(agg, 'context_shape', {}, contexts={})
-    assert aggregator_post(agg, 'context_shape', endpoint='/api/v1/context-shapes') == None
+    assert aggregator_post(agg, 'context_shape', endpoint='/api/v1/context-shapes') is None

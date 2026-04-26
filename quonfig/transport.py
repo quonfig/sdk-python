@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import threading
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import TYPE_CHECKING, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -38,9 +40,6 @@ def derive_stream_url(api_url: str) -> str:
 
 if TYPE_CHECKING:
     from .store import ConfigStore
-
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
 
 try:
     QUONFIG_VERSION = _pkg_version("quonfig")

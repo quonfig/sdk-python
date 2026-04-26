@@ -12,8 +12,6 @@ import threading
 from typing import Any, List
 from unittest.mock import patch
 
-import pytest
-
 from quonfig.sse import SSEClient
 from quonfig.store import ConfigStore
 from quonfig.transport import Transport, derive_stream_url

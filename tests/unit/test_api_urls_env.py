@@ -11,7 +11,7 @@ import warnings
 
 import pytest
 
-from quonfig.client import Quonfig, _DEFAULT_API_URL
+from quonfig.client import _DEFAULT_API_URL, Quonfig
 
 
 def test_reads_plural_urls_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
