@@ -57,8 +57,12 @@ class Quonfig:
         sdk_key: Optional[str] = None,
         *,
         api_urls: Optional[List[str]] = None,
-        init_timeout: float = 10.0,
-        on_init_failure: str = "raise",  # "raise" | "return_zero_value"
+        init_timeout: Optional[float] = None,
+        # Cross-SDK alias for `init_timeout` — mirrors the YAML
+        # `client_overrides.initialization_timeout_sec` knob the shared
+        # integration suite uses. Wins over `init_timeout` if both are set.
+        initialization_timeout_sec: Optional[float] = None,
+        on_init_failure: str = "raise",  # "raise" | "return" | "return_zero_value"
         global_context: Optional[Contexts] = None,
         environment: Optional[str] = None,
         telemetry_url: Optional[str] = None,
@@ -67,15 +71,27 @@ class Quonfig:
         context_upload_mode: str = "periodic_example",
         on_no_default: str = "error",  # "error" | "warn" | "ignore"
         datadir: Optional[str] = None,
+        # Cross-SDK alias: when set, behaves as a single-element `api_urls`.
+        # When passed alongside `datadir` the HTTP source wins, matching the
+        # YAML suite's expectation that `prefab_api_url` + a tiny
+        # `initialization_timeout_sec` actually exercises an init timeout.
+        prefab_api_url: Optional[str] = None,
         logger_key: Optional[str] = None,
     ) -> None:
         # Resolve configuration from params or env vars
         self._sdk_key = sdk_key or os.environ.get("QUONFIG_SDK_KEY", "")
         self._environment = environment or os.environ.get("QUONFIG_ENVIRONMENT", "")
-        self._datadir = datadir or os.environ.get("QUONFIG_DIR")
+        # `prefab_api_url` (cross-SDK) overrides `datadir` so the test suite's
+        # init-timeout cases can exercise real HTTP behavior even when the
+        # datadir is also passed through.
+        self._datadir = (
+            None if prefab_api_url else (datadir or os.environ.get("QUONFIG_DIR"))
+        )
 
         if api_urls:
             self._api_urls = api_urls
+        elif prefab_api_url:
+            self._api_urls = [prefab_api_url]
         else:
             env_urls = os.environ.get("QUONFIG_API_URLS", "")
             if not env_urls:
@@ -98,8 +114,22 @@ class Quonfig:
         self._telemetry_url = telemetry_url or os.environ.get(
             "QUONFIG_TELEMETRY_URL", _DEFAULT_TELEMETRY_URL
         )
-        self._init_timeout = init_timeout
-        self._on_init_failure = on_init_failure
+        # `initialization_timeout_sec` is the cross-SDK alias and wins; fall
+        # back to `init_timeout` and finally the historical 10s default.
+        if initialization_timeout_sec is not None:
+            self._init_timeout = float(initialization_timeout_sec)
+        elif init_timeout is not None:
+            self._init_timeout = float(init_timeout)
+        else:
+            self._init_timeout = 10.0
+
+        # Accept the YAML keyword form (`:return`) and the cross-SDK
+        # short alias (`return`) on top of the historical
+        # `return_zero_value`.
+        normalized_on_init = (on_init_failure or "raise").lstrip(":").lower()
+        if normalized_on_init == "return":
+            normalized_on_init = "return_zero_value"
+        self._on_init_failure = normalized_on_init
         self._on_no_default = on_no_default
         self._global_context: Contexts = global_context or {}
         self._logger_key = logger_key
@@ -128,12 +158,20 @@ class Quonfig:
             except Exception:
                 pass  # Telemetry is optional
 
-        # Transport (only if not datadir mode)
+        # Transport: stand it up whenever the caller wired an HTTP source,
+        # even in the explicit-`prefab_api_url` case where there's no
+        # sdk_key (the integration test points at staging-prefab.cloud
+        # specifically to exercise an init-timeout, not to fetch real
+        # configs). When only datadir is configured, no transport is needed.
         self._transport: Optional[Transport] = None
-        if not self._datadir and self._sdk_key:
+        if prefab_api_url or (not self._datadir and self._sdk_key):
             self._transport = Transport(
                 api_urls=self._api_urls,
                 sdk_key=self._sdk_key,
+                # Cap the underlying request timeout at the init timeout so
+                # a tiny `initialization_timeout_sec` actually surfaces as
+                # the test suite expects.
+                timeout=min(10.0, self._init_timeout) if self._init_timeout > 0 else 10.0,
             )
 
     # ------------------------------------------------------------------
@@ -142,10 +180,14 @@ class Quonfig:
 
     def init(self) -> "Quonfig":
         """
-        Block until first config load completes (or timeout).
+        Kick off the first config load.
 
-        Raises QuonfigInitTimeoutError if init_timeout exceeded and
-        on_init_failure="raise".
+        For datadir mode the load is synchronous and ``init()`` returns
+        once the store is populated. For HTTP mode the fetch runs on a
+        background thread so a tiny ``init_timeout`` can be enforced
+        lazily by ``_wait_initialized`` on the first getter call —
+        raising ``QuonfigInitTimeoutError`` when ``on_init_failure``
+        is ``"raise"``.
         """
         if self._datadir:
             self._load_from_datadir()
@@ -177,18 +219,28 @@ class Quonfig:
             self._telemetry.start()
 
     def _load_from_api(self) -> None:
-        """Start background SSE thread; initial load done via polling thread."""
+        """Run the initial fetch on a background thread.
+
+        Doing the fetch off the calling thread is what lets a small
+        ``init_timeout`` actually surface as ``QuonfigInitTimeoutError``
+        — otherwise ``init()`` would block on ``Transport.fetch`` and
+        ``_wait_initialized`` would never see an unset event.
+        """
         assert self._transport is not None
 
-        # Do an initial blocking fetch to populate the store
-        try:
-            envelope = self._transport.fetch()
-            if envelope is not None:
-                self._store.update(envelope)
-            self._finish_init()
-        except Exception as e:
-            logger.warning("Initial fetch failed: %s — starting SSE anyway", e)
-            self._finish_init()
+        def _initial_fetch() -> None:
+            try:
+                envelope = self._transport.fetch()
+                if envelope is not None:
+                    self._store.update(envelope)
+            except Exception as e:
+                logger.warning("Initial fetch failed: %s — starting SSE anyway", e)
+            finally:
+                self._finish_init()
+
+        threading.Thread(
+            target=_initial_fetch, daemon=True, name="quonfig-init"
+        ).start()
 
         # Start SSE for live updates
         from .sse import SSEClient
