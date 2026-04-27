@@ -4,7 +4,7 @@ from typing import Any, List, Optional
 
 from .client import _NO_DEFAULT, Quonfig
 from .context import merge_contexts
-from .types import Contexts
+from .types import Contexts, EvaluationDetails
 
 
 class BoundQuonfig:
@@ -49,6 +49,28 @@ class BoundQuonfig:
 
     def is_feature_enabled(self, key: str, default: bool = False) -> bool:
         return self._client.is_feature_enabled(key, default=default, contexts=self._contexts)
+
+    # ------------------------------------------------------------------
+    # *_details API
+    # ------------------------------------------------------------------
+
+    def get_bool_details(self, key: str) -> EvaluationDetails[bool]:
+        return self._client.get_bool_details(key, contexts=self._contexts)
+
+    def get_string_details(self, key: str) -> EvaluationDetails[str]:
+        return self._client.get_string_details(key, contexts=self._contexts)
+
+    def get_int_details(self, key: str) -> EvaluationDetails[int]:
+        return self._client.get_int_details(key, contexts=self._contexts)
+
+    def get_float_details(self, key: str) -> EvaluationDetails[float]:
+        return self._client.get_float_details(key, contexts=self._contexts)
+
+    def get_string_list_details(self, key: str) -> EvaluationDetails[List[str]]:
+        return self._client.get_string_list_details(key, contexts=self._contexts)
+
+    def get_json_details(self, key: str) -> EvaluationDetails[Any]:
+        return self._client.get_json_details(key, contexts=self._contexts)
 
     def should_log(
         self,

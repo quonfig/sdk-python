@@ -1,11 +1,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
 
 # Type alias for contexts: namespace -> property_name -> value
 Contexts = Dict[str, Dict[str, Any]]
 ContextValue = Union[str, int, float, bool, list, None]
+
+T = TypeVar("T")
+
+
+@dataclass
+class EvaluationDetails(Generic[T]):
+    """Result of a ``get_*_details`` evaluation.
+
+    Includes the resolved value (when available) plus a ``reason`` describing
+    how the value was selected, along with optional ``error_code`` /
+    ``error_message`` fields populated when ``reason == "ERROR"``.
+
+    Mirrors the cross-SDK contract for the ``*_details`` API and aligns with
+    OpenFeature's ``StandardResolutionReasons`` subset so providers can pass
+    the reason through verbatim.
+    """
+
+    value: Optional[T]
+    # "STATIC" | "TARGETING_MATCH" | "SPLIT" | "DEFAULT" | "ERROR"
+    reason: str
+    # "FLAG_NOT_FOUND" | "TYPE_MISMATCH" | "GENERAL" — only set when
+    # ``reason == "ERROR"``.
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
 
 # Top-level context name under which Quonfig.should_log(logger_path=...)
 # injects the logger path for per-logger rule evaluation. Rules written

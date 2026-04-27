@@ -30,11 +30,64 @@ from .types import (
     QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP,
     QUONFIG_SDK_LOGGING_CONTEXT_NAME,
     Contexts,
+    EvaluationDetails,
 )
 
 logger = logging.getLogger(__name__)
 
 _NO_DEFAULT = object()
+
+
+def _coerce_value(value: Any, expected_type: str) -> tuple[Any, bool]:
+    """Coerce a resolved native value to the caller's expected type.
+
+    Returns ``(coerced, True)`` on success, ``(None, False)`` on a hard
+    type mismatch. ``expected_type`` mirrors the evaluator's value-type
+    vocabulary plus an "any" passthrough for ``get_json``.
+
+    Behavior matches the existing ``get_int`` / ``get_string`` permissive
+    path: numeric strings coerce to ints/floats, non-bool values coerce
+    to bool only via ``bool()`` semantics for the existing ``get_bool``,
+    and lists go through ``get_string_list`` style ``str()`` coercion.
+    """
+    if expected_type == "any":
+        return value, True
+    if expected_type == "bool":
+        if isinstance(value, bool):
+            return value, True
+        if isinstance(value, str):
+            lowered = value.lower()
+            if lowered == "true":
+                return True, True
+            if lowered == "false":
+                return False, True
+        return None, False
+    if expected_type == "string":
+        if isinstance(value, str):
+            return value, True
+        # Match get_string's permissive str() coercion.
+        return str(value), True
+    if expected_type == "int":
+        if isinstance(value, bool):
+            # bool is a subclass of int in Python — reject explicitly so
+            # asking for an int doesn't silently accept True/False.
+            return None, False
+        try:
+            return int(value), True
+        except (TypeError, ValueError):
+            return None, False
+    if expected_type == "float":
+        if isinstance(value, bool):
+            return None, False
+        try:
+            return float(value), True
+        except (TypeError, ValueError):
+            return None, False
+    if expected_type == "string_list":
+        if isinstance(value, list):
+            return [str(x) for x in value], True
+        return None, False
+    return value, True
 
 # Default API URL
 _DEFAULT_API_URL = "https://primary.quonfig.com"
@@ -323,6 +376,122 @@ class Quonfig:
 
         return resolved
 
+    def _telemetry_reason_to_string(self, telemetry_reason: int, eval_reason: str) -> str:
+        """Translate the internal telemetry-reason code to the OF-aligned
+        EvaluationDetails ``reason`` string. Falls back to ``EvalResult.reason``
+        when the telemetry code is unset (0)."""
+        if telemetry_reason == 1:
+            return "STATIC"
+        if telemetry_reason == 2:
+            return "TARGETING_MATCH"
+        if telemetry_reason == 3:
+            return "SPLIT"
+        # telemetry_reason == 0 — derive from the evaluator's coarse reason.
+        # RULE_MATCH is the env-rule-matched path; treat as TARGETING_MATCH.
+        if eval_reason == "RULE_MATCH" or eval_reason == "DEFAULT":
+            return "TARGETING_MATCH"
+        return "TARGETING_MATCH"
+
+    def _evaluate_details(
+        self,
+        key: str,
+        expected_type: str,
+        contexts: Optional[Contexts] = None,
+    ) -> EvaluationDetails[Any]:
+        """Shared backbone for the public ``*_details`` getters.
+
+        Returns an ``EvaluationDetails`` describing how the value was selected
+        — STATIC / TARGETING_MATCH / SPLIT for successful evaluations, DEFAULT
+        when the flag exists but no rule matched, and ERROR (with an
+        ``error_code``) for FLAG_NOT_FOUND, TYPE_MISMATCH, and unexpected
+        failures. Never raises — callers can rely on a return value in all
+        cases.
+        """
+        try:
+            self._wait_initialized()
+            assert self._evaluator is not None
+            merged = self._effective_contexts(contexts)
+            result = self._evaluator.evaluate(key, merged)
+
+            # Distinguish flag-not-in-store (FLAG_NOT_FOUND) from
+            # flag-exists-but-no-rule-matched (DEFAULT). The evaluator returns
+            # MISSING in both cases, so we use config_id as the discriminator:
+            # it is only ``None`` when the store had no entry for this key.
+            if result.reason == "MISSING":
+                if result.config_id is None:
+                    return EvaluationDetails(
+                        value=None,
+                        reason="ERROR",
+                        error_code="FLAG_NOT_FOUND",
+                        error_message=f"Flag '{key}' not found",
+                    )
+                return EvaluationDetails(value=None, reason="DEFAULT")
+
+            if result.value is None:
+                # Rule matched but produced no Value — treat as DEFAULT.
+                return EvaluationDetails(value=None, reason="DEFAULT")
+
+            try:
+                resolved = self._resolver.resolve(
+                    result.value, merged, config_key=key
+                )
+            except (QuonfigEnvVarNotSetError, QuonfigDecryptionError) as e:
+                return EvaluationDetails(
+                    value=None,
+                    reason="ERROR",
+                    error_code="GENERAL",
+                    error_message=str(e),
+                )
+            except Exception as e:
+                logger.warning("Error resolving value for key '%s': %s", key, e)
+                return EvaluationDetails(
+                    value=None,
+                    reason="ERROR",
+                    error_code="GENERAL",
+                    error_message=str(e),
+                )
+
+            # Record telemetry for successful resolutions, mirroring _get so
+            # the *_details path produces the same eval-summary aggregation as
+            # the original getters.
+            if self._telemetry is not None:
+                result.resolved_value = resolved
+                result.reportable_value = compute_reportable_value(result.value)
+                try:
+                    self._telemetry.record_evaluation(result)
+                    if merged:
+                        self._telemetry.record_context(merged)
+                except Exception:
+                    pass  # telemetry must never break a getter
+
+            reason_str = self._telemetry_reason_to_string(
+                result.telemetry_reason, result.reason
+            )
+
+            # Type coercion. We try to coerce the resolved value to the
+            # caller's expected_type — surfacing TYPE_MISMATCH on failure
+            # rather than letting a string sneak through a bool channel.
+            coerced, ok = _coerce_value(resolved, expected_type)
+            if not ok:
+                return EvaluationDetails(
+                    value=None,
+                    reason="ERROR",
+                    error_code="TYPE_MISMATCH",
+                    error_message=(
+                        f"Flag '{key}' could not be coerced to {expected_type}; "
+                        f"got {type(resolved).__name__}"
+                    ),
+                )
+
+            return EvaluationDetails(value=coerced, reason=reason_str)
+        except Exception as e:  # noqa: BLE001 — *_details must never raise
+            return EvaluationDetails(
+                value=None,
+                reason="ERROR",
+                error_code="GENERAL",
+                error_message=str(e),
+            )
+
     def _handle_missing(self, key: str, default: Any) -> Any:
         if default is not _NO_DEFAULT:
             return default
@@ -470,6 +639,64 @@ class Quonfig:
                 return False
         # Non-boolean types (int, float, list, dict, etc.) return False
         return False
+
+    # ------------------------------------------------------------------
+    # *_details API — value + reason + error_code, no exceptions
+    # ------------------------------------------------------------------
+
+    def get_bool_details(
+        self,
+        key: str,
+        contexts: Optional[Contexts] = None,
+    ) -> EvaluationDetails[bool]:
+        """Resolve a bool flag and surface the evaluation reason.
+
+        Never raises. Errors come back as ``reason="ERROR"`` with an
+        ``error_code`` of ``"FLAG_NOT_FOUND"``, ``"TYPE_MISMATCH"``, or
+        ``"GENERAL"``.
+        """
+        return self._evaluate_details(key, "bool", contexts)
+
+    def get_string_details(
+        self,
+        key: str,
+        contexts: Optional[Contexts] = None,
+    ) -> EvaluationDetails[str]:
+        """Resolve a string flag and surface the evaluation reason."""
+        return self._evaluate_details(key, "string", contexts)
+
+    def get_int_details(
+        self,
+        key: str,
+        contexts: Optional[Contexts] = None,
+    ) -> EvaluationDetails[int]:
+        """Resolve an int flag and surface the evaluation reason."""
+        return self._evaluate_details(key, "int", contexts)
+
+    def get_float_details(
+        self,
+        key: str,
+        contexts: Optional[Contexts] = None,
+    ) -> EvaluationDetails[float]:
+        """Resolve a float flag and surface the evaluation reason."""
+        return self._evaluate_details(key, "float", contexts)
+
+    def get_string_list_details(
+        self,
+        key: str,
+        contexts: Optional[Contexts] = None,
+    ) -> EvaluationDetails[List[str]]:
+        """Resolve a string-list flag and surface the evaluation reason."""
+        return self._evaluate_details(key, "string_list", contexts)
+
+    def get_json_details(
+        self,
+        key: str,
+        contexts: Optional[Contexts] = None,
+    ) -> EvaluationDetails[Any]:
+        """Resolve a JSON flag (or any flag, untyped) and surface the
+        evaluation reason."""
+        return self._evaluate_details(key, "any", contexts)
 
     @property
     def logger_key(self) -> Optional[str]:

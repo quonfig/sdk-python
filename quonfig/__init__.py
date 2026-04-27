@@ -13,11 +13,13 @@ from .types import (
     QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP,
     QUONFIG_SDK_LOGGING_CONTEXT_NAME,
     Contexts,
+    EvaluationDetails,
 )
 
 __all__ = [
     "Quonfig",
     "BoundQuonfig",
+    "EvaluationDetails",
     "QuonfigError",
     "QuonfigKeyNotFoundError",
     "QuonfigInitTimeoutError",
