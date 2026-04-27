@@ -13,6 +13,13 @@ class EvaluationCounter:
     count: int
     reason: int
     weighted_value_index: Optional[int] = None
+    # ``selected_value`` is what goes on the wire — for confidential or
+    # encrypted values that's the redacted ``{"string": "*****abc12"}`` form.
+    # ``display_value`` keeps the original (resolved/decrypted) marshaled
+    # value so post-body shapers can surface the unredacted ``value`` /
+    # ``value_type`` fields alongside the redacted wire ``selected_value``.
+    # Equal to ``selected_value`` when no redaction was applied.
+    display_value: Any = None
 
 
 @dataclass

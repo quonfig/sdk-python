@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from quonfig.datadir import load_datadir
 from quonfig.evaluator import Evaluator
-from quonfig.resolver import Resolver
+from quonfig.resolver import Resolver, compute_reportable_value
 from quonfig.store import ConfigStore
 from quonfig.telemetry.collectors import (
     ContextShapeCollector,
@@ -165,6 +165,7 @@ def _evaluate_for_telemetry(
     except Exception:
         return None
     result.resolved_value = resolved
+    result.reportable_value = compute_reportable_value(result.value)
     return result
 
 
@@ -190,11 +191,19 @@ def _post_evaluation_summary(agg: EvaluationSummaryCollector) -> Optional[List[d
     for _idx, summary in ordered:
         cfg_type = _config_type_label(summary.type)
         for counter in summary.counters:
+            # ``value`` / ``value_type`` reflect the unredacted resolved
+            # value with its original type tag. ``selected_value`` carries
+            # the redacted wire form for confidential values (otherwise
+            # equal to display_value). Pre-redaction code paths set
+            # display_value=None, so fall back to selected_value.
+            display = counter.display_value
+            if display is None:
+                display = counter.selected_value
             row: Dict[str, Any] = {
                 "key": summary.key,
                 "type": cfg_type,
-                "value": _unwrap_selected_value(counter.selected_value),
-                "value_type": _value_type_label(counter.selected_value),
+                "value": _unwrap_selected_value(display),
+                "value_type": _value_type_label(display),
                 "count": counter.count,
                 "reason": counter.reason,
             }

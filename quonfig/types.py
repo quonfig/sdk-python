@@ -179,3 +179,10 @@ class EvalResult:
     weighted_value_index: int = -1
     telemetry_reason: int = 0   # 1=STATIC 2=TARGETING_MATCH 3=SPLIT
     resolved_value: Any = None  # set by client after resolver runs
+    # Redacted form for telemetry — set when value.confidential or
+    # value.decrypt_with is true. Pattern matches Reforge SDK's
+    # reportable_value (config_value_unwrapper.py:69-78): the wire
+    # selected_value sent to api-telemetry is the redacted string
+    # f"*****{md5(raw).hexdigest()[:5]}", while the unredacted resolved
+    # value still flows through resolved_value for application use.
+    reportable_value: Any = None

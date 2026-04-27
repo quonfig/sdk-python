@@ -1,12 +1,41 @@
 from __future__ import annotations
 
+import hashlib
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 import mmh3
 
 from .exceptions import QuonfigDecryptionError, QuonfigEnvVarNotSetError, QuonfigValueTypeError
 from .types import Contexts, Value
+
+# Mirrors Reforge SDK config_value_unwrapper.py:24 — kept identical so
+# the redacted format is byte-for-byte compatible across SDKs.
+CONFIDENTIAL_PREFIX = "*****"
+
+
+def compute_reportable_value(value: Value) -> Optional[str]:
+    """Return the redacted telemetry form for a confidential / encrypted value.
+
+    Matches Reforge SDK ``reportable_wrapped_value`` (sdk-python
+    ``config_value_unwrapper.py:69-78``):
+
+    * Trigger: ``value.confidential`` is True OR ``value.decrypt_with`` is set.
+    * Hash input: the raw ``value.value`` as a string. For ``decryptWith`` this
+      is the **ciphertext** as stored in the JSON config — the hash is NOT
+      computed over the decrypted plaintext. For plain ``confidential: true``
+      it's the plaintext as stored.
+    * Output: ``f"*****{md5(raw).hexdigest()[:5]}"`` (lowercase hex).
+
+    Returns ``None`` when the value should not be redacted.
+    """
+    if value is None:
+        return None
+    if not (value.confidential or value.decrypt_with):
+        return None
+    raw = value.value
+    digest = hashlib.md5(str(raw).encode()).hexdigest()[:5]
+    return f"{CONFIDENTIAL_PREFIX}{digest}"
 
 if TYPE_CHECKING:
     from .store import ConfigStore

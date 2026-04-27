@@ -48,7 +48,15 @@ class EvaluationSummaryCollector:
             return
 
         resolved = result.resolved_value
-        selected_value = marshal_selected_value(resolved)
+        display_value = marshal_selected_value(resolved)
+        # Wire selected_value is the redacted form for confidential /
+        # encrypted values. Mirrors Reforge SDK's reportable_wrapped_value
+        # (sdk_reforge/config_value_unwrapper.py:69-78). When not redacted,
+        # selected_value == display_value.
+        if result.reportable_value is not None:
+            selected_value = marshal_selected_value(result.reportable_value)
+        else:
+            selected_value = display_value
 
         wv_idx = result.weighted_value_index if result.weighted_value_index >= 0 else None
         counter_key = (
@@ -70,6 +78,7 @@ class EvaluationSummaryCollector:
                     "conditional_value_index": result.row_index or 0,
                     "config_row_index": 0,
                     "selected_value": selected_value,
+                    "display_value": display_value,
                     "reason": result.telemetry_reason,
                     "weighted_value_index": wv_idx,
                     "count": 0,
@@ -97,6 +106,7 @@ class EvaluationSummaryCollector:
                     count=meta["count"],
                     reason=meta["reason"],
                     weighted_value_index=meta["weighted_value_index"],
+                    display_value=meta.get("display_value", meta["selected_value"]),
                 )
                 for meta in group.values()
             ]

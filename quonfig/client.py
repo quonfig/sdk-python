@@ -23,7 +23,7 @@ from .exceptions import (
     QuonfigInitTimeoutError,
     QuonfigKeyNotFoundError,
 )
-from .resolver import LOG_LEVEL_ORDER, Resolver
+from .resolver import LOG_LEVEL_ORDER, Resolver, compute_reportable_value
 from .store import ConfigStore
 from .transport import Transport
 from .types import (
@@ -313,6 +313,10 @@ class Quonfig:
         # Record telemetry after resolving so resolved_value is available
         if self._telemetry is not None:
             result.resolved_value = resolved
+            # Redact selectedValue for confidential / encrypted values before
+            # the eval-summary aggregator sees it (matches Reforge SDK
+            # reportable_wrapped_value pattern).
+            result.reportable_value = compute_reportable_value(result.value)
             self._telemetry.record_evaluation(result)
             if merged:
                 self._telemetry.record_context(merged)

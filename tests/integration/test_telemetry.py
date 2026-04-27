@@ -146,3 +146,17 @@ def test_empty_context_produces_no_context_telemetry() -> None:
     agg = build_aggregator('context_shape', {})
     feed_aggregator(agg, 'context_shape', {}, contexts={})
     assert aggregator_post(agg, 'context_shape', endpoint='/api/v1/context-shapes') is None
+
+
+# confidential plain string is redacted in selectedValue
+def test_confidential_plain_string_is_redacted_in_selectedvalue() -> None:
+    agg = build_aggregator('evaluation_summary', {})
+    feed_aggregator(agg, 'evaluation_summary', {'keys': ['confidential.new.string']}, contexts={})
+    assert aggregator_post(agg, 'evaluation_summary', endpoint='/api/v1/telemetry') == [{'key': 'confidential.new.string', 'type': 'CONFIG', 'value': 'hello.world', 'value_type': 'string', 'count': 1, 'reason': 1, 'selected_value': {'string': '*****18aa7'}, 'summary': {'config_row_index': 0, 'conditional_value_index': 0}}]
+
+
+# confidential encrypted string is redacted using ciphertext hash
+def test_confidential_encrypted_string_is_redacted_using_ciphertext_hash() -> None:
+    agg = build_aggregator('evaluation_summary', {})
+    feed_aggregator(agg, 'evaluation_summary', {'keys': ['a.secret.config']}, contexts={})
+    assert aggregator_post(agg, 'evaluation_summary', endpoint='/api/v1/telemetry') == [{'key': 'a.secret.config', 'type': 'CONFIG', 'value': 'hello.world', 'value_type': 'string', 'count': 1, 'reason': 1, 'selected_value': {'string': '*****936c9'}, 'summary': {'config_row_index': 0, 'conditional_value_index': 0}}]
