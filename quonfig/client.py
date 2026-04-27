@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 _NO_DEFAULT = object()
 
 # Default API URL
-_DEFAULT_API_URL = "https://api.quonfig.com"
+_DEFAULT_API_URL = "https://primary.quonfig.com"
 _DEFAULT_TELEMETRY_URL = "https://telemetry.quonfig.com"
 
 

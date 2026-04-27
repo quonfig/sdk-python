@@ -114,7 +114,7 @@ client.init()
 | Param | Env var | Default |
 |-------|---------|---------|
 | `sdk_key` | `QUONFIG_SDK_KEY` | required for API mode |
-| `api_urls` | `QUONFIG_API_URLS` (comma-separated; `QUONFIG_API_URL` deprecated fallback) | `https://api.quonfig.com` |
+| `api_urls` | `QUONFIG_API_URLS` (comma-separated; `QUONFIG_API_URL` deprecated fallback) | `https://primary.quonfig.com` |
 | `environment` | `QUONFIG_ENVIRONMENT` | `""` |
 | `datadir` | `QUONFIG_DIR` | `None` |
 | `init_timeout` | -- | `10.0` |
