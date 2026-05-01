@@ -70,7 +70,7 @@ class Transport:
     def _headers(self, extra: Optional[dict] = None) -> dict:
         h = {
             "Authorization": self._auth_header(),
-            "X-Quonfig-SDK-Version": f"python/{QUONFIG_VERSION}",
+            "X-Quonfig-SDK-Version": f"python-{QUONFIG_VERSION}",
         }
         if extra:
             h.update(extra)

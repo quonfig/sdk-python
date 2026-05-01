@@ -94,7 +94,7 @@ class TelemetryReporter:
         headers = {
             "Authorization": f"Basic {credentials}",
             "Content-Type": "application/json",
-            "X-Quonfig-SDK-Version": f"python/{QUONFIG_VERSION}",
+            "X-Quonfig-SDK-Version": f"python-{QUONFIG_VERSION}",
         }
 
         backoff = 1.0
