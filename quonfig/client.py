@@ -4,7 +4,6 @@ import contextlib
 import logging
 import os
 import threading
-import warnings
 from typing import TYPE_CHECKING, Any, List, Optional
 
 if TYPE_CHECKING:
@@ -89,9 +88,24 @@ def _coerce_value(value: Any, expected_type: str) -> tuple[Any, bool]:
         return None, False
     return value, True
 
-# Default API URL
-_DEFAULT_API_URL = "https://primary.quonfig.com"
-_DEFAULT_TELEMETRY_URL = "https://telemetry.quonfig.com"
+# Default domain that governs the api/sse/telemetry URL defaults. A single
+# `QUONFIG_DOMAIN` env var lets ops point staging-hosted services at the
+# staging control plane without per-URL overrides — this mirrors the CLI
+# (`cli/src/util/domain-urls.ts`) and the rest of the SDK fleet.
+_DEFAULT_DOMAIN = "quonfig.com"
+
+
+def _derive_defaults(domain: str) -> tuple[List[str], str]:
+    """Derive (api_urls, telemetry_url) from a domain.
+
+    Two api_urls (primary + secondary) so the transport's failover loop has
+    something to fail over to. SSE URLs are derived from api_urls at use
+    time by `Transport._current_stream_url` — no separate domain-derived
+    SSE URL is stored.
+    """
+    api_urls = [f"https://primary.{domain}", f"https://secondary.{domain}"]
+    telemetry_url = f"https://telemetry.{domain}"
+    return api_urls, telemetry_url
 
 
 class Quonfig:
@@ -141,32 +155,21 @@ class Quonfig:
             None if prefab_api_url else (datadir or os.environ.get("QUONFIG_DIR"))
         )
 
+        # `QUONFIG_DOMAIN` governs both api_urls and telemetry_url defaults
+        # so a single env var flips a service between prod and staging.
+        # Explicit kwargs (`api_urls=`, `telemetry_url=`) remain the local-dev
+        # escape hatch and supersede the env-derived defaults.
+        domain = os.environ.get("QUONFIG_DOMAIN", "").strip() or _DEFAULT_DOMAIN
+        default_api_urls, default_telemetry_url = _derive_defaults(domain)
+
         if api_urls:
             self._api_urls = api_urls
         elif prefab_api_url:
             self._api_urls = [prefab_api_url]
         else:
-            env_urls = os.environ.get("QUONFIG_API_URLS", "")
-            if not env_urls:
-                legacy = os.environ.get("QUONFIG_API_URL", "")
-                if legacy:
-                    warnings.warn(
-                        "QUONFIG_API_URL is deprecated; use QUONFIG_API_URLS "
-                        "(comma-separated) to match the other Quonfig SDKs. "
-                        "Support for QUONFIG_API_URL will be removed in a "
-                        "future release.",
-                        DeprecationWarning,
-                        stacklevel=2,
-                    )
-                    env_urls = legacy
-            if env_urls:
-                self._api_urls = [u.strip() for u in env_urls.split(",") if u.strip()]
-            else:
-                self._api_urls = [_DEFAULT_API_URL]
+            self._api_urls = default_api_urls
 
-        self._telemetry_url = telemetry_url or os.environ.get(
-            "QUONFIG_TELEMETRY_URL", _DEFAULT_TELEMETRY_URL
-        )
+        self._telemetry_url = telemetry_url or default_telemetry_url
         # `initialization_timeout_sec` is the cross-SDK alias and wins; fall
         # back to `init_timeout` and finally the historical 10s default.
         if initialization_timeout_sec is not None:

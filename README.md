@@ -114,10 +114,28 @@ client.init()
 | Param | Env var | Default |
 |-------|---------|---------|
 | `sdk_key` | `QUONFIG_SDK_KEY` | required for API mode |
-| `api_urls` | `QUONFIG_API_URLS` (comma-separated; `QUONFIG_API_URL` deprecated fallback) | `https://primary.quonfig.com` |
+| `api_urls` | -- (derived from `QUONFIG_DOMAIN`) | `["https://primary.quonfig.com", "https://secondary.quonfig.com"]` |
+| `telemetry_url` | -- (derived from `QUONFIG_DOMAIN`) | `https://telemetry.quonfig.com` |
 | `environment` | `QUONFIG_ENVIRONMENT` | `""` |
 | `datadir` | `QUONFIG_DIR` | `None` |
 | `init_timeout` | -- | `10.0` |
 | `on_init_failure` | -- | `"raise"` |
 | `on_no_default` | -- | `"error"` |
 | `logger_key` | -- | `None` |
+
+### `QUONFIG_DOMAIN`
+
+A single env var governs the api, sse, and telemetry URL defaults:
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `QUONFIG_DOMAIN` | `quonfig.com` | Sets `api_urls` to `https://primary.${DOMAIN}` + `https://secondary.${DOMAIN}` and `telemetry_url` to `https://telemetry.${DOMAIN}`. SSE host is derived by prepending `stream.` to the api host. |
+
+Resolution order (highest wins):
+
+1. Explicit `api_urls=` / `telemetry_url=` kwargs (local-dev escape hatch).
+2. `QUONFIG_DOMAIN` env var.
+3. Hardcoded default `quonfig.com`.
+
+The previously-supported `QUONFIG_API_URL`, `QUONFIG_API_URLS`, and
+`QUONFIG_TELEMETRY_URL` env vars have been removed.
