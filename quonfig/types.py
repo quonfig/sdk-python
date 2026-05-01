@@ -81,7 +81,10 @@ class Rule:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Rule":
-        criteria = [Criterion.from_dict(c) for c in data.get("criteria", [])]
+        # `or []` (vs `, [])`) tolerates explicit JSON `null` for these list
+        # fields — the api-delivery wire shape sometimes serializes empties
+        # as null rather than omitting the key.
+        criteria = [Criterion.from_dict(c) for c in (data.get("criteria") or [])]
         v = data.get("value")
         return cls(
             criteria=criteria,
@@ -95,7 +98,7 @@ class RuleSet:
 
     @classmethod
     def from_dict(cls, data: dict) -> "RuleSet":
-        rules = [Rule.from_dict(r) for r in data.get("rules", [])]
+        rules = [Rule.from_dict(r) for r in (data.get("rules") or [])]
         return cls(rules=rules)
 
 
@@ -106,7 +109,7 @@ class Environment:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Environment":
-        rules = [Rule.from_dict(r) for r in data.get("rules", [])]
+        rules = [Rule.from_dict(r) for r in (data.get("rules") or [])]
         return cls(
             id=data["id"],
             rules=rules,
