@@ -7,27 +7,32 @@ on:
 
 jobs:
   test:
+    name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
     steps:
       - name: Checkout sdk-python
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           path: sdk-python
 
       - name: Checkout integration-test-data
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
           ref: main
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Poetry
-        uses: snok/install-poetry@v1
+        uses: snok/install-poetry@76e04a911780d5b312d89783f7b1cd627778900a  # v1
         with:
           version: "1.8.3"
           virtualenvs-create: true
@@ -48,3 +53,23 @@ jobs:
       - name: Test
         working-directory: sdk-python
         run: poetry run pytest
+
+      # Export the locked main-group deps to requirements.txt and pass to
+      # pip-audit. We do not audit the venv directly because the action would
+      # install pip-audit into the same venv and then flag its own transitive
+      # deps (e.g. filelock CVEs that don't ship to consumers).
+      - name: Export locked runtime deps
+        working-directory: sdk-python
+        run: poetry export --format requirements.txt --output requirements-audit.txt --without-hashes
+
+      # Soft-fail: the current locked deps surface CVEs in cryptography 43.x
+      # (CVE-2024-12797, CVE-2026-26007, CVE-2026-34073, fixed in 46.0.6) and
+      # requests 2.32.5 (CVE-2026-25645, fixed in 2.33.0). Fixing means a major
+      # cryptography bump (^42 -> ^46) plus a minor requests bump, which may
+      # impact 3.9 support and SDK consumers — a real source-side decision
+      # tracked in qfg-pyag. Drop continue-on-error once that resolves.
+      - name: Audit dependencies (pip-audit)
+        uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266  # v1.1.0
+        continue-on-error: true
+        with:
+          inputs: sdk-python/requirements-audit.txt
