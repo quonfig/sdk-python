@@ -15,8 +15,9 @@ the *packaging* contract.
 from __future__ import annotations
 
 import sys
-import tomllib
 from pathlib import Path
+
+import tomllib
 
 
 def _load_pyproject() -> dict:
