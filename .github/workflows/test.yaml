@@ -54,7 +54,12 @@ jobs:
         working-directory: sdk-python
         run: poetry run pytest
 
+      # Audit the installed (locked) deps in the poetry venv. pip-audit can't
+      # parse poetry-style pyproject.toml directly, so we point it at the venv
+      # poetry created at sdk-python/.venv (virtualenvs-in-project: true) and
+      # let it scan the resolved environment instead.
       - name: Audit dependencies (pip-audit)
         uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266  # v1.1.0
         with:
-          inputs: sdk-python/pyproject.toml
+          virtual-environment: sdk-python/.venv
+          local: true
