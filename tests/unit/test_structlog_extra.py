@@ -17,7 +17,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import tomllib
+import pytest
+
+# tomllib is stdlib on 3.11+. The base SDK supports 3.9+, but this is a
+# packaging-contract test — running it on any one matrix Python is enough.
+if sys.version_info < (3, 11):
+    pytest.skip("tomllib requires Python 3.11+", allow_module_level=True)
+
+import tomllib  # noqa: E402
 
 
 def _load_pyproject() -> dict:
