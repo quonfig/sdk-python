@@ -1167,7 +1167,10 @@ h2 = ["h2 (>=4,<5)"]
 socks = ["pysocks (>=1.5.6,!=1.5.7,<2.0)"]
 zstd = ["backports-zstd (>=1.0.0)"]
 
+[extras]
+structlog = ["structlog"]
+
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.9.2,<4.0"
-content-hash = "1e362ff9633b5fa7f963d0b21eb670f83540e304aa45410455586741a81538c9"
+content-hash = "838a014b3aa841f26212c93c36f61f8c00a2910abde899087d77a592a1b8ba5b"
