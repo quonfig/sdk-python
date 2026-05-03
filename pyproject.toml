@@ -4,6 +4,7 @@ version = "0.0.12"
 description = "Python SDK for Quonfig — feature flags and configuration management"
 license = "MIT"
 authors = ["Quonfig <hello@quonfig.com>"]
+readme = "README.md"
 packages = [{include = "quonfig"}]
 
 [tool.poetry.dependencies]
