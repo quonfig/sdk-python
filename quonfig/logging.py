@@ -38,6 +38,7 @@ Usage (structlog)::
         ],
     )
 """
+
 from __future__ import annotations
 
 import logging
@@ -67,9 +68,7 @@ _STRUCTLOG_LEVEL_ALIASES = {
 }
 
 
-def _level_name_for_structlog(
-    method_name: str, event_dict: dict
-) -> Optional[str]:
+def _level_name_for_structlog(method_name: str, event_dict: dict) -> Optional[str]:
     """Derive a level name string suitable for Quonfig.should_log from a
     structlog event.
 
@@ -210,9 +209,7 @@ class QuonfigLoggerProcessor:
             return self._logger_path
         return getattr(logger, "name", None) or event_dict.get("logger")
 
-    def __call__(
-        self, logger: Any, method_name: str, event_dict: dict
-    ) -> dict:
+    def __call__(self, logger: Any, method_name: str, event_dict: dict) -> dict:
         if self._quonfig is None:
             return event_dict
 

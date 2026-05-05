@@ -3,6 +3,7 @@
 Verifies that the serialized JSON matches the expected structure that
 api-telemetry accepts, including field names, nesting, and reason.
 """
+
 from __future__ import annotations
 
 import json
@@ -64,7 +65,9 @@ def test_selected_value_uses_correct_type_wrapper_keys_in_json():
         collector.record(evaluate_for_telemetry(key))
         event = collector.drain()
         doc = json.loads(json.dumps(event.summaries.summaries[0].counters[0].selected_value))
-        assert expected_wrapper in doc, f"{key}: expected wrapper key '{expected_wrapper}', got {doc}"
+        assert (
+            expected_wrapper in doc
+        ), f"{key}: expected wrapper key '{expected_wrapper}', got {doc}"
 
 
 def test_context_shapes_json_uses_field_types_not_field_names():
@@ -80,8 +83,8 @@ def test_context_shapes_json_uses_field_types_not_field_names():
     assert "shapes" in shapes_block
     shape = next(s for s in shapes_block["shapes"] if s["name"] == "user")
     assert "fieldTypes" in shape
-    assert shape["fieldTypes"]["name"] == 2   # string
-    assert shape["fieldTypes"]["age"] == 1    # int
+    assert shape["fieldTypes"]["name"] == 2  # string
+    assert shape["fieldTypes"]["age"] == 1  # int
     assert shape["fieldTypes"]["active"] == 5  # bool
 
 

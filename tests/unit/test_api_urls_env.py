@@ -5,6 +5,7 @@ sse, and telemetry URL defaults. The full domain → URL chain is exercised
 in ``test_domain_env.py``; this file focuses on the api_urls kwarg path
 and default behavior when no env vars are set.
 """
+
 from __future__ import annotations
 
 import pytest

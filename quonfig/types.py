@@ -31,6 +31,7 @@ class EvaluationDetails(Generic[T]):
     error_code: Optional[str] = None
     error_message: Optional[str] = None
 
+
 # Top-level context name under which Quonfig.should_log(logger_path=...)
 # injects the logger path for per-logger rule evaluation. Rules written
 # against this context use the property path
@@ -204,7 +205,7 @@ class EvalResult:
     # Telemetry fields — set by evaluator + client
     config_type: str = ""
     weighted_value_index: int = -1
-    telemetry_reason: int = 0   # 1=STATIC 2=TARGETING_MATCH 3=SPLIT
+    telemetry_reason: int = 0  # 1=STATIC 2=TARGETING_MATCH 3=SPLIT
     resolved_value: Any = None  # set by client after resolver runs
     # Redacted form for telemetry — set when value.confidential or
     # value.decrypt_with is true. Pattern matches Reforge SDK's

@@ -53,9 +53,7 @@ def test_static_reason_for_always_true_flag(client):
 def test_targeting_match_when_property_rule_hits(client):
     """`of.targeting` resolves true when user.plan is "pro" via a
     PROP_IS_ONE_OF rule — should report TARGETING_MATCH."""
-    details = client.get_bool_details(
-        "of.targeting", contexts={"user": {"plan": "pro"}}
-    )
+    details = client.get_bool_details("of.targeting", contexts={"user": {"plan": "pro"}})
     assert details.value is True
     assert details.reason == "TARGETING_MATCH"
     assert details.error_code is None
@@ -66,9 +64,7 @@ def test_targeting_match_when_property_rule_misses(client):
     false) when the user.plan rule doesn't match — that fall-through
     rule still has a property rule above it in the targeting list, so
     the SDK reports TARGETING_MATCH for any rule-driven match."""
-    details = client.get_bool_details(
-        "of.targeting", contexts={"user": {"plan": "free"}}
-    )
+    details = client.get_bool_details("of.targeting", contexts={"user": {"plan": "free"}})
     assert details.value is False
     assert details.reason == "TARGETING_MATCH"
     assert details.error_code is None
@@ -83,12 +79,18 @@ def test_split_reason_for_weighted_values(client):
     saw_split = False
     saw_static = False
     for uid in (
-        "user-1", "user-2", "user-3", "user-4", "user-5",
-        "u-a", "u-b", "u-c", "u-d", "u-e",
+        "user-1",
+        "user-2",
+        "user-3",
+        "user-4",
+        "user-5",
+        "u-a",
+        "u-b",
+        "u-c",
+        "u-d",
+        "u-e",
     ):
-        details = client.get_string_details(
-            "of.weighted", contexts={"user": {"id": uid}}
-        )
+        details = client.get_string_details("of.weighted", contexts={"user": {"id": uid}})
         assert details.value in ("variant-a", "variant-b")
         # No targeting rules on this config, so the only valid reasons
         # are STATIC (first weighted variant) or SPLIT (any later one).
@@ -99,14 +101,11 @@ def test_split_reason_for_weighted_values(client):
             saw_static = True
     # `user-2` lands on variant-b (a non-zero weighted index) — pin the
     # SPLIT case on a deterministic id so this assertion can't drift.
-    deterministic = client.get_string_details(
-        "of.weighted", contexts={"user": {"id": "user-2"}}
-    )
+    deterministic = client.get_string_details("of.weighted", contexts={"user": {"id": "user-2"}})
     assert deterministic.reason == "SPLIT"
     assert deterministic.value == "variant-b"
     assert saw_split and saw_static, (
-        "Expected the sweep to cover both STATIC (variant-a) and "
-        "SPLIT (variant-b) outcomes"
+        "Expected the sweep to cover both STATIC (variant-a) and " "SPLIT (variant-b) outcomes"
     )
 
 

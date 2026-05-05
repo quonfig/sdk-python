@@ -11,6 +11,7 @@ The previously-supported ``QUONFIG_API_URL``, ``QUONFIG_API_URLS``, and
 ``QUONFIG_TELEMETRY_URL`` env vars have been removed (alpha-phase, no
 backward compatibility).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -58,10 +59,7 @@ def test_quonfig_domain_drives_all_defaults(monkeypatch: pytest.MonkeyPatch) -> 
     assert client._telemetry_url == "https://telemetry.quonfig-staging.com"
     # Stream URL is derived from api_urls — sanity-check the chain works
     # end-to-end so a misconfigured staging deploy doesn't silently SSE to prod.
-    assert (
-        derive_stream_url(client._api_urls[0])
-        == "https://stream.primary.quonfig-staging.com"
-    )
+    assert derive_stream_url(client._api_urls[0]) == "https://stream.primary.quonfig-staging.com"
 
 
 def test_explicit_api_urls_kwarg_overrides_domain(

@@ -30,14 +30,30 @@ class TestNullListTolerance:
         # the rest are well-formed. The whole batch must still parse.
         payload = {
             "configs": [
-                {"id": "", "key": "", "type": "object", "valueType": "",
-                 "sendToClientSdk": False, "default": {"rules": None}},
-                {"id": "1", "key": "real.config", "type": "config", "valueType": "string",
-                 "sendToClientSdk": False,
-                 "default": {"rules": [
-                     {"criteria": [{"operator": "ALWAYS_TRUE"}],
-                      "value": {"type": "string", "value": "v"}}]},
-                 "environments": None},
+                {
+                    "id": "",
+                    "key": "",
+                    "type": "object",
+                    "valueType": "",
+                    "sendToClientSdk": False,
+                    "default": {"rules": None},
+                },
+                {
+                    "id": "1",
+                    "key": "real.config",
+                    "type": "config",
+                    "valueType": "string",
+                    "sendToClientSdk": False,
+                    "default": {
+                        "rules": [
+                            {
+                                "criteria": [{"operator": "ALWAYS_TRUE"}],
+                                "value": {"type": "string", "value": "v"},
+                            }
+                        ]
+                    },
+                    "environments": None,
+                },
             ],
             "meta": {"version": "1", "environment": "development"},
         }

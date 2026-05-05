@@ -6,6 +6,7 @@ but `https://stream.primary.quonfig.com/api/v2/sse/config` is the real SSE
 endpoint. Other SDKs (sdk-node, sdk-ruby) derive the stream URL by prepending
 `stream.` to the hostname — this test pins that behavior for sdk-python.
 """
+
 from __future__ import annotations
 
 import threading
@@ -20,8 +21,7 @@ from quonfig.transport import Transport, derive_stream_url
 class TestDeriveStreamUrl:
     def test_prepends_stream_to_production_host(self) -> None:
         assert (
-            derive_stream_url("https://primary.quonfig.com")
-            == "https://stream.primary.quonfig.com"
+            derive_stream_url("https://primary.quonfig.com") == "https://stream.primary.quonfig.com"
         )
 
     def test_prepends_stream_to_localhost_preserving_port(self) -> None:
@@ -29,8 +29,7 @@ class TestDeriveStreamUrl:
 
     def test_preserves_scheme_and_path(self) -> None:
         assert (
-            derive_stream_url("http://api.example.com/base")
-            == "http://stream.api.example.com/base"
+            derive_stream_url("http://api.example.com/base") == "http://stream.api.example.com/base"
         )
 
 
@@ -63,9 +62,10 @@ def test_sse_client_subscribes_to_stream_host_not_api_host() -> None:
         shutdown.set()
         return _FakeResponse()
 
-    with patch("quonfig.sse.requests.get", side_effect=fake_get), patch(
-        "quonfig.sse.sseclient.SSEClient"
-    ) as mock_sse_lib:
+    with (
+        patch("quonfig.sse.requests.get", side_effect=fake_get),
+        patch("quonfig.sse.sseclient.SSEClient") as mock_sse_lib,
+    ):
         mock_sse_lib.return_value.events.return_value = iter(())
         # _loop is a blocking method but shutdown is already set, so it exits fast
         shutdown.clear()
@@ -75,9 +75,9 @@ def test_sse_client_subscribes_to_stream_host_not_api_host() -> None:
 
     assert captured_urls, "SSEClient should have made at least one request"
     url = captured_urls[0]
-    assert url.startswith("https://stream.primary.quonfig.com/"), (
-        f"SSE URL must target stream.<host>, got: {url}"
-    )
+    assert url.startswith(
+        "https://stream.primary.quonfig.com/"
+    ), f"SSE URL must target stream.<host>, got: {url}"
     assert url.endswith("/api/v2/sse/config")
 
 

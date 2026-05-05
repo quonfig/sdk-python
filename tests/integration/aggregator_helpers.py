@@ -18,6 +18,7 @@ The post-body shape differs from the SDK's wire-format payload:
 Helpers return ``None`` when the aggregator has nothing to report
 (disabled mode, all-log-level evaluations, empty contexts, etc.).
 """
+
 from __future__ import annotations
 
 import os
@@ -153,9 +154,7 @@ def aggregator_post(agg, kind: str, endpoint: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _evaluate_for_telemetry(
-    key: str, contexts: Optional[Contexts] = None
-) -> Optional[EvalResult]:
+def _evaluate_for_telemetry(key: str, contexts: Optional[Contexts] = None) -> Optional[EvalResult]:
     ctx = contexts or {}
     result = _evaluator.evaluate(key, ctx)
     if result.reason == "MISSING" or result.value is None:
@@ -217,10 +216,7 @@ def _post_evaluation_summary(agg: EvaluationSummaryCollector) -> Optional[List[d
                 "config_row_index": counter.config_row_index,
                 "conditional_value_index": counter.conditional_value_index,
             }
-            if (
-                counter.weighted_value_index is not None
-                and counter.weighted_value_index >= 0
-            ):
+            if counter.weighted_value_index is not None and counter.weighted_value_index >= 0:
                 summary_block["weighted_value_index"] = counter.weighted_value_index
             row["summary"] = summary_block
             rows.append(row)

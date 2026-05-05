@@ -15,11 +15,7 @@ REASON_ERROR = 5
 
 def has_targeting_rules(config: "ConfigResponse") -> bool:
     def _check(rules):
-        return any(
-            c.operator != "ALWAYS_TRUE"
-            for rule in rules
-            for c in rule.criteria
-        )
+        return any(c.operator != "ALWAYS_TRUE" for rule in rules for c in rule.criteria)
 
     if _check(config.default.rules):
         return True

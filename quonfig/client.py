@@ -88,6 +88,7 @@ def _coerce_value(value: Any, expected_type: str) -> tuple[Any, bool]:
         return None, False
     return value, True
 
+
 # Default domain that governs the api/sse/telemetry URL defaults. A single
 # `QUONFIG_DOMAIN` env var lets ops point staging-hosted services at the
 # staging control plane without per-URL overrides — this mirrors the CLI
@@ -151,9 +152,7 @@ class Quonfig:
         # `prefab_api_url` (cross-SDK) overrides `datadir` so the test suite's
         # init-timeout cases can exercise real HTTP behavior even when the
         # datadir is also passed through.
-        self._datadir = (
-            None if prefab_api_url else (datadir or os.environ.get("QUONFIG_DIR"))
-        )
+        self._datadir = None if prefab_api_url else (datadir or os.environ.get("QUONFIG_DIR"))
 
         # `QUONFIG_DOMAIN` governs both api_urls and telemetry_url defaults
         # so a single env var flips a service between prod and staging.
@@ -299,9 +298,7 @@ class Quonfig:
             finally:
                 self._finish_init()
 
-        threading.Thread(
-            target=_initial_fetch, daemon=True, name="quonfig-init"
-        ).start()
+        threading.Thread(target=_initial_fetch, daemon=True, name="quonfig-init").start()
 
         # Start SSE for live updates
         from .sse import SSEClient
@@ -435,9 +432,7 @@ class Quonfig:
                 return EvaluationDetails(value=None, reason="DEFAULT")
 
             try:
-                resolved = self._resolver.resolve(
-                    result.value, merged, config_key=key
-                )
+                resolved = self._resolver.resolve(result.value, merged, config_key=key)
             except (QuonfigEnvVarNotSetError, QuonfigDecryptionError) as e:
                 return EvaluationDetails(
                     value=None,
@@ -467,9 +462,7 @@ class Quonfig:
                 except Exception:
                     pass  # telemetry must never break a getter
 
-            reason_str = self._telemetry_reason_to_string(
-                result.telemetry_reason, result.reason
-            )
+            reason_str = self._telemetry_reason_to_string(result.telemetry_reason, result.reason)
 
             # Type coercion. We try to coerce the resolved value to the
             # caller's expected_type — surfacing TYPE_MISMATCH on failure
@@ -740,9 +733,7 @@ class Quonfig:
             raise ValueError("should_log requires `desired_level`.")
 
         if config_key is not None and logger_path is not None:
-            raise ValueError(
-                "should_log: pass either `config_key` or `logger_path`, not both."
-            )
+            raise ValueError("should_log: pass either `config_key` or `logger_path`, not both.")
 
         resolved_contexts = contexts
 
@@ -750,7 +741,7 @@ class Quonfig:
             if not self._logger_key:
                 raise ValueError(
                     "should_log(logger_path=...) requires the `logger_key` option on the "
-                    "Quonfig constructor. Pass `logger_key=\"log-level.<your-app>\"` or "
+                    'Quonfig constructor. Pass `logger_key="log-level.<your-app>"` or '
                     "use the `config_key=...` form instead."
                 )
             resolved_config_key: str = self._logger_key
@@ -765,9 +756,7 @@ class Quonfig:
         elif config_key is not None:
             resolved_config_key = config_key
         else:
-            raise ValueError(
-                "should_log requires either `config_key` or `logger_path`."
-            )
+            raise ValueError("should_log requires either `config_key` or `logger_path`.")
 
         desired_order = LOG_LEVEL_ORDER.get(desired_level.upper())
         if desired_order is None:

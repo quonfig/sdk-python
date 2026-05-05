@@ -8,6 +8,7 @@ Covers:
   - per-logger rules route based on ``logger.name`` or event_dict["logger"]
   - evaluator exceptions don't mask events
 """
+
 from __future__ import annotations
 
 import json
@@ -154,9 +155,7 @@ def test_level_extraction_returns_none_for_unknown():
 
 def test_processor_gates_below_configured_level(tmp_path):
     dd = _fixed_level_datadir(tmp_path, "info")
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.my-app"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.my-app").init()
     p = QuonfigLoggerProcessor(client)
     logger = _NamedLogger("my.app")
 
@@ -176,9 +175,7 @@ def test_processor_gates_below_configured_level(tmp_path):
 def test_processor_uses_structlog_add_log_level_output(tmp_path):
     """structlog.stdlib.add_log_level sets event_dict['level'] — we honour it."""
     dd = _fixed_level_datadir(tmp_path, "warn")
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.my-app"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.my-app").init()
     p = QuonfigLoggerProcessor(client)
     logger = _NamedLogger("my.app")
 
@@ -264,9 +261,7 @@ def test_processor_logger_path_passes_through_unnormalized(tmp_path):
         ],
     )
     dd = _build_datadir(tmp_path, log_configs=[cfg])
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.native"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.native").init()
     p = QuonfigLoggerProcessor(client)
 
     # Exact unnormalized path → debug rule → info emits
@@ -281,9 +276,7 @@ def test_processor_logger_path_passes_through_unnormalized(tmp_path):
 def test_processor_no_level_noop(tmp_path):
     """With an unknown method_name and no level info, we don't filter."""
     dd = _fixed_level_datadir(tmp_path, "error")
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.my-app"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.my-app").init()
     p = QuonfigLoggerProcessor(client)
     out = p(_NamedLogger("x"), "not-a-level", {"event": "keep"})
     assert out == {"event": "keep"}
@@ -292,9 +285,7 @@ def test_processor_no_level_noop(tmp_path):
 def test_processor_no_logger_name_noop(tmp_path):
     """No logger name + no event_dict['logger'] → pass-through."""
     dd = _fixed_level_datadir(tmp_path, "error")
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.my-app"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.my-app").init()
     p = QuonfigLoggerProcessor(client)
 
     class AnonLogger:
@@ -305,9 +296,7 @@ def test_processor_no_logger_name_noop(tmp_path):
 
 def test_processor_allows_event_when_evaluation_raises(monkeypatch, tmp_path):
     dd = _fixed_level_datadir(tmp_path, "error")
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.my-app"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.my-app").init()
 
     def boom(*args, **kwargs):
         raise RuntimeError("evaluator exploded")
@@ -322,9 +311,7 @@ def test_processor_allows_event_when_evaluation_raises(monkeypatch, tmp_path):
 def test_processor_integrates_with_structlog_pipeline(tmp_path, capsys):
     """End-to-end: wire into a real structlog pipeline with add_log_level."""
     dd = _fixed_level_datadir(tmp_path, "info")
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.my-app"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.my-app").init()
 
     def _add_logger_name(logger, method_name, event_dict):
         # PrintLogger doesn't expose a name; inject one so QuonfigLoggerProcessor

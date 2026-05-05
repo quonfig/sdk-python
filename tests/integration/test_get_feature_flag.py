@@ -16,6 +16,7 @@ DATADIR = os.path.join(
     "../../../integration-test-data/data/integration-tests",
 )
 
+
 @pytest.fixture(scope="module")
 def config_client():
     os.environ.setdefault(
@@ -37,12 +38,14 @@ def config_client():
 # get returns the underlying value for a feature flag
 def test_get_returns_the_underlying_value_for_a_feature_flag(config_client) -> None:
     c = config_client
-    result = c.get_int('feature-flag.integer')
+    result = c.get_int("feature-flag.integer")
     assert result == 3
 
 
 # get returns the underlying value for a feature flag that matches the highest precedent rule
-def test_get_returns_the_underlying_value_for_a_feature_flag_that_matches_the_highest_precedent_rule(config_client) -> None:
+def test_get_returns_the_underlying_value_for_a_feature_flag_that_matches_the_highest_precedent_rule(
+    config_client,
+) -> None:
     c = config_client
-    result = c.get_int('feature-flag.integer', contexts={'user': {'key': 'michael'}})
+    result = c.get_int("feature-flag.integer", contexts={"user": {"key": "michael"}})
     assert result == 5

@@ -164,9 +164,7 @@ class TestSuccessReasons:
         )
         c = _client_with_configs([config])
 
-        details = c.get_bool_details(
-            "targeted.bool", contexts={"user": {"plan": "pro"}}
-        )
+        details = c.get_bool_details("targeted.bool", contexts={"user": {"plan": "pro"}})
         assert details.value is True
         assert details.reason == "TARGETING_MATCH"
 

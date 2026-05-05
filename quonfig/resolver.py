@@ -37,6 +37,7 @@ def compute_reportable_value(value: Value) -> Optional[str]:
     digest = hashlib.md5(str(raw).encode()).hexdigest()[:5]
     return f"{CONFIDENTIAL_PREFIX}{digest}"
 
+
 if TYPE_CHECKING:
     from .store import ConfigStore
 

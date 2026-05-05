@@ -16,24 +16,25 @@ DATADIR = os.path.join(
     "../../../integration-test-data/data/integration-tests",
 )
 
+
 # datadir with environment option gets environment-specific value
 def test_datadir_with_environment_option_gets_environment_specific_value() -> None:
-    c = Quonfig(datadir=DATADIR, environment='Production')
+    c = Quonfig(datadir=DATADIR, environment="Production")
     c.init()
-    result = c.get_string('james.test.key')
-    assert result == 'test4'
+    result = c.get_string("james.test.key")
+    assert result == "test4"
 
 
 # datadir with QUONFIG_ENVIRONMENT env var gets environment-specific value
 def test_datadir_with_quonfig_environment_env_var_gets_environment_specific_value() -> None:
     env_backup: dict[str, str | None] = {}
-    env_backup['QUONFIG_ENVIRONMENT'] = os.environ.get('QUONFIG_ENVIRONMENT')
-    os.environ['QUONFIG_ENVIRONMENT'] = 'Production'
+    env_backup["QUONFIG_ENVIRONMENT"] = os.environ.get("QUONFIG_ENVIRONMENT")
+    os.environ["QUONFIG_ENVIRONMENT"] = "Production"
     try:
         c = Quonfig(datadir=DATADIR)
         c.init()
-        result = c.get_string('james.test.key')
-        assert result == 'test4'
+        result = c.get_string("james.test.key")
+        assert result == "test4"
     finally:
         for k, v in env_backup.items():
             if v is None:
@@ -45,13 +46,13 @@ def test_datadir_with_quonfig_environment_env_var_gets_environment_specific_valu
 # environment option supersedes QUONFIG_ENVIRONMENT env var
 def test_environment_option_supersedes_quonfig_environment_env_var() -> None:
     env_backup: dict[str, str | None] = {}
-    env_backup['QUONFIG_ENVIRONMENT'] = os.environ.get('QUONFIG_ENVIRONMENT')
-    os.environ['QUONFIG_ENVIRONMENT'] = 'nonexistent'
+    env_backup["QUONFIG_ENVIRONMENT"] = os.environ.get("QUONFIG_ENVIRONMENT")
+    os.environ["QUONFIG_ENVIRONMENT"] = "nonexistent"
     try:
-        c = Quonfig(datadir=DATADIR, environment='Production')
+        c = Quonfig(datadir=DATADIR, environment="Production")
         c.init()
-        result = c.get_string('james.test.key')
-        assert result == 'test4'
+        result = c.get_string("james.test.key")
+        assert result == "test4"
     finally:
         for k, v in env_backup.items():
             if v is None:
@@ -62,10 +63,10 @@ def test_environment_option_supersedes_quonfig_environment_env_var() -> None:
 
 # config without environment override returns default value
 def test_config_without_environment_override_returns_default_value() -> None:
-    c = Quonfig(datadir=DATADIR, environment='Production')
+    c = Quonfig(datadir=DATADIR, environment="Production")
     c.init()
-    result = c.get_string('config.with.only.default.env.row')
-    assert result == 'hello from no env row'
+    result = c.get_string("config.with.only.default.env.row")
+    assert result == "hello from no env row"
 
 
 # datadir without environment fails to init
@@ -77,6 +78,6 @@ def test_datadir_without_environment_fails_to_init() -> None:
 
 # datadir with invalid environment fails to init
 def test_datadir_with_invalid_environment_fails_to_init() -> None:
-    c = Quonfig(datadir=DATADIR, environment='nonexistent')
+    c = Quonfig(datadir=DATADIR, environment="nonexistent")
     with pytest.raises(RuntimeError):
         c.init()

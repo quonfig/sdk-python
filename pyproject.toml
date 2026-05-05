@@ -45,6 +45,8 @@ ignore_missing_imports = true
 target-version = "py39"
 line-length = 100
 
+[tool.ruff.format]
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 

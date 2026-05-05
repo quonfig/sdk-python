@@ -9,6 +9,7 @@ Covers:
   - logger_path pass-through verbatim (no normalization)
   - BoundQuonfig inherits logger_key and merges bound contexts
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -25,6 +26,7 @@ LOG_LEVEL_KEY = "log-level.my-app"
 # --------------------------------------------------------------------------
 # Datadir helpers — write a real workspace the SDK can load.
 # --------------------------------------------------------------------------
+
 
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(__import__("json").dumps(payload, indent=2), encoding="utf-8")
@@ -121,6 +123,7 @@ def _per_logger_datadir(tmp_path: Path) -> str:
 # logger_key option surface
 # --------------------------------------------------------------------------
 
+
 def test_logger_key_defaults_to_none(tmp_path):
     dd = _simple_log_level_datadir(tmp_path)
     c = Quonfig(datadir=dd, environment="Production").init()
@@ -129,15 +132,14 @@ def test_logger_key_defaults_to_none(tmp_path):
 
 def test_logger_key_accepts_value(tmp_path):
     dd = _simple_log_level_datadir(tmp_path)
-    c = Quonfig(
-        datadir=dd, environment="Production", logger_key=LOG_LEVEL_KEY
-    ).init()
+    c = Quonfig(datadir=dd, environment="Production", logger_key=LOG_LEVEL_KEY).init()
     assert c.logger_key == LOG_LEVEL_KEY
 
 
 # --------------------------------------------------------------------------
 # should_log(logger_path=...) — requires logger_key
 # --------------------------------------------------------------------------
+
 
 def test_should_log_raises_when_logger_path_used_without_logger_key(tmp_path):
     dd = _simple_log_level_datadir(tmp_path)
@@ -149,9 +151,7 @@ def test_should_log_raises_when_logger_path_used_without_logger_key(tmp_path):
 
 def test_should_log_raises_when_both_config_key_and_logger_path_passed(tmp_path):
     dd = _simple_log_level_datadir(tmp_path)
-    c = Quonfig(
-        datadir=dd, environment="Production", logger_key=LOG_LEVEL_KEY
-    ).init()
+    c = Quonfig(datadir=dd, environment="Production", logger_key=LOG_LEVEL_KEY).init()
     with pytest.raises(Exception):
         c.should_log(
             config_key=LOG_LEVEL_KEY,
@@ -162,9 +162,7 @@ def test_should_log_raises_when_both_config_key_and_logger_path_passed(tmp_path)
 
 def test_should_log_raises_when_neither_config_key_nor_logger_path_passed(tmp_path):
     dd = _simple_log_level_datadir(tmp_path)
-    c = Quonfig(
-        datadir=dd, environment="Production", logger_key=LOG_LEVEL_KEY
-    ).init()
+    c = Quonfig(datadir=dd, environment="Production", logger_key=LOG_LEVEL_KEY).init()
     with pytest.raises(Exception):
         c.should_log(desired_level="info")
 
@@ -172,6 +170,7 @@ def test_should_log_raises_when_neither_config_key_nor_logger_path_passed(tmp_pa
 # --------------------------------------------------------------------------
 # should_log(logger_path=...) — gating semantics + per-logger rules
 # --------------------------------------------------------------------------
+
 
 def test_should_log_per_logger_rules_via_injected_context(tmp_path):
     """foo.bar -> debug rule; noisy.thing -> error rule; other -> info default."""
@@ -222,9 +221,7 @@ def test_should_log_logger_path_passes_through_verbatim(tmp_path):
         ],
     )
     dd = _build_datadir(tmp_path, log_configs=[cfg])
-    c = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.native"
-    ).init()
+    c = Quonfig(datadir=dd, environment="Production", logger_key="log-level.native").init()
 
     # Exact unnormalized path → debug rule → info emits
     assert c.should_log(logger_path="MyApp::Services::Auth", desired_level="info") is True
@@ -236,6 +233,7 @@ def test_should_log_logger_path_passes_through_verbatim(tmp_path):
 # --------------------------------------------------------------------------
 # should_log(config_key=...) — primitive, no auto-prefix
 # --------------------------------------------------------------------------
+
 
 def test_should_log_config_key_no_auto_prefix(tmp_path):
     """Must use the full stored key 'log-level.raw' — SDK does not prepend 'log-level.'."""
@@ -264,6 +262,7 @@ def test_should_log_config_key_no_auto_prefix(tmp_path):
 # Missing config → log everything (match go/node/ruby)
 # --------------------------------------------------------------------------
 
+
 def test_should_log_returns_true_when_no_config_found(tmp_path):
     dd = _simple_log_level_datadir(tmp_path)
     c = Quonfig(
@@ -277,6 +276,7 @@ def test_should_log_returns_true_when_no_config_found(tmp_path):
 # --------------------------------------------------------------------------
 # BoundQuonfig support
 # --------------------------------------------------------------------------
+
 
 def test_bound_client_should_log_uses_logger_path(tmp_path):
     dd = _per_logger_datadir(tmp_path)

@@ -7,6 +7,7 @@ Covers:
   - per-logger rules route based on the record's ``name``
   - evaluator exceptions don't mask logs
 """
+
 from __future__ import annotations
 
 import json
@@ -130,9 +131,7 @@ def _make_record(name: str, level: int, msg: str) -> logging.LogRecord:
 def test_filter_gates_below_configured_level(tmp_path):
     """logger_key resolves to INFO → DEBUG records dropped, INFO+ emit."""
     dd = _fixed_level_datadir(tmp_path, "info")
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.my-app"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.my-app").init()
     f = QuonfigLoggerFilter(client)
 
     assert f.filter(_make_record("my.app", logging.DEBUG, "dbg")) is False
@@ -192,9 +191,7 @@ def test_filter_logger_path_passes_through_unnormalized(tmp_path):
         ],
     )
     dd = _build_datadir(tmp_path, log_configs=[cfg])
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.native"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.native").init()
     f = QuonfigLoggerFilter(client)
 
     assert f.filter(_make_record("MyApp::Services::Auth", logging.INFO, "m")) is True
@@ -220,9 +217,7 @@ def test_filter_override_logger_path_constructor_arg(tmp_path):
 def test_filter_integrates_with_handler_pipeline(tmp_path, caplog):
     """End-to-end: addFilter on a logger drops DEBUG when config is INFO."""
     dd = _fixed_level_datadir(tmp_path, "info")
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.my-app"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.my-app").init()
 
     logger = logging.getLogger("quonfig.test.pipeline")
     logger.setLevel(logging.DEBUG)  # allow DEBUG through to the filter
@@ -246,9 +241,7 @@ def test_filter_integrates_with_handler_pipeline(tmp_path, caplog):
 def test_filter_allows_log_when_evaluation_raises(monkeypatch, tmp_path):
     """Exceptions in should_log must not silently drop logs."""
     dd = _fixed_level_datadir(tmp_path, "error")
-    client = Quonfig(
-        datadir=dd, environment="Production", logger_key="log-level.my-app"
-    ).init()
+    client = Quonfig(datadir=dd, environment="Production", logger_key="log-level.my-app").init()
 
     def boom(*args, **kwargs):
         raise RuntimeError("evaluator exploded")

@@ -41,6 +41,7 @@ def derive_stream_url(api_url: str) -> str:
         netloc += f":{parts.port}"
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
+
 if TYPE_CHECKING:
     from .store import ConfigStore
 

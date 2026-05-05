@@ -112,9 +112,7 @@ class EvaluationSummaryCollector:
             ]
             summaries.append(EvaluationSummary(key=config_key, type=config_type, counters=counters))
 
-        return TelemetryEvent(
-            summaries=EvalSummaries(start=start, end=end, summaries=summaries)
-        )
+        return TelemetryEvent(summaries=EvalSummaries(start=start, end=end, summaries=summaries))
 
 
 class ContextShapeCollector:

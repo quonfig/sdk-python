@@ -30,8 +30,8 @@ class TelemetryReporter:
         self.instance_hash = instance_hash
         self.interval = interval
 
-        self._eval_collector: Optional[EvaluationSummaryCollector] = (
-            EvaluationSummaryCollector(enabled=collect_evaluation_summaries)
+        self._eval_collector: Optional[EvaluationSummaryCollector] = EvaluationSummaryCollector(
+            enabled=collect_evaluation_summaries
         )
         self._ctx_collector = ContextShapeCollector(context_upload_mode=context_upload_mode)
         self._example_collector = ExampleContextCollector(context_upload_mode=context_upload_mode)

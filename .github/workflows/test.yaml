@@ -46,6 +46,10 @@ jobs:
         working-directory: sdk-python
         run: poetry run ruff check .
 
+      - name: Ruff format check
+        working-directory: sdk-python
+        run: poetry run ruff format --check .
+
       - name: Typecheck (mypy)
         working-directory: sdk-python
         run: poetry run mypy quonfig

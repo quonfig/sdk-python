@@ -9,7 +9,7 @@ class EvaluationCounter:
     config_id: str
     conditional_value_index: int
     config_row_index: int
-    selected_value: Any          # {"string": "..."}, {"bool": ...}, etc.
+    selected_value: Any  # {"string": "..."}, {"bool": ...}, etc.
     count: int
     reason: int
     weighted_value_index: Optional[int] = None
@@ -50,7 +50,7 @@ class ContextShapes:
 @dataclass
 class ExampleContext:
     timestamp: int
-    context_set: Dict[str, Any]   # {"contexts": [{"type": "user", "values": {...}}]}
+    context_set: Dict[str, Any]  # {"contexts": [{"type": "user", "values": {...}}]}
 
 
 @dataclass

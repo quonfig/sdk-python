@@ -8,6 +8,7 @@ isolation surfaces spurious ``QuonfigEnvVarNotSetError``s because the env
 vars are otherwise only seeded as a side-effect of importing
 ``telemetry_helpers`` / ``aggregator_helpers``.
 """
+
 from __future__ import annotations
 
 import os

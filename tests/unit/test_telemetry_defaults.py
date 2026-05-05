@@ -11,6 +11,7 @@ Covers two bugs previously confirmed by live-fire:
    only api-mode init started the reporter, so any datadir-backed service
    (e.g. api-delivery, api-telemetry) emitted zero telemetry.
 """
+
 from __future__ import annotations
 
 import json
