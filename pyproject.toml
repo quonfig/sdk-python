@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "quonfig"
-version = "0.0.12"
+version = "0.0.13"
 description = "Python SDK for Quonfig — feature flags and configuration management"
 license = "MIT"
 authors = ["Quonfig <hello@quonfig.com>"]

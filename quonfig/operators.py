@@ -325,6 +325,24 @@ def hierarchical_match(
     return prop_value.startswith(criterion_value)
 
 
+def is_present(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
+    # Note: the dispatch-table fallback only sees the resolved value and
+    # cannot tell apart "missing" from "explicitly None". The authoritative
+    # implementation lives in Evaluator._criterion_matches which has access
+    # to the dotted-path `found` flag. Empty string, 0 and False are present;
+    # only None counts as absent here. Using `is not None` deliberately —
+    # `if prop_value:` would falsely treat "" / 0 / False as absent.
+    return prop_value is not None
+
+
+def is_not_present(
+    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+) -> bool:
+    return prop_value is None
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -361,6 +379,8 @@ OPERATOR_DISPATCH: dict = {
     "PROP_BEFORE": prop_before,
     "PROP_AFTER": prop_after,
     "HIERARCHICAL_MATCH": hierarchical_match,
+    "IS_PRESENT": is_present,
+    "IS_NOT_PRESENT": is_not_present,
 }
 
 

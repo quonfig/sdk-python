@@ -271,3 +271,73 @@ class TestRowIndex:
 
         result = evaluator.evaluate("my.key", {"user": {"plan": "free"}})
         assert result.row_index == 1  # second rule (always_true)
+
+
+class TestIsPresentOperator:
+    """IS_PRESENT / IS_NOT_PRESENT semantics — must match sdk-go and sdk-node.
+
+    A property is "present" iff the dotted path resolves AND the value is not
+    None. Empty string, 0 and False are present. Missing keys (incl. missing
+    namespaces) are not present.
+    """
+
+    def _make_presence_config(self, operator: str) -> ConfigResponse:
+        return ConfigResponse(
+            id="1",
+            key="my.flag",
+            type="feature_flag",
+            value_type="bool",
+            send_to_client_sdk=True,
+            default=RuleSet(
+                rules=[
+                    Rule(
+                        criteria=[
+                            Criterion(operator=operator, property_name="user.id"),
+                        ],
+                        value=make_bool_value(True),
+                    ),
+                    make_always_true_rule(make_bool_value(False)),
+                ]
+            ),
+        )
+
+    def _eval(self, operator: str, contexts):
+        store = make_store([self._make_presence_config(operator)])
+        evaluator = Evaluator(store, "Production")
+        return evaluator.evaluate("my.flag", contexts).value.value
+
+    def test_is_present_non_empty_string(self):
+        assert self._eval("IS_PRESENT", {"user": {"id": "abc"}}) is True
+
+    def test_is_present_empty_string_is_present(self):
+        assert self._eval("IS_PRESENT", {"user": {"id": ""}}) is True
+
+    def test_is_present_zero_is_present(self):
+        assert self._eval("IS_PRESENT", {"user": {"id": 0}}) is True
+
+    def test_is_present_false_is_present(self):
+        assert self._eval("IS_PRESENT", {"user": {"id": False}}) is True
+
+    def test_is_present_none_is_absent(self):
+        assert self._eval("IS_PRESENT", {"user": {"id": None}}) is False
+
+    def test_is_present_missing_key_is_absent(self):
+        assert self._eval("IS_PRESENT", {"user": {"name": "bob"}}) is False
+
+    def test_is_present_missing_namespace_is_absent(self):
+        assert self._eval("IS_PRESENT", {"other": {"id": "abc"}}) is False
+
+    def test_is_present_no_contexts(self):
+        assert self._eval("IS_PRESENT", {}) is False
+
+    def test_is_not_present_non_empty_string(self):
+        assert self._eval("IS_NOT_PRESENT", {"user": {"id": "abc"}}) is False
+
+    def test_is_not_present_none(self):
+        assert self._eval("IS_NOT_PRESENT", {"user": {"id": None}}) is True
+
+    def test_is_not_present_missing_key(self):
+        assert self._eval("IS_NOT_PRESENT", {"user": {"name": "bob"}}) is True
+
+    def test_is_not_present_no_contexts(self):
+        assert self._eval("IS_NOT_PRESENT", {}) is True

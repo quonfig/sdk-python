@@ -135,6 +135,14 @@ class Evaluator:
         operator = criterion.operator
         if operator == "ALWAYS_TRUE":
             return True
-        prop_value, _found = get_context_value(contexts, criterion.property_name or "")
+        prop_value, found = get_context_value(contexts, criterion.property_name or "")
+        # Type-agnostic presence check: a property is "present" iff the context
+        # resolver found the (possibly dotted) path AND the resolved value is
+        # not None. Empty string "", 0, and False are intentionally treated as
+        # present. Mirrors sdk-go and sdk-node semantics.
+        if operator == "IS_PRESENT":
+            return found and prop_value is not None
+        if operator == "IS_NOT_PRESENT":
+            return not (found and prop_value is not None)
         criterion_value = criterion.value_to_match.value if criterion.value_to_match else None
         return evaluate_operator(operator, prop_value, criterion_value, contexts, self.store)

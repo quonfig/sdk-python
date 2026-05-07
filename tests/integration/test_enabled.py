@@ -734,6 +734,125 @@ def test_returns_false_for_prop_does_not_match_rule_when_the_given_prop_matches_
     assert result is False
 
 
+# returns true for IS_PRESENT rule when the given prop is a non-empty string
+def test_returns_true_for_is_present_rule_when_the_given_prop_is_a_non_empty_string(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-present", contexts={"user": {"id": "abc"}})
+    assert result is True
+
+
+# returns true for IS_PRESENT rule when the given prop is an empty string
+def test_returns_true_for_is_present_rule_when_the_given_prop_is_an_empty_string(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-present", contexts={"user": {"id": ""}})
+    assert result is True
+
+
+# returns true for IS_PRESENT rule when the given prop is the integer zero
+def test_returns_true_for_is_present_rule_when_the_given_prop_is_the_integer_zero(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-present", contexts={"user": {"id": 0}})
+    assert result is True
+
+
+# returns true for IS_PRESENT rule when the given prop is boolean false
+def test_returns_true_for_is_present_rule_when_the_given_prop_is_boolean_false(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-present", contexts={"user": {"id": False}})
+    assert result is True
+
+
+# returns false for IS_PRESENT rule when the given prop is null
+def test_returns_false_for_is_present_rule_when_the_given_prop_is_null(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-present", contexts={"user": {"id": None}})
+    assert result is False
+
+
+# returns false for IS_PRESENT rule when the given prop key is missing from the context
+def test_returns_false_for_is_present_rule_when_the_given_prop_key_is_missing_from_the_context(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-present", contexts={"user": {"name": "bob"}})
+    assert result is False
+
+
+# returns false for IS_PRESENT rule when no contexts are provided at all
+def test_returns_false_for_is_present_rule_when_no_contexts_are_provided_at_all(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-present")
+    assert result is False
+
+
+# returns false for IS_NOT_PRESENT rule when the given prop is a non-empty string
+def test_returns_false_for_is_not_present_rule_when_the_given_prop_is_a_non_empty_string(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-not-present", contexts={"user": {"id": "abc"}})
+    assert result is False
+
+
+# returns true for IS_NOT_PRESENT rule when the given prop is null
+def test_returns_true_for_is_not_present_rule_when_the_given_prop_is_null(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-not-present", contexts={"user": {"id": None}})
+    assert result is True
+
+
+# returns true for IS_NOT_PRESENT rule when the given prop key is missing from the context
+def test_returns_true_for_is_not_present_rule_when_the_given_prop_key_is_missing_from_the_context(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-not-present", contexts={"user": {"name": "bob"}})
+    assert result is True
+
+
+# returns true for IS_PRESENT rule on a nested path when the nested prop is set
+def test_returns_true_for_is_present_rule_on_a_nested_path_when_the_nested_prop_is_set(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.is-present-nested", contexts={"organization": {"domain": "example.com"}}
+    )
+    assert result is True
+
+
+# returns false for IS_PRESENT rule on a nested path when the nested key is missing but the parent context exists
+def test_returns_false_for_is_present_rule_on_a_nested_path_when_the_nested_key_is_missing_but_the_parent_context_exists(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.is-present-nested", contexts={"organization": {"name": "Acme Inc"}}
+    )
+    assert result is False
+
+
+# returns false for IS_PRESENT rule on a nested path when the parent context is entirely absent
+def test_returns_false_for_is_present_rule_on_a_nested_path_when_the_parent_context_is_entirely_absent(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.is-present-nested", contexts={"user": {"id": "abc"}}
+    )
+    assert result is False
+
+
 # returns true for PROP_SEMVER_EQUAL rule when the given prop equals the version
 def test_returns_true_for_prop_semver_equal_rule_when_the_given_prop_equals_the_version(
     config_client,
