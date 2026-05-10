@@ -18,6 +18,10 @@ class EvaluationDetails(Generic[T]):
     how the value was selected, along with optional ``error_code`` /
     ``error_message`` fields populated when ``reason == "ERROR"``.
 
+    ``variant`` and ``flag_metadata`` follow the cross-SDK spec
+    (``project/plans/openfeature-resolution-details.md``) — keys use Python's
+    snake_case idiom and ``config_type`` values use the wire's snake_case.
+
     Mirrors the cross-SDK contract for the ``*_details`` API and aligns with
     OpenFeature's ``StandardResolutionReasons`` subset so providers can pass
     the reason through verbatim.
@@ -30,6 +34,10 @@ class EvaluationDetails(Generic[T]):
     # ``reason == "ERROR"``.
     error_code: Optional[str] = None
     error_message: Optional[str] = None
+    # OpenFeature variant string. See the cross-SDK spec §2.
+    variant: Optional[str] = None
+    # OpenFeature flag metadata. See the cross-SDK spec §3.
+    flag_metadata: Optional[Dict[str, Any]] = None
 
 
 # Top-level context name under which Quonfig.should_log(logger_path=...)

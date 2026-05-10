@@ -186,3 +186,58 @@ def test_bound_client_get_string_details(client):
     details = bound.get_string_details("my-test-key")
     assert details.reason in ("STATIC", "TARGETING_MATCH")
     assert isinstance(details.value, str)
+
+
+# ---------------------------------------------------------------------------
+# variant + flag_metadata (qfg-9dbl)
+# ---------------------------------------------------------------------------
+
+
+def test_variant_static_for_always_true(client):
+    details = client.get_bool_details("always.true")
+    assert details.variant == "static"
+    md = details.flag_metadata
+    assert md is not None
+    assert isinstance(md.get("config_id"), str) and md.get("config_id")
+    assert md.get("config_type") == "feature_flag"
+    assert md.get("environment") == "Production"
+    assert "rule_index" not in md
+    assert "weighted_value_index" not in md
+
+
+def test_variant_targeting_match_for_of_targeting(client):
+    details = client.get_bool_details("of.targeting", contexts={"user": {"plan": "pro"}})
+    assert details.variant == "targeting:0"
+    md = details.flag_metadata
+    assert md is not None
+    assert md.get("config_id") == "18000000000000001"
+    assert md.get("config_type") == "config"
+    assert md.get("rule_index") == 0
+    assert "weighted_value_index" not in md
+
+
+def test_variant_split_for_weighted(client):
+    # user-2 is a deterministic SPLIT outcome (variant-b, index 1).
+    details = client.get_string_details("of.weighted", contexts={"user": {"id": "user-2"}})
+    assert details.reason == "SPLIT"
+    assert details.variant == "split:1"
+    md = details.flag_metadata
+    assert md is not None
+    assert md.get("config_id") == "18000000000000002"
+    assert md.get("config_type") == "config"
+    assert md.get("weighted_value_index") == 1
+    assert isinstance(md.get("rule_index"), int)
+
+
+def test_variant_default_for_flag_not_found(client):
+    details = client.get_bool_details("does.not.exist")
+    assert details.reason == "ERROR"
+    assert details.variant == "default"
+    assert details.error_message is not None
+
+
+def test_variant_default_for_type_mismatch(client):
+    details = client.get_bool_details("my-test-key")
+    assert details.reason == "ERROR"
+    assert details.error_code == "TYPE_MISMATCH"
+    assert details.variant == "default"

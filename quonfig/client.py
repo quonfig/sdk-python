@@ -4,7 +4,7 @@ import contextlib
 import logging
 import os
 import threading
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from .bound_client import BoundQuonfig
@@ -424,12 +424,28 @@ class Quonfig:
                         reason="ERROR",
                         error_code="FLAG_NOT_FOUND",
                         error_message=f"Flag '{key}' not found",
+                        variant=self._build_variant("ERROR", None, None),
+                        flag_metadata=self._build_flag_metadata(None, None, None, None, None),
                     )
-                return EvaluationDetails(value=None, reason="DEFAULT")
+                return EvaluationDetails(
+                    value=None,
+                    reason="DEFAULT",
+                    variant=self._build_variant("DEFAULT", None, None),
+                    flag_metadata=self._build_flag_metadata(
+                        result.config_id, result.config_type, None, None, None
+                    ),
+                )
 
             if result.value is None:
                 # Rule matched but produced no Value — treat as DEFAULT.
-                return EvaluationDetails(value=None, reason="DEFAULT")
+                return EvaluationDetails(
+                    value=None,
+                    reason="DEFAULT",
+                    variant=self._build_variant("DEFAULT", None, None),
+                    flag_metadata=self._build_flag_metadata(
+                        result.config_id, result.config_type, None, None, None
+                    ),
+                )
 
             try:
                 resolved = self._resolver.resolve(result.value, merged, config_key=key)
@@ -439,6 +455,10 @@ class Quonfig:
                     reason="ERROR",
                     error_code="GENERAL",
                     error_message=str(e),
+                    variant=self._build_variant("ERROR", None, None),
+                    flag_metadata=self._build_flag_metadata(
+                        result.config_id, result.config_type, None, None, None
+                    ),
                 )
             except Exception as e:
                 logger.warning("Error resolving value for key '%s': %s", key, e)
@@ -447,6 +467,10 @@ class Quonfig:
                     reason="ERROR",
                     error_code="GENERAL",
                     error_message=str(e),
+                    variant=self._build_variant("ERROR", None, None),
+                    flag_metadata=self._build_flag_metadata(
+                        result.config_id, result.config_type, None, None, None
+                    ),
                 )
 
             # Record telemetry for successful resolutions, mirroring _get so
@@ -477,16 +501,74 @@ class Quonfig:
                         f"Flag '{key}' could not be coerced to {expected_type}; "
                         f"got {type(resolved).__name__}"
                     ),
+                    variant=self._build_variant("ERROR", None, None),
+                    flag_metadata=self._build_flag_metadata(
+                        result.config_id, result.config_type, None, None, None
+                    ),
                 )
 
-            return EvaluationDetails(value=coerced, reason=reason_str)
+            wvi = result.weighted_value_index if result.weighted_value_index >= 0 else None
+            return EvaluationDetails(
+                value=coerced,
+                reason=reason_str,
+                variant=self._build_variant(reason_str, result.row_index, wvi),
+                flag_metadata=self._build_flag_metadata(
+                    result.config_id,
+                    result.config_type,
+                    result.row_index,
+                    wvi,
+                    reason_str,
+                ),
+            )
         except Exception as e:  # noqa: BLE001 — *_details must never raise
             return EvaluationDetails(
                 value=None,
                 reason="ERROR",
                 error_code="GENERAL",
                 error_message=str(e),
+                variant=self._build_variant("ERROR", None, None),
+                flag_metadata=self._build_flag_metadata(None, None, None, None, None),
             )
+
+    def _build_variant(
+        self,
+        reason: str,
+        rule_index: Optional[int],
+        weighted_value_index: Optional[int],
+    ) -> str:
+        """Build the variant string per the cross-SDK spec
+        (``project/plans/openfeature-resolution-details.md`` §2)."""
+        if reason == "STATIC":
+            return "static"
+        if reason == "TARGETING_MATCH":
+            return f"targeting:{rule_index if rule_index is not None else 0}"
+        if reason == "SPLIT":
+            return f"split:{weighted_value_index if weighted_value_index is not None else 0}"
+        return "default"
+
+    def _build_flag_metadata(
+        self,
+        config_id: Optional[str],
+        config_type: Optional[str],
+        rule_index: Optional[int],
+        weighted_value_index: Optional[int],
+        reason: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build the flag_metadata dict per the cross-SDK spec
+        (``project/plans/openfeature-resolution-details.md`` §3) using
+        Python's snake_case keys and the wire's snake_case config_type."""
+        md: Dict[str, Any] = {}
+        if config_id:
+            md["config_id"] = config_id
+        if config_type:
+            md["config_type"] = config_type
+        if self._environment:
+            md["environment"] = self._environment
+        if rule_index is not None and rule_index >= 0 and reason in ("TARGETING_MATCH", "SPLIT"):
+            md["rule_index"] = rule_index
+        if weighted_value_index is not None and reason == "SPLIT":
+            md["weighted_value_index"] = weighted_value_index
+        return md
 
     def _handle_missing(self, key: str, default: Any) -> Any:
         if default is not _NO_DEFAULT:
