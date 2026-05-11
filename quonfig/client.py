@@ -161,6 +161,14 @@ class Quonfig:
         # caller callbacks are caught by the SDK supervisor (chaos scenario 10).
         on_config_update: "Optional[Callable[[], None]]" = None,
         on_sse_connection_state_change: "Optional[Callable[[str], None]]" = None,
+        # Dev-only: when true (or env var ``QUONFIG_DEV_CONTEXT=true``),
+        # the SDK reads the per-domain tokens file written by ``qfg login``
+        # (``~/.quonfig/tokens.json`` for production,
+        # ``tokens-<domain-with-dashes>.json`` for staging) and merges
+        # ``{"quonfig-user": {"email": ...}}`` into the global context.
+        # Customer-supplied ``quonfig-user`` keys win on collision.
+        # Mirrors sdk-node/sdk-go/sdk-ruby.
+        enable_quonfig_user_context: bool = False,
     ) -> None:
         # Resolve configuration from params or env vars
         self._sdk_key = sdk_key or os.environ.get("QUONFIG_SDK_KEY", "")
@@ -202,7 +210,18 @@ class Quonfig:
             normalized_on_init = "return_zero_value"
         self._on_init_failure = normalized_on_init
         self._on_no_default = on_no_default
-        self._global_context: Contexts = global_context or {}
+        # Dev-context injection (qfg-jopa): mirror sdk-node/go/ruby behavior.
+        # Customer-supplied `global_context` wins on collision because it
+        # passes second to merge_contexts (later-wins).
+        dev_context_enabled = (
+            enable_quonfig_user_context or os.environ.get("QUONFIG_DEV_CONTEXT") == "true"
+        )
+        dev_context: Optional[Contexts] = None
+        if dev_context_enabled:
+            from .dev_context import load_quonfig_user_context
+
+            dev_context = load_quonfig_user_context(self._api_urls)
+        self._global_context = merge_contexts(dev_context or {}, global_context or {})
         self._logger_key = logger_key
 
         self._store = ConfigStore()
