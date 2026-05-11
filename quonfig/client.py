@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import logging
 import os
 import threading
@@ -256,6 +257,17 @@ class Quonfig:
         self._fallback_lock = threading.Lock()
         self._on_config_update = on_config_update
         self._on_sse_connection_state_change = on_sse_connection_state_change
+
+        # Customer-visible health primitives (qfg-47c2.15). Stamped on every
+        # successful install (datadir load, initial fetch, SSE event, fallback
+        # poll) via `_fire_on_config_update`. `_last_sse_state` records the
+        # most recent SSE state edge so `connection_state()` can distinguish
+        # `connected` from `disconnected` without re-deriving it from the
+        # transport. Datadir-only mode has no SSE — we mark it `connected`
+        # post-install since the data source is local.
+        self._last_successful_refresh: Optional[datetime.datetime] = None
+        self._last_sse_state: Optional[str] = None
+        self._health_lock = threading.Lock()
         if self._transport is not None and self._fallback_poll_enabled:
             self._fallback_poller = FallbackPoller(
                 transport=self._transport,
@@ -294,7 +306,15 @@ class Quonfig:
         """Invoke the user's on_config_update callback, swallowing any
         exceptions and logging them. Mirrors sdk-node's `invokeOnConfigUpdate`
         — chaos scenario 10 requires the SDK supervisor to catch user-callback
-        throws so the rest of the SDK keeps running."""
+        throws so the rest of the SDK keeps running.
+
+        Also stamps `last_successful_refresh()` — this is the single central
+        post-install hook (datadir, initial fetch, SSE event, fallback poll
+        all funnel through here), so it's the right place to record the
+        wall-clock time of the most recent install.
+        """
+        with self._health_lock:
+            self._last_successful_refresh = datetime.datetime.now(datetime.timezone.utc)
         if self._on_config_update is None:
             return
         try:
@@ -962,6 +982,11 @@ class Quonfig:
           grace timer; engage if the timer fires without reconnect.
         - ``connecting`` / ``disconnected``: no-op.
         """
+        # Record the latest SSE state so `connection_state()` can derive the
+        # customer-visible enum without re-reading transport internals.
+        with self._health_lock:
+            self._last_sse_state = state
+
         # Fan out to caller's observability callback first; the chaos harness
         # and OpenFeature provider both rely on this edge stream.
         if self._on_sse_connection_state_change is not None:
@@ -1015,10 +1040,59 @@ class Quonfig:
 
     def fallback_poller_active(self) -> bool:
         """``True`` when the Layer 2 HTTP fallback poller is currently
-        scheduled. Mirrors sdk-node's ``fallbackPollerActive()`` — used by the
-        chaos harness; the documented public ``connection_state()`` accessor
-        lands in qfg-47c2.15."""
+        scheduled. Mirrors sdk-node's ``fallbackPollerActive()`` — used by
+        the chaos harness; the documented public ``connection_state()``
+        accessor below is the customer-facing surface."""
         return self._fallback_poller is not None and self._fallback_poller.is_active()
+
+    # ------------------------------------------------------------------
+    # Customer-visible health primitives (qfg-47c2.15)
+    #
+    # WARNING: do NOT wire either of these into a Kubernetes liveness
+    # probe. They are diagnostic, not pass/fail. A liveness probe based on
+    # SDK freshness amplifies transient network blips into restart
+    # cascades. See README.
+    # ------------------------------------------------------------------
+
+    def last_successful_refresh(self) -> Optional[datetime.datetime]:
+        """Wall-clock time of the most recent installed config envelope.
+
+        Returns ``None`` before the first install. Updated on every install
+        source — datadir load, initial HTTP fetch, SSE event, fallback
+        poll — via the shared ``_fire_on_config_update`` hook.
+        """
+        with self._health_lock:
+            return self._last_successful_refresh
+
+    def connection_state(self) -> str:
+        """One of ``connected`` | ``disconnected`` | ``falling_back`` |
+        ``initializing``.
+
+        - ``falling_back``: Layer 2 HTTP fallback poller is active. Wins
+          over the SSE state — even if SSE briefly reports `connected`
+          before the poller disengages, an active poller is the truthful
+          signal.
+        - ``connected``: latest SSE state is ``connected``, or (datadir
+          mode / pre-SSE) we have an installed envelope.
+        - ``disconnected``: SSE reported ``error`` / ``disconnected`` and
+          the fallback poller hasn't engaged yet (grace window).
+        - ``initializing``: no SSE state has been observed AND no envelope
+          has been installed — the SDK hasn't reached a known good state.
+        """
+        if self._fallback_poller is not None and self._fallback_poller.is_active():
+            return "falling_back"
+        with self._health_lock:
+            last = self._last_sse_state
+            last_refresh = self._last_successful_refresh
+        if last == "connected":
+            return "connected"
+        if last in ("error", "disconnected"):
+            return "disconnected"
+        # `last` is None or "connecting" — no SSE established yet.
+        if last_refresh is not None:
+            # Datadir mode, or an HTTP install completed before SSE wired up.
+            return "connected"
+        return "initializing"
 
     def close(self) -> None:
         self._shutdown.set()
