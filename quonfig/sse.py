@@ -4,7 +4,7 @@ import json
 import logging
 import random
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 import requests  # type: ignore[import-untyped]
 import sseclient  # type: ignore
@@ -15,6 +15,11 @@ from .types import ConfigEnvelope
 
 _LOG = logging.getLogger(__name__)
 
+# Public state vocabulary mirrors sdk-node so the cross-SDK chaos harness's
+# expression vocabulary (`client.connectionState() == 'connected'`) maps the
+# same way per-SDK.
+SSEState = str  # one of: "connecting", "connected", "error", "disconnected"
+
 
 class SSEClient:
     def __init__(
@@ -22,21 +27,45 @@ class SSEClient:
         transport: Transport,
         store: ConfigStore,
         shutdown_event: threading.Event,
+        state_listener: Optional[Callable[[SSEState], None]] = None,
+        on_config_update: Optional[Callable[[], None]] = None,
     ) -> None:
         self.transport = transport
         self.store = store
         self.shutdown_event = shutdown_event
+        self._state_listener = state_listener
+        self._on_config_update = on_config_update
         self._thread: Optional[threading.Thread] = None
+        self._stream_url_override: Optional[str] = None
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, daemon=True, name="quonfig-sse")
         self._thread.start()
 
+    def _emit(self, state: SSEState) -> None:
+        if self._state_listener is None:
+            return
+        try:
+            self._state_listener(state)
+        except Exception as e:  # noqa: BLE001 — listener errors must not kill SSE loop
+            _LOG.debug("SSE state listener raised: %s: %s", type(e).__name__, e)
+
+    def _stream_url(self) -> str:
+        # Test seam mirroring sdk-node's `__testStreamUrlOverride` so chaos
+        # harness can route SSE through toxiproxy without DNS games.
+        if self._stream_url_override:
+            return self._stream_url_override
+        transport_override = getattr(self.transport, "_Transport__test_stream_url_override", None)
+        if transport_override:
+            return transport_override
+        return f"{self.transport._current_stream_url()}/api/v2/sse/config"
+
     def _loop(self) -> None:
         backoff = 1.0
         while not self.shutdown_event.is_set():
+            self._emit("connecting")
             try:
-                url = f"{self.transport._current_stream_url()}/api/v2/sse/config"
+                url = self._stream_url()
                 headers = self.transport._headers({"Accept": "text/event-stream"})
                 response = requests.get(
                     url,
@@ -47,6 +76,7 @@ class SSEClient:
                 response.raise_for_status()
                 client = sseclient.SSEClient(response)
                 backoff = 1.0  # Reset on successful connection
+                self._emit("connected")
                 for event in client.events():
                     if self.shutdown_event.is_set():
                         break
@@ -60,6 +90,17 @@ class SSEClient:
                                 type(e).__name__,
                                 e,
                             )
+                            continue
+                        if self._on_config_update is not None:
+                            try:
+                                self._on_config_update()
+                            except Exception as e:  # noqa: BLE001 — supervisor MUST catch
+                                _LOG.error(
+                                    "Quonfig SSE: onConfigUpdate callback threw: "
+                                    "%s: %s — supervisor caught, continuing",
+                                    type(e).__name__,
+                                    e,
+                                )
             except Exception as e:
                 if self.shutdown_event.is_set():
                     break
@@ -68,6 +109,8 @@ class SSEClient:
                     type(e).__name__,
                     e,
                 )
+                self._emit("error")
                 # Exponential backoff with jitter
                 self.shutdown_event.wait(backoff)
                 backoff = min(backoff * 2 * (0.8 + 0.4 * random.random()), 60.0)
+        self._emit("disconnected")

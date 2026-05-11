@@ -5,7 +5,7 @@ import logging
 import threading
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import requests  # type: ignore[import-untyped]
@@ -63,6 +63,9 @@ class Transport:
         self.timeout = timeout
         self._current_url_idx = 0
         self._session = requests.Session()
+        # Test seam: when set, SSE routes here instead of deriving the URL
+        # from `api_urls`. Mirrors sdk-node's `__testStreamUrlOverride`.
+        self.__test_stream_url_override: Optional[str] = None
 
     def _auth_header(self) -> str:
         credentials = base64.b64encode(f"1:{self.sdk_key}".encode()).decode()
@@ -116,29 +119,103 @@ class Transport:
                 self._failover()
         raise RuntimeError("All API URLs failed")
 
-    def start_polling(
+
+class FallbackPoller:
+    """Layer 2 HTTP fallback poller.
+
+    Off by default — only engages when SSE is unavailable (initial-connect
+    failure or sustained disconnect). Replaces the previous always-on parallel
+    poll which doubled bandwidth and had no reconcile logic. Mirrors sdk-node's
+    ``startFallbackPolling`` / ``engageFallbackPoller`` /
+    ``disengageFallbackPoller`` triplet so cross-SDK chaos scenarios behave
+    identically (qfg-47c2.8).
+    """
+
+    def __init__(
         self,
+        transport: Transport,
         store: "ConfigStore",
+        interval_seconds: float,
         shutdown_event: threading.Event,
-        interval: float = 60.0,
-    ) -> threading.Thread:
-        """Start a daemon thread that polls for config updates every `interval` seconds."""
+        on_config_update: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._transport = transport
+        self._store = store
+        self._interval = interval_seconds
+        self._shutdown = shutdown_event
+        self._on_config_update = on_config_update
+        self._lock = threading.Lock()
+        self._stop_event: Optional[threading.Event] = None
+        self._thread: Optional[threading.Thread] = None
 
-        def _poll_loop() -> None:
-            while not shutdown_event.is_set():
-                shutdown_event.wait(interval)
-                if shutdown_event.is_set():
-                    break
-                try:
-                    etag = store.get_etag()
-                    envelope = self.fetch(etag=etag)
-                    if envelope is not None:
-                        store.update(envelope)
-                except Exception as e:
-                    # Polling errors are non-fatal; SSE is the primary path.
-                    # Log so they're visible to operators triaging stale data.
-                    _LOG.debug("Quonfig poll iteration failed: %s: %s", type(e).__name__, e)
+    @property
+    def interval_seconds(self) -> float:
+        return self._interval
 
-        t = threading.Thread(target=_poll_loop, daemon=True, name="quonfig-poll")
-        t.start()
-        return t
+    def is_active(self) -> bool:
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def engage(self, reason: str) -> bool:
+        """Start polling. No-op (returns False) if already running."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            stop_event = threading.Event()
+            thread = threading.Thread(
+                target=self._loop,
+                args=(stop_event,),
+                daemon=True,
+                name="quonfig-fallback-poll",
+            )
+            self._stop_event = stop_event
+            self._thread = thread
+        _LOG.warning(
+            "[quonfig] SSE unavailable (%s); engaging HTTP fallback poll every %sms",
+            reason,
+            int(self._interval * 1000),
+        )
+        thread.start()
+        return True
+
+    def disengage(self, reason: str) -> bool:
+        """Stop polling. No-op (returns False) if not running."""
+        with self._lock:
+            stop_event = self._stop_event
+            self._stop_event = None
+            self._thread = None
+        if stop_event is None:
+            return False
+        stop_event.set()
+        _LOG.info("[quonfig] HTTP fallback poll disengaged (%s)", reason)
+        return True
+
+    def _loop(self, stop_event: threading.Event) -> None:
+        while not stop_event.is_set() and not self._shutdown.is_set():
+            # Wait the interval first; matches the long-polling cadence (the
+            # initial config snapshot already came from `Transport.fetch` at
+            # init-time) and lets disengage() short-circuit a sleeping cycle.
+            if stop_event.wait(self._interval):
+                return
+            if self._shutdown.is_set():
+                return
+            try:
+                etag = self._store.get_etag()
+                envelope = self._transport.fetch(etag=etag)
+                if envelope is not None:
+                    self._store.update(envelope)
+                    if self._on_config_update is not None:
+                        try:
+                            self._on_config_update()
+                        except Exception as e:  # noqa: BLE001
+                            _LOG.error(
+                                "Quonfig fallback poll: onConfigUpdate threw: %s: %s",
+                                type(e).__name__,
+                                e,
+                            )
+            except Exception as e:  # noqa: BLE001 — fallback errors must not kill the loop
+                _LOG.debug(
+                    "Quonfig fallback poll iteration failed: %s: %s",
+                    type(e).__name__,
+                    e,
+                )
