@@ -62,8 +62,17 @@ class SSEClient:
 
     def _loop(self) -> None:
         backoff = 1.0
+        # Transparent-reconnect flag: when sseclient.events() exits cleanly
+        # mid-stream (e.g. server clean FIN, sseclient-py internal EOF after
+        # an event batch), we re-attempt without flipping public state. The
+        # connection drop is real but the cached config is unchanged, so a
+        # connected->connecting edge would be a lie that costs chaos probes
+        # a spurious Layer 1 restart count (qfg-47c2.31).
+        transparent_reconnect = False
         while not self.shutdown_event.is_set():
-            self._emit("connecting")
+            if not transparent_reconnect:
+                self._emit("connecting")
+            transparent_reconnect = False
             try:
                 url = self._stream_url()
                 headers = self.transport._headers({"Accept": "text/event-stream"})
@@ -101,6 +110,15 @@ class SSEClient:
                                     type(e).__name__,
                                     e,
                                 )
+                # The events() generator returned without raising. That means
+                # sseclient saw a clean EOF on the underlying response — the
+                # server-side stream is closed but our cached config is
+                # intact. Reconnect transparently (no "connecting" edge).
+                if not self.shutdown_event.is_set():
+                    _LOG.debug(
+                        "Quonfig SSE: stream ended cleanly mid-session, reconnecting transparently"
+                    )
+                    transparent_reconnect = True
             except Exception as e:
                 if self.shutdown_event.is_set():
                     break
