@@ -160,10 +160,17 @@ def _apply_inject(tp: Toxiproxy, inj: Dict[str, Any]) -> Optional[Dict[str, Any]
         tp.set_enabled("http", False)
         return {"enable": ["sse", "http"]}
     if "sse_half_open_after_bytes" in inj:
-        tp.add_toxic(
-            "sse", name, "limit_data", "downstream", {"bytes": inj["sse_half_open_after_bytes"]}
-        )
-        return {"proxy": "sse", "toxic": name}
+        # Toxiproxy is TCP-only and can't truly model "server returns 200 then
+        # closes after N bytes" — the limit_data toxic this used to call only
+        # trips on the NEXT upstream byte, which for SSE is the 30s heartbeat,
+        # outside the typical within_ms=15s window. The closest TCP-only
+        # analog is to disable the proxy: existing SSE connections drop, new
+        # attempts are refused. Leave it disabled until the matching `clear`
+        # step so the SDK's reconnect attempts fail visibly (sdk-ruby's
+        # ld-eventsource only fires on_error on ECONNREFUSED, not on clean
+        # FIN). qfg-47c2.29.
+        tp.set_enabled("sse", False)
+        return {"enable": ["sse"]}
     if "sse_http_status" in inj:
         # toxiproxy is TCP-only; HTTP status injection is a no-op here.
         print(
