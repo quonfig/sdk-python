@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "quonfig"
-version = "0.0.13"
+version = "0.0.14"
 description = "Python SDK for Quonfig — feature flags and configuration management"
 license = "MIT"
 authors = ["Quonfig <hello@quonfig.com>"]
@@ -52,4 +52,10 @@ select = ["E", "F", "I"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501"]
+"chaos/**" = ["E501"]
 "quonfig/operators.py" = ["E501"]
+
+[tool.pytest.ini_options]
+# Chaos harness lives in `chaos/` and only runs via scripts/run-chaos.sh; keep
+# default `pytest` runs scoped to `tests/`. Invoke chaos with `pytest chaos/`.
+testpaths = ["tests"]

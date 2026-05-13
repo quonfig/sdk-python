@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import logging
 import os
 import threading
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .bound_client import BoundQuonfig
 
 from .context import (
@@ -24,7 +27,7 @@ from .exceptions import (
 )
 from .resolver import LOG_LEVEL_ORDER, Resolver, compute_reportable_value
 from .store import ConfigStore
-from .transport import Transport
+from .transport import FallbackPoller, Transport
 from .types import (
     QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP,
     QUONFIG_SDK_LOGGING_CONTEXT_NAME,
@@ -145,6 +148,27 @@ class Quonfig:
         # `initialization_timeout_sec` actually exercises an init timeout.
         prefab_api_url: Optional[str] = None,
         logger_key: Optional[str] = None,
+        # Layer 2 HTTP fallback poller. Off-by-default-when-SSE-is-up: only
+        # engages on initial-SSE-failure or after a sustained disconnect
+        # (`fallback_poll_interval_ms` * 2 grace). Replaces the previous
+        # always-on parallel poll (qfg-47c2.8).
+        fallback_poll_enabled: bool = True,
+        fallback_poll_interval_ms: int = 60000,
+        # Cross-SDK observability hooks (mirror sdk-go's WithOnConfigUpdate /
+        # WithSSEStateCallback and sdk-node's onConfigUpdate /
+        # onSSEConnectionStateChange). Fire on each successful config install
+        # and each SSE connection-state edge respectively. Exceptions thrown by
+        # caller callbacks are caught by the SDK supervisor (chaos scenario 10).
+        on_config_update: "Optional[Callable[[], None]]" = None,
+        on_sse_connection_state_change: "Optional[Callable[[str], None]]" = None,
+        # Dev-only: when true (or env var ``QUONFIG_DEV_CONTEXT=true``),
+        # the SDK reads the per-domain tokens file written by ``qfg login``
+        # (``~/.quonfig/tokens.json`` for production,
+        # ``tokens-<domain-with-dashes>.json`` for staging) and merges
+        # ``{"quonfig-user": {"email": ...}}`` into the global context.
+        # Customer-supplied ``quonfig-user`` keys win on collision.
+        # Mirrors sdk-node/sdk-go/sdk-ruby.
+        enable_quonfig_user_context: bool = False,
     ) -> None:
         # Resolve configuration from params or env vars
         self._sdk_key = sdk_key or os.environ.get("QUONFIG_SDK_KEY", "")
@@ -186,7 +210,18 @@ class Quonfig:
             normalized_on_init = "return_zero_value"
         self._on_init_failure = normalized_on_init
         self._on_no_default = on_no_default
-        self._global_context: Contexts = global_context or {}
+        # Dev-context injection (qfg-jopa): mirror sdk-node/go/ruby behavior.
+        # Customer-supplied `global_context` wins on collision because it
+        # passes second to merge_contexts (later-wins).
+        dev_context_enabled = (
+            enable_quonfig_user_context or os.environ.get("QUONFIG_DEV_CONTEXT") == "true"
+        )
+        dev_context: Optional[Contexts] = None
+        if dev_context_enabled:
+            from .dev_context import load_quonfig_user_context
+
+            dev_context = load_quonfig_user_context(self._api_urls)
+        self._global_context = merge_contexts(dev_context or {}, global_context or {})
         self._logger_key = logger_key
 
         self._store = ConfigStore()
@@ -230,6 +265,37 @@ class Quonfig:
                 sdk_key=self._sdk_key,
             )
 
+        # Layer 2 fallback poller state. The poller itself is only constructed
+        # once a transport exists; the state vars below drive the engage/
+        # disengage decision when SSE state changes arrive.
+        self._fallback_poll_enabled = fallback_poll_enabled
+        self._fallback_poll_interval_ms = fallback_poll_interval_ms
+        self._fallback_poller: Optional[FallbackPoller] = None
+        self._sse_ever_connected = False
+        self._fallback_engage_timer: Optional[threading.Timer] = None
+        self._fallback_lock = threading.Lock()
+        self._on_config_update = on_config_update
+        self._on_sse_connection_state_change = on_sse_connection_state_change
+
+        # Customer-visible health primitives (qfg-47c2.15). Stamped on every
+        # successful install (datadir load, initial fetch, SSE event, fallback
+        # poll) via `_fire_on_config_update`. `_last_sse_state` records the
+        # most recent SSE state edge so `connection_state()` can distinguish
+        # `connected` from `disconnected` without re-deriving it from the
+        # transport. Datadir-only mode has no SSE — we mark it `connected`
+        # post-install since the data source is local.
+        self._last_successful_refresh: Optional[datetime.datetime] = None
+        self._last_sse_state: Optional[str] = None
+        self._health_lock = threading.Lock()
+        if self._transport is not None and self._fallback_poll_enabled:
+            self._fallback_poller = FallbackPoller(
+                transport=self._transport,
+                store=self._store,
+                interval_seconds=self._fallback_poll_interval_ms / 1000.0,
+                shutdown_event=self._shutdown,
+                on_config_update=self._fire_on_config_update,
+            )
+
     # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
@@ -255,12 +321,37 @@ class Quonfig:
 
         return self
 
+    def _fire_on_config_update(self) -> None:
+        """Invoke the user's on_config_update callback, swallowing any
+        exceptions and logging them. Mirrors sdk-node's `invokeOnConfigUpdate`
+        — chaos scenario 10 requires the SDK supervisor to catch user-callback
+        throws so the rest of the SDK keeps running.
+
+        Also stamps `last_successful_refresh()` — this is the single central
+        post-install hook (datadir, initial fetch, SSE event, fallback poll
+        all funnel through here), so it's the right place to record the
+        wall-clock time of the most recent install.
+        """
+        with self._health_lock:
+            self._last_successful_refresh = datetime.datetime.now(datetime.timezone.utc)
+        if self._on_config_update is None:
+            return
+        try:
+            self._on_config_update()
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "Quonfig: onConfigUpdate callback threw: %s: %s — supervisor caught, continuing",
+                type(e).__name__,
+                e,
+            )
+
     def _load_from_datadir(self) -> None:
         from .datadir import load_datadir
 
         try:
             envelope = load_datadir(self._datadir or "", self._environment)
             self._store.update(envelope)
+            self._fire_on_config_update()
         except Exception as e:
             self._init_error = e
             logger.error("Failed to load datadir: %s", e)
@@ -293,6 +384,7 @@ class Quonfig:
                 envelope = transport.fetch()
                 if envelope is not None:
                     self._store.update(envelope)
+                    self._fire_on_config_update()
             except Exception as e:
                 logger.warning("Initial fetch failed: %s — starting SSE anyway", e)
             finally:
@@ -300,14 +392,19 @@ class Quonfig:
 
         threading.Thread(target=_initial_fetch, daemon=True, name="quonfig-init").start()
 
-        # Start SSE for live updates
+        # Start SSE for live updates. SSE state edges drive the Layer 2
+        # fallback poller (engage on initial failure / sustained disconnect,
+        # disengage on recovery) — see `_handle_sse_state_change`.
         from .sse import SSEClient
 
-        sse = SSEClient(transport, self._store, self._shutdown)
-        sse.start()
-
-        # Start polling as fallback
-        transport.start_polling(self._store, self._shutdown)
+        self._sse = SSEClient(
+            transport,
+            self._store,
+            self._shutdown,
+            state_listener=self._handle_sse_state_change,
+            on_config_update=self._fire_on_config_update,
+        )
+        self._sse.start()
 
         # Start telemetry
         if self._telemetry is not None:
@@ -889,8 +986,146 @@ class Quonfig:
     def keys(self) -> List[str]:
         return self._store.keys()
 
+    # ------------------------------------------------------------------
+    # Layer 2 fallback poller — engage/disengage based on SSE state edges
+    # ------------------------------------------------------------------
+
+    def _handle_sse_state_change(self, state: str) -> None:
+        """SSE state listener — drives the fallback poller's engage/disengage.
+
+        States: ``connecting`` | ``connected`` | ``error`` | ``disconnected``.
+
+        - ``connected``: clear pending engage, disengage poller (SSE recovered).
+        - ``error`` BEFORE any successful connect: engage now (initial-fail).
+        - ``error`` AFTER a successful connect: schedule a 2x-poll-interval
+          grace timer; engage if the timer fires without reconnect.
+        - ``connecting`` / ``disconnected``: no-op.
+        """
+        # Record the latest SSE state so `connection_state()` can derive the
+        # customer-visible enum without re-reading transport internals.
+        with self._health_lock:
+            self._last_sse_state = state
+
+        # Fan out to caller's observability callback first; the chaos harness
+        # and OpenFeature provider both rely on this edge stream.
+        if self._on_sse_connection_state_change is not None:
+            try:
+                self._on_sse_connection_state_change(state)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Quonfig: on_sse_connection_state_change threw: %s: %s",
+                    type(e).__name__,
+                    e,
+                )
+
+        if not self._fallback_poll_enabled or self._fallback_poller is None:
+            return
+
+        if state == "connected":
+            with self._fallback_lock:
+                self._sse_ever_connected = True
+                if self._fallback_engage_timer is not None:
+                    self._fallback_engage_timer.cancel()
+                    self._fallback_engage_timer = None
+            self._fallback_poller.disengage("sse-recovered")
+            return
+
+        if state == "error":
+            with self._fallback_lock:
+                ever_connected = self._sse_ever_connected
+                pending = self._fallback_engage_timer is not None
+            if not ever_connected:
+                self._fallback_poller.engage("initial-sse-failure")
+                return
+            if not pending and not self._fallback_poller.is_active():
+                # Connected → disconnected edge. Give the SSE library 2x
+                # poll-interval to reconnect on its own before engaging
+                # the fallback poller (matches sdk-node).
+                grace_seconds = (self._fallback_poll_interval_ms / 1000.0) * 2.0
+
+                def _engage_after_grace() -> None:
+                    with self._fallback_lock:
+                        self._fallback_engage_timer = None
+                    if self._fallback_poller is not None:
+                        self._fallback_poller.engage("sse-disconnected-grace-elapsed")
+
+                timer = threading.Timer(grace_seconds, _engage_after_grace)
+                timer.daemon = True
+                with self._fallback_lock:
+                    self._fallback_engage_timer = timer
+                timer.start()
+            return
+        # connecting / disconnected → no-op
+
+    def fallback_poller_active(self) -> bool:
+        """``True`` when the Layer 2 HTTP fallback poller is currently
+        scheduled. Mirrors sdk-node's ``fallbackPollerActive()`` — used by
+        the chaos harness; the documented public ``connection_state()``
+        accessor below is the customer-facing surface."""
+        return self._fallback_poller is not None and self._fallback_poller.is_active()
+
+    # ------------------------------------------------------------------
+    # Customer-visible health primitives (qfg-47c2.15)
+    #
+    # WARNING: do NOT wire either of these into a Kubernetes liveness
+    # probe. They are diagnostic, not pass/fail. A liveness probe based on
+    # SDK freshness amplifies transient network blips into restart
+    # cascades. See README.
+    # ------------------------------------------------------------------
+
+    def last_successful_refresh(self) -> Optional[datetime.datetime]:
+        """Wall-clock time of the most recent installed config envelope.
+
+        Returns ``None`` before the first install. Updated on every install
+        source — datadir load, initial HTTP fetch, SSE event, fallback
+        poll — via the shared ``_fire_on_config_update`` hook.
+        """
+        with self._health_lock:
+            return self._last_successful_refresh
+
+    def connection_state(self) -> str:
+        """One of ``connected`` | ``disconnected`` | ``falling_back`` |
+        ``initializing``.
+
+        - ``falling_back``: Layer 2 HTTP fallback poller is active. Wins
+          over the SSE state — even if SSE briefly reports `connected`
+          before the poller disengages, an active poller is the truthful
+          signal.
+        - ``connected``: latest SSE state is ``connected``, or (datadir
+          mode / pre-SSE) we have an installed envelope.
+        - ``disconnected``: SSE reported ``error`` / ``disconnected`` and
+          the fallback poller hasn't engaged yet (grace window).
+        - ``initializing``: no SSE state has been observed AND no envelope
+          has been installed — the SDK hasn't reached a known good state.
+        """
+        if self._fallback_poller is not None and self._fallback_poller.is_active():
+            return "falling_back"
+        with self._health_lock:
+            last = self._last_sse_state
+            last_refresh = self._last_successful_refresh
+        if last == "connected":
+            return "connected"
+        if last in ("error", "disconnected"):
+            return "disconnected"
+        # `last` is None or "connecting" — no SSE established yet.
+        if last_refresh is not None:
+            # Datadir mode, or an HTTP install completed before SSE wired up.
+            return "connected"
+        return "initializing"
+
     def close(self) -> None:
         self._shutdown.set()
+        # Cancel any pending fallback engage timer so the daemon doesn't fire
+        # after close().
+        with self._fallback_lock:
+            if self._fallback_engage_timer is not None:
+                self._fallback_engage_timer.cancel()
+                self._fallback_engage_timer = None
+        if self._fallback_poller is not None:
+            try:
+                self._fallback_poller.disengage("client-close")
+            except Exception:
+                pass
         if self._telemetry is not None:
             try:
                 self._telemetry.stop()

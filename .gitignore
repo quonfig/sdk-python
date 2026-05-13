@@ -18,3 +18,6 @@ htmlcov/
 .coverage
 coverage.xml
 *.cover
+
+# chaos harness — locally-built api-delivery binary spawned by scripts/run-chaos.sh
+.chaos-api-delivery

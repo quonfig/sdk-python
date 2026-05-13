@@ -69,12 +69,21 @@ jobs:
         working-directory: sdk-python
         run: poetry export --format requirements.txt --output requirements-audit.txt --without-hashes
 
-      # CVE-2026-25645 (requests 2.32.5, extract_zipped_paths predictable temp
-      # filename) is ignored: the fix is in requests 2.33.0 which drops Python
-      # 3.9 support, and sdk-python does not call extract_zipped_paths. Revisit
-      # once we drop 3.9 from the matrix.
+      # Ignored CVEs — all blocked on dropping Python 3.9 from the matrix:
+      #   CVE-2026-25645  requests 2.32.5 extract_zipped_paths predictable temp
+      #                   filename. Fix in requests 2.33.0 (3.10+). We don't
+      #                   call extract_zipped_paths.
+      #   CVE-2026-44431  urllib3 2.6.3 sensitive header leak via low-level
+      #                   ProxyManager.connection_from_url.urlopen redirects.
+      #                   Fix in urllib3 2.7.0 (3.10+). SDK uses requests'
+      #                   high-level API, not ProxyManager low-level urlopen.
+      #   CVE-2026-44432  urllib3 2.6.3 over-decompress in streaming API with
+      #                   Brotli/drain_conn. Fix in urllib3 2.7.0 (3.10+). SDK
+      #                   does not use streaming reads with Brotli or call
+      #                   drain_conn directly.
+      # Revisit once we drop 3.9 from the matrix (see follow-up bead).
       - name: Audit dependencies (pip-audit)
         uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266  # v1.1.0
         with:
           inputs: sdk-python/requirements-audit.txt
-          ignore-vulns: CVE-2026-25645
+          ignore-vulns: CVE-2026-25645 CVE-2026-44431 CVE-2026-44432
