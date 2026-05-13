@@ -1,0 +1,118 @@
+name: Chaos
+
+# Runs the cross-SDK chaos harness (toxiproxy + scenarios from
+# integration-test-data/chaos) against sdk-python. Boots api-delivery in
+# fixture mode and drives every scenario in scenarios/*.yaml through it.
+#
+# Two modes:
+#   - smoke   : skips 11-null-hypothesis (the 30-minute idle scenario);
+#               runs on every push to main + every PR (~18 min wall clock).
+#   - full    : every scenario; runs on workflow_dispatch + via the release
+#               workflow as a publish gate (~48 min).
+#
+# Wired via workflow_call so release.yaml can `needs:` it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+    inputs:
+      mode:
+        description: "smoke (skip 11) or full"
+        required: false
+        type: string
+        default: smoke
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke (skip 11) or full"
+        required: false
+        type: choice
+        options: [smoke, full]
+        default: smoke
+
+jobs:
+  chaos:
+    name: Chaos (${{ inputs.mode || 'smoke' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout sdk-python
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          path: sdk-python
+
+      - name: Checkout integration-test-data
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          repository: quonfig/integration-test-data
+          path: integration-test-data
+          # Pinned per the 2026-05-13 reliability audit so the chaos
+          # gate moves only when the scenarios are deliberately
+          # rev'd. Bump alongside the matching SDK change.
+          ref: v2026.05.13
+
+      - name: Checkout api-delivery
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          # api-delivery is private; the default GITHUB_TOKEN cannot
+          # read it. A PAT or fine-grained token with read access to
+          # quonfig/api-delivery must be configured as the repo secret
+          # QUONFIG_REPO_TOKEN. Without it this step fails fast and
+          # the chaos gate is red — by design, until the secret is
+          # provisioned.
+          repository: quonfig/api-delivery
+          path: api-delivery
+          ref: main
+          token: ${{ secrets.QUONFIG_REPO_TOKEN }}
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: api-delivery/go.sum
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@76e04a911780d5b312d89783f7b1cd627778900a  # v1
+        with:
+          version: "1.8.3"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install mise
+        # The chaos wrapper invokes `mise exec -- poetry run pytest`.
+        # On CI we want mise to be a thin passthrough — it just needs
+        # to exist on PATH so `mise exec --` resolves to the system
+        # poetry that snok/install-poetry installed.
+        uses: jdx/mise-action@5cb1df66ed5e1fb3c670ea0b62fd17a76979826a  # v2.1.11
+
+      - name: Install sdk-python deps
+        working-directory: sdk-python
+        run: poetry install --no-interaction
+
+      - name: Verify docker compose available
+        run: docker compose version
+
+      - name: Run chaos harness
+        working-directory: sdk-python
+        env:
+          # Smoke skips 11-null-hypothesis (30 min idle). Full suite
+          # runs everything. The wrapper honors CHAOS_SKIP.
+          CHAOS_SKIP: ${{ inputs.mode == 'full' && '' || '11' }}
+        run: ./scripts/run-chaos.sh
+
+      - name: Upload chaos logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: chaos-logs-${{ github.run_id }}
+          path: |
+            sdk-python/.chaos-api-delivery
+            sdk-python/chaos-*.log
+          if-no-files-found: ignore
+          retention-days: 7
