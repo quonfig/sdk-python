@@ -9,7 +9,10 @@ from .types import ConfigEnvelope, ConfigResponse, Meta
 
 logger = logging.getLogger(__name__)
 
-SUBDIRS = ["configs", "feature-flags", "segments", "log-levels", "schemas"]
+# schemas/ is intentionally excluded: those files are raw JSON Schema documents,
+# not Configs, and SDKs do not consume them (qfg-uzsl). Matches api-delivery and
+# sdk-java.
+SUBDIRS = ["configs", "feature-flags", "segments", "log-levels"]
 
 
 def load_datadir(datadir: str, environment: str) -> ConfigEnvelope:
@@ -38,6 +41,10 @@ def load_datadir(datadir: str, environment: str) -> ConfigEnvelope:
                 with open(path) as f:
                     data = json.load(f)
                 config = ConfigResponse.from_dict(data)
+                # Defense-in-depth: reject empty-key configs rather than silently
+                # producing a stub (qfg-uzsl). Mirrors api-delivery's loader.
+                if not config.key:
+                    raise ValueError("config has empty key — file is not a Quonfig Config")
                 configs.append(config)
             except Exception as e:
                 logger.warning("Failed to load %s: %s", path, e)

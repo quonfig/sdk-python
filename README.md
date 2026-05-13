@@ -139,3 +139,26 @@ Resolution order (highest wins):
 
 The previously-supported `QUONFIG_API_URL`, `QUONFIG_API_URLS`, and
 `QUONFIG_TELEMETRY_URL` env vars have been removed.
+
+## Health primitives
+
+The client exposes two diagnostic getters:
+
+```python
+client.last_successful_refresh()  # -> datetime | None
+client.connection_state()         # -> "connected" | "disconnected" | "falling_back" | "initializing"
+```
+
+- `last_successful_refresh()` is the wall-clock time of the most recent
+  installed config envelope. Updated on every install path (datadir load,
+  initial HTTP fetch, SSE event, fallback poll). `None` before the first
+  install.
+- `connection_state()` reports the SDK's current view of its delivery
+  pipeline. `falling_back` means SSE is down and the HTTP fallback poller
+  is engaged.
+
+> Do not wire `last_successful_refresh()` or `connection_state()` directly into a Kubernetes liveness probe. These signals are diagnostic, not pass/fail. A liveness probe based on SDK freshness will amplify transient network blips into restart cascades.
+
+Compose your own threshold (e.g. "alert if stale > 10 minutes AND state
+is `disconnected`") rather than treating either primitive as binary
+health.
