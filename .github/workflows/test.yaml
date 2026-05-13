@@ -24,7 +24,10 @@ jobs:
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
-          ref: main
+          # Pinned to a tag (not main) so a typo in shared YAML can't
+          # break every SDK's CI at once. Bump to a newer tag when
+          # adopting new test cases. See integration-test-data/RELEASING.md.
+          ref: v2026.05.13
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
