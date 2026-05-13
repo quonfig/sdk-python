@@ -83,7 +83,7 @@ class SSEClient:
                     timeout=(5, 60),
                 )
                 response.raise_for_status()
-                client = sseclient.SSEClient(response)
+                client = sseclient.SSEClient(response)  # type: ignore[arg-type]
                 backoff = 1.0  # Reset on successful connection
                 self._emit("connected")
                 for event in client.events():

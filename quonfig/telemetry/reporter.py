@@ -91,7 +91,7 @@ class TelemetryReporter:
         payload = TelemetryPayload(instance_hash=self.instance_hash, events=events)
 
         credentials = base64.b64encode(f"1:{self.sdk_key}".encode()).decode()
-        headers = {
+        headers: dict[str, str | bytes] = {
             "Authorization": f"Basic {credentials}",
             "Content-Type": "application/json",
             "X-Quonfig-SDK-Version": f"python-{QUONFIG_VERSION}",
