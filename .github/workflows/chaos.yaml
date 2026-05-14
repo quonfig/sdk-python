@@ -23,6 +23,14 @@ on:
         required: false
         type: string
         default: smoke
+    secrets:
+      QUONFIG_REPO_TOKEN:
+        # Read access to the private quonfig/api-delivery repo. Reusable
+        # workflows do NOT inherit caller secrets implicitly — the caller
+        # (release.yaml) must pass this through, or the "Checkout
+        # api-delivery" step fails with "Input required and not supplied:
+        # token" and the publish gate can never go green.
+        required: true
   workflow_dispatch:
     inputs:
       mode:
