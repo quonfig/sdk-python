@@ -67,4 +67,4 @@ jobs:
 
       - name: Publish to PyPI
         if: steps.version_check.outputs.new_version == 'true'
-        uses: pypa/gh-action-pypi-publish@4bb033805d9e19112d8c697528791ff53f6c2f74  # release/v1 (v1.9.0)
+        uses: pypa/gh-action-pypi-publish@ec4db0b4ddc65acdf4bff5fa45ac92d78b56bdf0  # release/v1 (v1.9.0)
