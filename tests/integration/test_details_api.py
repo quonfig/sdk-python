@@ -105,7 +105,7 @@ def test_split_reason_for_weighted_values(client):
     assert deterministic.reason == "SPLIT"
     assert deterministic.value == "variant-b"
     assert saw_split and saw_static, (
-        "Expected the sweep to cover both STATIC (variant-a) and " "SPLIT (variant-b) outcomes"
+        "Expected the sweep to cover both STATIC (variant-a) and SPLIT (variant-b) outcomes"
     )
 
 
