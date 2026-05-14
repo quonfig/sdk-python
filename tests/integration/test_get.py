@@ -135,9 +135,9 @@ def test_duration_0_5h(config_client) -> None:
 def test_duration_test_duration_p1dt6h2m1_5s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.P1DT6H2M1.5S")
-    assert (
-        abs(result * 1000 - 108121500) < 1
-    ), f"Expected {result * 1000}ms to be close to 108121500ms"
+    assert abs(result * 1000 - 108121500) < 1, (
+        f"Expected {result * 1000}ms to be close to 108121500ms"
+    )
 
 
 # json test

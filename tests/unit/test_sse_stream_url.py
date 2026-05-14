@@ -75,9 +75,9 @@ def test_sse_client_subscribes_to_stream_host_not_api_host() -> None:
 
     assert captured_urls, "SSEClient should have made at least one request"
     url = captured_urls[0]
-    assert url.startswith(
-        "https://stream.primary.quonfig.com/"
-    ), f"SSE URL must target stream.<host>, got: {url}"
+    assert url.startswith("https://stream.primary.quonfig.com/"), (
+        f"SSE URL must target stream.<host>, got: {url}"
+    )
     assert url.endswith("/api/v2/sse/config")
 
 

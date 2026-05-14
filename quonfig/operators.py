@@ -355,12 +355,12 @@ OPERATOR_DISPATCH: dict = {
     "PROP_IS_NOT_ONE_OF": prop_is_not_one_of,
     "LOOKUP_KEY_NOT_IN": prop_is_not_one_of,
     "PROP_ENDS_WITH_ONE_OF": prop_ends_with_one_of,
-    "PROP_DOES_NOT_END_WITH_ONE_OF": lambda pv, cv, ctx, s: not prop_ends_with_one_of(
-        pv, cv, ctx, s
+    "PROP_DOES_NOT_END_WITH_ONE_OF": lambda pv, cv, ctx, s: (
+        not prop_ends_with_one_of(pv, cv, ctx, s)
     ),
     "PROP_STARTS_WITH_ONE_OF": prop_starts_with_one_of,
-    "PROP_DOES_NOT_START_WITH_ONE_OF": lambda pv, cv, ctx, s: not prop_starts_with_one_of(
-        pv, cv, ctx, s
+    "PROP_DOES_NOT_START_WITH_ONE_OF": lambda pv, cv, ctx, s: (
+        not prop_starts_with_one_of(pv, cv, ctx, s)
     ),
     "PROP_CONTAINS_ONE_OF": prop_contains_one_of,
     "PROP_DOES_NOT_CONTAIN_ONE_OF": lambda pv, cv, ctx, s: not prop_contains_one_of(pv, cv, ctx, s),

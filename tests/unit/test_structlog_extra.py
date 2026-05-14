@@ -41,9 +41,9 @@ def test_structlog_declared_as_optional_extra() -> None:
         "Expected [tool.poetry.extras] to declare a 'structlog' extra so users "
         "can opt into structlog support via `pip install quonfig[structlog]`."
     )
-    assert (
-        "structlog" in extras["structlog"]
-    ), "Expected the 'structlog' extra to reference the structlog package."
+    assert "structlog" in extras["structlog"], (
+        "Expected the 'structlog' extra to reference the structlog package."
+    )
 
     runtime_deps = pyproject["tool"]["poetry"]["dependencies"]
     structlog_dep = runtime_deps.get("structlog")

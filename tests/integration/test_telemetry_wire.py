@@ -65,9 +65,9 @@ def test_selected_value_uses_correct_type_wrapper_keys_in_json():
         collector.record(evaluate_for_telemetry(key))
         event = collector.drain()
         doc = json.loads(json.dumps(event.summaries.summaries[0].counters[0].selected_value))
-        assert (
-            expected_wrapper in doc
-        ), f"{key}: expected wrapper key '{expected_wrapper}', got {doc}"
+        assert expected_wrapper in doc, (
+            f"{key}: expected wrapper key '{expected_wrapper}', got {doc}"
+        )
 
 
 def test_context_shapes_json_uses_field_types_not_field_names():
