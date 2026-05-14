@@ -46,12 +46,12 @@ jobs:
     if: github.actor != 'dependabot[bot]'
     steps:
       - name: Checkout sdk-python
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           path: sdk-python
 
       - name: Checkout integration-test-data
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
@@ -61,7 +61,7 @@ jobs:
           ref: v2026.05.13
 
       - name: Checkout api-delivery
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           # api-delivery is private; the default GITHUB_TOKEN cannot
           # read it. A PAT or fine-grained token with read access to
@@ -80,7 +80,7 @@ jobs:
           cache-dependency-path: api-delivery/go.sum
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: "3.11"
 
