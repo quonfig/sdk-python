@@ -16,6 +16,11 @@ jobs:
     uses: ./.github/workflows/chaos.yaml
     with:
       mode: full
+    # Reusable workflows do not inherit caller secrets — pass through the
+    # api-delivery checkout token explicitly, or the chaos publish gate
+    # fails fast on "Checkout api-delivery" and publish is skipped.
+    secrets:
+      QUONFIG_REPO_TOKEN: ${{ secrets.QUONFIG_REPO_TOKEN }}
 
   publish:
     runs-on: ubuntu-latest

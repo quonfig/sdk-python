@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.15 - 2026-05-14
+
+- **Fix: no more silent SSE reconnect on a clean `sseclient` EOF (qfg-47c2.31).** When the SSE stream closed cleanly (server-side EOF rather than a network error), the client treated it as a normal end-of-iteration and silently stopped receiving updates without re-establishing the stream or engaging the fallback poller. The stream now distinguishes a clean EOF from an intentional shutdown and reconnects, so a server-initiated stream close no longer leaves the SDK serving stale config indefinitely.
+- **Feat: dev-context injection from `~/.quonfig/tokens.json` (qfg-jopa).** In local development the SDK now reads a developer context from `~/.quonfig/tokens.json` if present and merges it into evaluation context, so engineers can target themselves without wiring context through application code. No effect when the file is absent (i.e. in CI and production).
+- **Breaking (build/runtime): minimum Python is now 3.10; `urllib3` bumped to 2.7.0 and `requests` to 2.34.1 (qfg-or1x).** Python 3.9 is dropped from the support matrix. This is a packaging-level change only — no SDK public API changed — but installs on Python 3.9 will no longer resolve. The `urllib3`/`requests` bumps clear CVE-2026-44431 / CVE-2026-44432, which were previously suppressed because the fixed `urllib3` requires Python ≥ 3.10.
+- **Chore: cross-SDK chaos harness wired as a release gate.** The chaos harness (`scripts/run-chaos.sh`) now runs in CI: a smoke subset on every push and PR, and the full suite as a publish gate in `release.yaml`. It is skipped on Dependabot PRs, which run with a restricted token context that cannot check out the private `api-delivery` repo the harness boots against.
+- **Chore: dependency bumps.** Runtime: `mmh3` 4.x → 5.2.1, `isodate` 0.6.1 → 0.7.2. Dev tooling: `ruff` 0.4 → 0.15 (formatter style rules updated; source reformatted accordingly), `pytest-cov` 5 → 7, `responses` 0.25 → 0.26. CI actions: `actions/checkout`, `actions/setup-python`, and `pypa/gh-action-pypi-publish` bumped to current major versions.
+
 ## 0.0.14 - 2026-05-11
 
 - **Feat: `last_successful_refresh()` and `connection_state()` health primitives (qfg-47c2.15).** Two new diagnostic getters on `Quonfig`: `last_successful_refresh()` returns the wall-clock time of the most recent installed envelope (or `None` before the first install); `connection_state()` returns one of `connected` / `disconnected` / `falling_back` / `initializing`. Stamped on every install path (datadir, initial fetch, SSE event, fallback poll). No `healthy()` boolean is exposed — per the SDK hardening plan, customers will wire a binary into k8s liveness probes and amplify transient blips into restart cascades; the README documents this explicitly.
