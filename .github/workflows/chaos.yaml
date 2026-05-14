@@ -37,6 +37,13 @@ jobs:
     name: Chaos (${{ inputs.mode || 'smoke' }})
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    # Dependabot PRs run with a restricted token context and have no access
+    # to repo Actions secrets, so `QUONFIG_REPO_TOKEN` (needed to check out
+    # the private api-delivery repo) is empty and the checkout step fails
+    # fast with "Input required and not supplied: token". Skip the harness
+    # for those PRs — the same commit re-runs chaos on push to main once
+    # merged, and the release workflow gates publish on the full suite.
+    if: github.actor != 'dependabot[bot]'
     steps:
       - name: Checkout sdk-python
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
