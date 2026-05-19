@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.16 - 2026-05-19
+
+- **Feat: opt-in `data_dir_auto_reload` for datadir mode (qfg-mol-3gy).** Two new constructor kwargs — `data_dir_auto_reload` (default `False`) and `data_dir_auto_reload_debounce_ms` (default `200`). When enabled in datadir mode, the SDK watches the resolved datadir via [`watchfiles`](https://github.com/samuelcolvin/watchfiles) (Rust-backed `notify` wrapper) and re-runs `load_datadir` on each debounced burst, parse-then-swapping the envelope through the existing `_store.update` path and firing the existing `on_config_update` callback. Mirrors sdk-node's `dataDirAutoReload`. Behaviour contract: parse-then-swap (a mid-write JSON garble logs and is dropped — the previous envelope keeps serving and `on_config_update` does **not** fire on parse failure); graceful degrade on read-only / immutable filesystems (registration failures log a warning and continue without watching — `init()` does not raise); symlinked datadirs resolve to the real path at start time; `client.close()` signals the watcher's stop event and joins the daemon thread (≤2s). Adds `watchfiles>=0.21,<2.0` as a runtime dep.
+
 ## 0.0.15 - 2026-05-14
 
 - **Fix: no more silent SSE reconnect on a clean `sseclient` EOF (qfg-47c2.31).** When the SSE stream closed cleanly (server-side EOF rather than a network error), the client treated it as a normal end-of-iteration and silently stopped receiving updates without re-establishing the stream or engaging the fallback poller. The stream now distinguishes a clean EOF from an intentional shutdown and reconnects, so a server-initiated stream close no longer leaves the SDK serving stale config indefinitely.
