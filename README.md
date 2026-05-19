@@ -109,6 +109,94 @@ client = Quonfig(datadir="/path/to/workspace", environment="production")
 client.init()
 ```
 
+## Datadir mode: auto-reload on file changes
+
+When you initialize the SDK with `datadir="./path"`, configs are loaded once from
+disk at `init()` time. Opt in to `data_dir_auto_reload` to have the SDK watch
+the directory and re-read the envelope whenever files change — an editor save,
+a `git pull`, or a build step.
+
+```python
+from quonfig import Quonfig
+
+def on_update():
+    print("Quonfig configs reloaded from disk")
+
+client = Quonfig(
+    datadir="./workspace-data",
+    environment="development",
+    data_dir_auto_reload=True,  # off by default — must be opted in
+    on_config_update=on_update,
+)
+client.init()
+
+# Edit a file under ./workspace-data and on_update fires within ~200ms.
+
+# On shutdown, close() stops the watcher and clears any pending debounce timer.
+client.close()
+```
+
+### When to enable
+
+- Local development with the datadir checked out from git.
+- Self-hosted servers that `git pull` the datadir on a schedule.
+- CI jobs that mutate the datadir between assertions.
+
+### When NOT to enable
+
+- **Read-only / immutable filesystems** (some containers, AWS Lambda, scratch
+  images). Watch registration may fail; the SDK degrades gracefully (logs the
+  error and continues serving the envelope it loaded at `init()` time) but
+  you're paying for nothing.
+- **Build-time-embedded workflows** where the datadir is bundled into the
+  artifact and never changes at runtime. Watching wastes a file descriptor and
+  a watcher thread.
+- **Production paths where reload timing matters** — e.g. you'd rather pin the
+  envelope you shipped with and roll forward through a redeploy than have it
+  shift under traffic.
+
+Default is `False`; datadir mode is silent until you opt in.
+
+### Behavior contract
+
+- **Parse-then-swap.** If the new envelope fails to parse (truncated write,
+  mid-`git pull` state, invalid JSON), the SDK logs the error and **keeps
+  serving the previous envelope**. `on_config_update` is _not_ fired on parse
+  failure — only on a successful swap.
+- **Debounced.** Bursts of filesystem events (atomic-rename editor saves, `git
+  pull` touching dozens of files) coalesce into a single re-read. Default
+  window: **200ms** — long enough to absorb the 3–5 events typical editors emit
+  in <50ms, short enough that interactive edits feel immediate. Tune via
+  `data_dir_auto_reload_debounce_ms` if you need a different window.
+- **Graceful degrade.** If watch registration fails (read-only fs, immutable
+  container, missing path), the SDK logs and continues without watching — it
+  does **not** raise from `init()`.
+- **Symlinks.** The watcher resolves `datadir` to its real path at start time.
+  Editing the file the symlink points at _is_ detected; atomic flips that
+  retarget the link itself are **not**.
+- **Shutdown.** `client.close()` signals the watcher's stop event and joins the
+  daemon thread (≤2s). There is no separate handle to manage — the watcher
+  lifecycle is tied to the client. The thread is a daemon, so a stuck join
+  will not block process exit.
+
+### Tuning the debounce window
+
+```python
+Quonfig(
+    datadir="./workspace-data",
+    data_dir_auto_reload=True,
+    data_dir_auto_reload_debounce_ms=1000,  # wait a full second after the last event
+)
+```
+
+The default (200ms) is tuned for interactive editing. Raise it if you have a
+noisy producer (continuously regenerating files) and you'd rather see one
+reload per second than per save. Lower it only if you've measured that 200ms
+is meaningfully too slow for your use case.
+
+See the [open-source / local how-to](https://docs.quonfig.com/docs/how-tos/open-source-local)
+for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
+
 ## Configuration
 
 | Param | Env var | Default |
@@ -122,6 +210,8 @@ client.init()
 | `on_init_failure` | -- | `"raise"` |
 | `on_no_default` | -- | `"error"` |
 | `logger_key` | -- | `None` |
+| `data_dir_auto_reload` | -- | `False` |
+| `data_dir_auto_reload_debounce_ms` | -- | `200` |
 
 ### `QUONFIG_DOMAIN`
 
