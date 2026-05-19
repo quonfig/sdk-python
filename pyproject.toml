@@ -16,6 +16,10 @@ cryptography = ">=46.0.6"
 tenacity = ">=8.0.0"
 isodate = ">=0.6.1,<0.8.0"
 packaging = ">=21.0"
+# Opt-in data_dir_auto_reload uses watchfiles (Rust-backed notify wrapper).
+# Always installed: keeps the optional-extras matrix simple and matches
+# sdk-node which uses Node's built-in fs.watch (no extras gate).
+watchfiles = ">=0.21,<2.0"
 structlog = {version = ">=24.0", optional = true}
 
 [tool.poetry.extras]

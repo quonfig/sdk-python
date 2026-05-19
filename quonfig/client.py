@@ -161,6 +161,13 @@ class Quonfig:
         # caller callbacks are caught by the SDK supervisor (chaos scenario 10).
         on_config_update: "Optional[Callable[[], None]]" = None,
         on_sse_connection_state_change: "Optional[Callable[[str], None]]" = None,
+        # Opt-in datadir auto-reload: when enabled in datadir mode, the SDK
+        # watches the resolved datadir via `watchfiles` and re-runs
+        # `load_datadir` on debounced bursts. Mirrors sdk-node's
+        # `dataDirAutoReload` (qfg-mol-0kr). Default off — datadir SDKs stay
+        # silent until callers opt in.
+        data_dir_auto_reload: bool = False,
+        data_dir_auto_reload_debounce_ms: int = 200,
         # Dev-only: when true (or env var ``QUONFIG_DEV_CONTEXT=true``),
         # the SDK reads the per-domain tokens file written by ``qfg login``
         # (``~/.quonfig/tokens.json`` for production,
@@ -276,6 +283,9 @@ class Quonfig:
         self._fallback_lock = threading.Lock()
         self._on_config_update = on_config_update
         self._on_sse_connection_state_change = on_sse_connection_state_change
+        self._data_dir_auto_reload = data_dir_auto_reload
+        self._data_dir_auto_reload_debounce_ms = data_dir_auto_reload_debounce_ms
+        self._datadir_watcher: Optional[Any] = None  # quonfig.datadir_watcher.DatadirWatcher
 
         # Customer-visible health primitives (qfg-47c2.15). Stamped on every
         # successful install (datadir load, initial fetch, SSE event, fallback
@@ -364,6 +374,57 @@ class Quonfig:
         # are handled in __init__ where self._telemetry is set to None.
         if self._telemetry is not None:
             self._telemetry.start()
+
+        # Opt-in filesystem watcher (qfg-mol-3gy). Started after the first
+        # install so the initial envelope is in place before any reload can
+        # race the load. Registration failures (read-only fs, missing path)
+        # log and downgrade — the SDK keeps serving the initial envelope.
+        if self._data_dir_auto_reload and self._datadir:
+            self._start_datadir_watcher()
+
+    def _start_datadir_watcher(self) -> None:
+        from .datadir_watcher import DatadirWatcher
+
+        def _on_error(err: BaseException) -> None:
+            logger.warning("Quonfig datadir watcher error: %s: %s", type(err).__name__, err)
+
+        watcher = DatadirWatcher(
+            datadir=self._datadir or "",
+            debounce_ms=self._data_dir_auto_reload_debounce_ms,
+            on_change=self._reload_datadir,
+            on_error=_on_error,
+        )
+        if not watcher.start():
+            logger.warning(
+                "Quonfig data_dir_auto_reload requested but watcher registration failed; "
+                "continuing without auto-reload"
+            )
+            return
+        self._datadir_watcher = watcher
+
+    def _reload_datadir(self) -> None:
+        """Re-read the datadir into a fresh envelope and atomically install it.
+
+        Parse-then-swap: build the new envelope first, then call
+        `_store.update` (which already takes the store lock). On any failure
+        (mid-write JSON garble, RuntimeError from the loader), keep the
+        previous envelope and do NOT fire `on_config_update`.
+        """
+        if self._shutdown.is_set():
+            return
+        from .datadir import load_datadir
+
+        try:
+            envelope = load_datadir(self._datadir or "", self._environment)
+        except Exception as e:  # noqa: BLE001 — parse-then-swap: never expose broken state
+            logger.warning(
+                "Quonfig datadir reload failed; keeping previous envelope: %s: %s",
+                type(e).__name__,
+                e,
+            )
+            return
+        self._store.update(envelope)
+        self._fire_on_config_update()
 
     def _load_from_api(self) -> None:
         """Run the initial fetch on a background thread.
@@ -1126,6 +1187,12 @@ class Quonfig:
                 self._fallback_poller.disengage("client-close")
             except Exception:
                 pass
+        if self._datadir_watcher is not None:
+            try:
+                self._datadir_watcher.close()
+            except Exception:
+                pass
+            self._datadir_watcher = None
         if self._telemetry is not None:
             try:
                 self._telemetry.stop()
