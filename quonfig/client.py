@@ -161,12 +161,32 @@ class Quonfig:
         # caller callbacks are caught by the SDK supervisor (chaos scenario 10).
         on_config_update: "Optional[Callable[[], None]]" = None,
         on_sse_connection_state_change: "Optional[Callable[[str], None]]" = None,
-        # Opt-in datadir auto-reload: when enabled in datadir mode, the SDK
-        # watches the resolved datadir via `watchfiles` and re-runs
-        # `load_datadir` on debounced bursts. Mirrors sdk-node's
-        # `dataDirAutoReload` (qfg-mol-0kr). Default off — datadir SDKs stay
-        # silent until callers opt in.
+        # Opt-in datadir auto-reload (qfg-mol-3gy). When ``True`` in datadir
+        # mode, the SDK watches the resolved datadir via ``watchfiles`` and
+        # re-runs ``load_datadir`` on debounced bursts. Behavior:
+        #
+        #   * Default ``False`` — datadir mode stays silent until callers
+        #     opt in. Mirrors sdk-node's ``dataDirAutoReload``.
+        #   * Parse-then-swap: a mid-write / truncated envelope logs and is
+        #     dropped; the previously-installed envelope keeps serving and
+        #     ``on_config_update`` does NOT fire on parse failure.
+        #   * Graceful degrade on read-only / immutable filesystems: if
+        #     watcher registration fails (missing path, read-only fs), the
+        #     SDK logs a warning and continues without auto-reload — it
+        #     does NOT raise from ``init()``.
+        #   * ``close()`` signals the watcher's stop event and joins the
+        #     daemon thread (≤2s); no separate handle to manage.
+        #   * Symlinked datadirs are resolved at start time — edits to the
+        #     real target are detected; atomic retargets of the link itself
+        #     are not.
         data_dir_auto_reload: bool = False,
+        # Debounce window (ms) for ``data_dir_auto_reload``. Default ``200`` —
+        # long enough to coalesce the 3–5 events editors emit on an atomic
+        # save, short enough that interactive edits feel immediate. Has no
+        # effect when ``data_dir_auto_reload`` is ``False``. See the README
+        # "Datadir mode: auto-reload on file changes" section and
+        # https://docs.quonfig.com/docs/how-tos/open-source-local for the
+        # cross-SDK story.
         data_dir_auto_reload_debounce_ms: int = 200,
         # Dev-only: when true (or env var ``QUONFIG_DEV_CONTEXT=true``),
         # the SDK reads the per-domain tokens file written by ``qfg login``
