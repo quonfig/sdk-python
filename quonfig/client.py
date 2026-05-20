@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from .bound_client import BoundQuonfig
+    from .types import ConfigResponse
 
 from .context import (
     clear_thread_context,
@@ -1066,6 +1067,17 @@ class Quonfig:
 
     def keys(self) -> List[str]:
         return self._store.keys()
+
+    def raw_config(self, key: str) -> "Optional[ConfigResponse]":
+        """Return the raw ``ConfigResponse`` envelope for ``key``, pre-unwrap.
+
+        This is the loaded config entry exactly as it sits in the store —
+        before any rule evaluation or value unwrapping. Returns ``None`` if
+        no config with that key is loaded. Mirrors sdk-node's ``rawConfig``;
+        intended for advanced usage / tooling that needs the on-the-wire
+        shape rather than a resolved value.
+        """
+        return self._store.get(key)
 
     # ------------------------------------------------------------------
     # Layer 2 fallback poller — engage/disengage based on SSE state edges
