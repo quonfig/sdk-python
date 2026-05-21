@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.0.17 - 2026-05-21
 
 - **Fix: datadir loader coerces `int`/`double` values to numbers at load time (qfg-38sf.8).** Quonfig config files store `int` and `double` value fields as JSON strings on disk (`{"type": "int", "value": "123"}`). The datadir loader previously passed these through verbatim, leaving the loaded envelope's `Value.value` as a string until downstream unwrap coercion ran. `load_datadir` now runs a recursive `coerce_numeric_values` walk over each parsed config dict before building the `ConfigResponse`, so the loaded envelope always carries real numbers — matching api-delivery and sdk-go. The walk covers default/environment rules, criteria `valueToMatch`, weighted-value arms, and variants uniformly; an unparseable numeric string is left as-is (passthrough, never raises).
 - **Feat: new public `raw_config(key)` accessor on `Quonfig` (qfg-bwwj).** Returns the raw loaded `ConfigResponse` envelope for a key (pre-evaluation, pre-unwrap), or `None` if no such config is loaded. Mirrors sdk-node's `rawConfig` — intended for advanced usage and tooling that needs the on-the-wire config shape rather than a resolved value.
+- **Chore: pin `integration-test-data` to `v2026.05.20` in CI and guard against stale generated tests (#22).**
+- **Chore: dependency bumps.** Runtime: `requests` 2.34.1 → 2.34.2 (#19). Dev tooling: `pytest` 8.4.2 → 9.0.3 (#17, major), `mypy` 1.20.2 → 2.1.0 (#20, major). CI actions: `actions/upload-artifact` 4.6.2 → 7.0.1 (#13), `jdx/mise-action` 2.3.1 → 4.0.1 (#14), `pypa/gh-action-pypi-publish` 1.9.0 → 1.14.0 (#15), `actions/setup-go` 5.6.0 → 6.4.0 (#16).
 
 ## 0.0.16 - 2026-05-19
 
