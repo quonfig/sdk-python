@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.18 - 2026-05-28
 
 - **Feat: collapse `init_timeout` + `initialization_timeout_sec` into canonical `init_timeout_ms` (qfg-o8zr).** sdk-1.0 unification, Section 1. The SDK previously accepted two seconds-based init-timeout kwargs (`init_timeout: float` and `initialization_timeout_sec: float`, the latter winning); only sdk-ruby (also renamed in qfg-39za) and sdk-python were on seconds while sdk-node uses `initTimeout` (ms) and sdk-javascript uses `timeout` (ms). New canonical kwarg `init_timeout_ms: int = 10_000` (milliseconds) aligns all SDKs. The legacy `init_timeout` and `initialization_timeout_sec` kwargs are kept as deprecated aliases for one minor cycle — each emits a `DeprecationWarning` and is forwarded as `value * 1000` into `_init_timeout_ms`. The canonical kwarg wins when more than one is passed.
 
