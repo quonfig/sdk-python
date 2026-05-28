@@ -42,12 +42,11 @@ def test_get_or_raise_returns_a_default_value_instead_of_raising() -> None:
 # get_or_raise raises the correct error if it doesn't raise on init timeout
 def test_get_or_raise_raises_the_correct_error_if_it_doesn_t_raise_on_init_timeout() -> None:
     c = Quonfig(
-        datadir=DATADIR,
         environment="Production",
         on_no_default="error",
         initialization_timeout_sec=0.01,
         on_init_failure="return",
-        prefab_api_url="https://app.staging-prefab.cloud",
+        api_urls=["https://app.staging-prefab.cloud"],
     )
     c.init()
     with pytest.raises(QuonfigKeyNotFoundError):
@@ -57,12 +56,11 @@ def test_get_or_raise_raises_the_correct_error_if_it_doesn_t_raise_on_init_timeo
 # get_or_raise can raise an error if the client does not initialize in time
 def test_get_or_raise_can_raise_an_error_if_the_client_does_not_initialize_in_time() -> None:
     c = Quonfig(
-        datadir=DATADIR,
         environment="Production",
         on_no_default="error",
         initialization_timeout_sec=0.01,
         on_init_failure="raise",
-        prefab_api_url="https://app.staging-prefab.cloud",
+        api_urls=["https://app.staging-prefab.cloud"],
     )
     c.init()
     with pytest.raises(QuonfigInitTimeoutError):

@@ -143,11 +143,6 @@ class Quonfig:
         context_upload_mode: str = "periodic_example",
         on_no_default: str = "error",  # "error" | "warn" | "ignore"
         datadir: Optional[str] = None,
-        # Cross-SDK alias: when set, behaves as a single-element `api_urls`.
-        # When passed alongside `datadir` the HTTP source wins, matching the
-        # YAML suite's expectation that `prefab_api_url` + a tiny
-        # `initialization_timeout_sec` actually exercises an init timeout.
-        prefab_api_url: Optional[str] = None,
         logger_key: Optional[str] = None,
         # Layer 2 HTTP fallback poller. Off-by-default-when-SSE-is-up: only
         # engages on initial-SSE-failure or after a sustained disconnect
@@ -201,10 +196,7 @@ class Quonfig:
         # Resolve configuration from params or env vars
         self._sdk_key = sdk_key or os.environ.get("QUONFIG_SDK_KEY", "")
         self._environment = environment or os.environ.get("QUONFIG_ENVIRONMENT", "")
-        # `prefab_api_url` (cross-SDK) overrides `datadir` so the test suite's
-        # init-timeout cases can exercise real HTTP behavior even when the
-        # datadir is also passed through.
-        self._datadir = None if prefab_api_url else (datadir or os.environ.get("QUONFIG_DIR"))
+        self._datadir = datadir or os.environ.get("QUONFIG_DIR")
 
         # `QUONFIG_DOMAIN` governs both api_urls and telemetry_url defaults
         # so a single env var flips a service between prod and staging.
@@ -213,10 +205,9 @@ class Quonfig:
         domain = os.environ.get("QUONFIG_DOMAIN", "").strip() or _DEFAULT_DOMAIN
         default_api_urls, default_telemetry_url = _derive_defaults(domain)
 
+        explicit_api_urls = bool(api_urls)
         if api_urls:
             self._api_urls = api_urls
-        elif prefab_api_url:
-            self._api_urls = [prefab_api_url]
         else:
             self._api_urls = default_api_urls
 
@@ -276,18 +267,18 @@ class Quonfig:
             except Exception:
                 pass  # Telemetry is optional
 
-        # Transport: stand it up whenever the caller wired an HTTP source,
-        # even in the explicit-`prefab_api_url` case where there's no
-        # sdk_key (the integration test points at staging-prefab.cloud
-        # specifically to exercise an init-timeout, not to fetch real
-        # configs). When only datadir is configured, no transport is needed.
+        # Transport: stand it up whenever the caller wired an HTTP source.
+        # Explicit `api_urls=` without an sdk_key is the integration-suite
+        # init-timeout pattern — point at a real-but-unreachable host to
+        # exercise the timeout, not to fetch real configs. When only datadir
+        # is configured, no transport is needed.
         # The request timeout is intentionally independent of
         # initialization_timeout_sec: capping it at a sub-second
         # init-timeout would surface a tiny init as a generic
         # `requests.Timeout` from the background fetch instead of letting
         # `_wait_initialized` raise `QuonfigInitTimeoutError`.
         self._transport: Optional[Transport] = None
-        if prefab_api_url or (not self._datadir and self._sdk_key):
+        if (not self._datadir and self._sdk_key) or (explicit_api_urls and not self._datadir):
             self._transport = Transport(
                 api_urls=self._api_urls,
                 sdk_key=self._sdk_key,
