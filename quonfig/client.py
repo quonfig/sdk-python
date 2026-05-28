@@ -5,6 +5,7 @@ import datetime
 import logging
 import os
 import threading
+import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
@@ -129,10 +130,16 @@ class Quonfig:
         sdk_key: Optional[str] = None,
         *,
         api_urls: Optional[List[str]] = None,
+        # qfg-o8zr: canonical init timeout is `init_timeout_ms` (milliseconds,
+        # default 10_000). Mirrors sdk-ruby's `init_timeout_ms` (qfg-39za) and
+        # sdk-node's `initTimeout` so all SDKs settle on ms. The legacy
+        # `init_timeout` (seconds, float) and `initialization_timeout_sec`
+        # (seconds, float) kwargs are kept as deprecated aliases for one
+        # minor cycle — each emits a `DeprecationWarning` and is forwarded
+        # as `value * 1000` into `_init_timeout_ms`. The canonical kwarg
+        # wins when more than one is passed.
+        init_timeout_ms: int = 10_000,
         init_timeout: Optional[float] = None,
-        # Cross-SDK alias for `init_timeout` — mirrors the YAML
-        # `client_overrides.initialization_timeout_sec` knob the shared
-        # integration suite uses. Wins over `init_timeout` if both are set.
         initialization_timeout_sec: Optional[float] = None,
         on_init_failure: str = "raise",  # "raise" | "return" | "return_zero_value"
         global_context: Optional[Contexts] = None,
@@ -212,14 +219,36 @@ class Quonfig:
             self._api_urls = default_api_urls
 
         self._telemetry_url = telemetry_url or default_telemetry_url
-        # `initialization_timeout_sec` is the cross-SDK alias and wins; fall
-        # back to `init_timeout` and finally the historical 10s default.
+        # qfg-o8zr: canonical option is `init_timeout_ms` (milliseconds). When
+        # the caller passes `init_timeout_ms` explicitly it wins. Otherwise
+        # the legacy seconds-based aliases (in priority order
+        # `init_timeout` → `initialization_timeout_sec`) are forwarded with
+        # transparent `* 1000` multiplication and emit a DeprecationWarning.
+        if init_timeout is not None:
+            warnings.warn(
+                "Quonfig: `init_timeout` (seconds) is deprecated; use "
+                "`init_timeout_ms` (milliseconds) instead. Forwarding as "
+                f"init_timeout_ms={int(float(init_timeout) * 1000)}.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         if initialization_timeout_sec is not None:
-            self._init_timeout = float(initialization_timeout_sec)
+            warnings.warn(
+                "Quonfig: `initialization_timeout_sec` (seconds) is deprecated; "
+                "use `init_timeout_ms` (milliseconds) instead. Forwarding as "
+                f"init_timeout_ms={int(float(initialization_timeout_sec) * 1000)}.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if init_timeout_ms != 10_000:
+            # Canonical kwarg was set explicitly — it wins outright.
+            self._init_timeout_ms = int(init_timeout_ms)
         elif init_timeout is not None:
-            self._init_timeout = float(init_timeout)
+            self._init_timeout_ms = int(float(init_timeout) * 1000)
+        elif initialization_timeout_sec is not None:
+            self._init_timeout_ms = int(float(initialization_timeout_sec) * 1000)
         else:
-            self._init_timeout = 10.0
+            self._init_timeout_ms = int(init_timeout_ms)
 
         # Accept the YAML keyword form (`:return`) and the cross-SDK
         # short alias (`return`) on top of the historical
@@ -273,10 +302,10 @@ class Quonfig:
         # exercise the timeout, not to fetch real configs. When only datadir
         # is configured, no transport is needed.
         # The request timeout is intentionally independent of
-        # initialization_timeout_sec: capping it at a sub-second
-        # init-timeout would surface a tiny init as a generic
-        # `requests.Timeout` from the background fetch instead of letting
-        # `_wait_initialized` raise `QuonfigInitTimeoutError`.
+        # init_timeout_ms: capping it at a sub-second init-timeout would
+        # surface a tiny init as a generic `requests.Timeout` from the
+        # background fetch instead of letting `_wait_initialized` raise
+        # `QuonfigInitTimeoutError`.
         self._transport: Optional[Transport] = None
         if (not self._datadir and self._sdk_key) or (explicit_api_urls and not self._datadir):
             self._transport = Transport(
@@ -328,7 +357,7 @@ class Quonfig:
 
         For datadir mode the load is synchronous and ``init()`` returns
         once the store is populated. For HTTP mode the fetch runs on a
-        background thread so a tiny ``init_timeout`` can be enforced
+        background thread so a tiny ``init_timeout_ms`` can be enforced
         lazily by ``_wait_initialized`` on the first getter call —
         raising ``QuonfigInitTimeoutError`` when ``on_init_failure``
         is ``"raise"``.
@@ -442,7 +471,7 @@ class Quonfig:
         """Run the initial fetch on a background thread.
 
         Doing the fetch off the calling thread is what lets a small
-        ``init_timeout`` actually surface as ``QuonfigInitTimeoutError``
+        ``init_timeout_ms`` actually surface as ``QuonfigInitTimeoutError``
         — otherwise ``init()`` would block on ``Transport.fetch`` and
         ``_wait_initialized`` would never see an unset event.
         """
@@ -489,11 +518,12 @@ class Quonfig:
 
     def _wait_initialized(self) -> None:
         if not self._initialized.is_set():
-            ok = self._initialized.wait(timeout=self._init_timeout)
+            # threading.Event.wait takes seconds; init timeout is stored in ms.
+            ok = self._initialized.wait(timeout=self._init_timeout_ms / 1000.0)
             if not ok:
                 if self._on_init_failure == "raise":
                     raise QuonfigInitTimeoutError(
-                        f"Quonfig did not initialize within {self._init_timeout}s"
+                        f"Quonfig did not initialize within {self._init_timeout_ms}ms"
                     )
                 # return_zero_value: best effort with partial data
                 self._finish_init()

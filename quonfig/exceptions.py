@@ -7,7 +7,7 @@ class QuonfigKeyNotFoundError(QuonfigError):
 
 
 class QuonfigInitTimeoutError(QuonfigError):
-    """init() did not complete within init_timeout seconds."""
+    """init() did not complete within init_timeout_ms milliseconds."""
 
 
 class QuonfigNotInitializedError(QuonfigError):

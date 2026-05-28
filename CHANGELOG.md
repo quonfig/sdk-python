@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Feat: collapse `init_timeout` + `initialization_timeout_sec` into canonical `init_timeout_ms` (qfg-o8zr).** sdk-1.0 unification, Section 1. The SDK previously accepted two seconds-based init-timeout kwargs (`init_timeout: float` and `initialization_timeout_sec: float`, the latter winning); only sdk-ruby (also renamed in qfg-39za) and sdk-python were on seconds while sdk-node uses `initTimeout` (ms) and sdk-javascript uses `timeout` (ms). New canonical kwarg `init_timeout_ms: int = 10_000` (milliseconds) aligns all SDKs. The legacy `init_timeout` and `initialization_timeout_sec` kwargs are kept as deprecated aliases for one minor cycle — each emits a `DeprecationWarning` and is forwarded as `value * 1000` into `_init_timeout_ms`. The canonical kwarg wins when more than one is passed.
+
 ## 0.0.17 - 2026-05-21
 
 - **Fix: datadir loader coerces `int`/`double` values to numbers at load time (qfg-38sf.8).** Quonfig config files store `int` and `double` value fields as JSON strings on disk (`{"type": "int", "value": "123"}`). The datadir loader previously passed these through verbatim, leaving the loaded envelope's `Value.value` as a string until downstream unwrap coercion ran. `load_datadir` now runs a recursive `coerce_numeric_values` walk over each parsed config dict before building the `ConfigResponse`, so the loaded envelope always carries real numbers — matching api-delivery and sdk-go. The walk covers default/environment rules, criteria `valueToMatch`, weighted-value arms, and variants uniformly; an unparseable numeric string is left as-is (passthrough, never raises).

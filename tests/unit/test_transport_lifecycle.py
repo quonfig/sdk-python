@@ -5,9 +5,9 @@ Two bugs caught in code review:
 1. ``Quonfig.close()`` did not close the underlying ``requests.Session``,
    leaking sockets/FDs in long-running backends that recycle clients.
 
-2. ``initialization_timeout_sec`` capped the per-request HTTP timeout. With a
-   sub-second init timeout this surfaced as a generic ``requests.Timeout``
-   from the background fetch (silently swallowed) instead of letting
+2. ``init_timeout_ms`` capped the per-request HTTP timeout. With a sub-second
+   init timeout this surfaced as a generic ``requests.Timeout`` from the
+   background fetch (silently swallowed) instead of letting
    ``_wait_initialized`` raise ``QuonfigInitTimeoutError``.
 """
 
@@ -38,7 +38,7 @@ def test_init_timeout_does_not_cap_request_timeout() -> None:
     client = Quonfig(
         sdk_key="sdk-test",
         api_urls=["http://localhost:0"],
-        initialization_timeout_sec=0.01,
+        init_timeout_ms=10,
     )
     assert client._transport is not None
     # Request timeout stays at the Transport default (10s); the init-timeout

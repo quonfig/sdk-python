@@ -206,7 +206,7 @@ for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
 | `telemetry_url` | -- (derived from `QUONFIG_DOMAIN`) | `https://telemetry.quonfig.com` |
 | `environment` | `QUONFIG_ENVIRONMENT` | `""` |
 | `datadir` | `QUONFIG_DIR` | `None` |
-| `init_timeout` | -- | `10.0` |
+| `init_timeout_ms` | -- | `10_000` |
 | `on_init_failure` | -- | `"raise"` |
 | `on_no_default` | -- | `"error"` |
 | `logger_key` | -- | `None` |

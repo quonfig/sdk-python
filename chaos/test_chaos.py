@@ -478,7 +478,7 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
             api_urls=[api_http],
             fallback_poll_enabled=True,
             fallback_poll_interval_ms=60000,
-            init_timeout=15.0,
+            init_timeout_ms=15_000,
             on_no_default="warn",
             collect_evaluation_summaries=False,
             context_upload_mode="none",
