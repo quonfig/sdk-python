@@ -36,11 +36,15 @@ def make_criterion_rule(
     return Rule(criteria=[criterion], value=value)
 
 
-def make_store(configs) -> ConfigStore:
+def make_store(configs, environment: str = "Production") -> ConfigStore:
+    # The active env id comes from the envelope's meta.environment (qfg-pinh):
+    # the evaluator no longer reads the constructor's environment_id, so the
+    # store's meta is what selects the env block. Default to "Production" to
+    # match the env blocks these tests build.
     store = ConfigStore()
     envelope = ConfigEnvelope(
         configs=configs,
-        meta=Meta(version="test", environment="test"),
+        meta=Meta(version="test", environment=environment),
     )
     store.update(envelope)
     return store

@@ -93,11 +93,17 @@ def test_delivery_mode_takes_env_from_meta_when_unpinned(monkeypatch) -> None:
         client.close()
 
 
-def test_client_pin_takes_precedence_over_meta(monkeypatch) -> None:
-    """An explicit environment= pin must still win over meta.environment.
+def test_client_pin_ignored_in_delivery_mode(monkeypatch) -> None:
+    """In delivery mode meta.environment is authoritative; the pin is IGNORED.
 
-    Here meta.environment is 'staging' (no matching env block on the config),
-    but the client pins 'development', which DOES have an env block -> False.
+    Decided contract (qfg-pinh, Jeff 2026-05-29): an explicit environment= pin
+    is DATADIR-ONLY. In SDK-key delivery mode the active env is whatever the
+    server reports in meta.environment, regardless of any client pin. Mirrors
+    sdk-go, where eval never branches on the pin.
+
+    Here the config's env block id == meta.environment == 'production' -> False,
+    default -> True, and the client pins a MISMATCHED 'staging'. The value must
+    still come from the env override (False), NOT the pin and NOT default.
     """
     monkeypatch.delenv("QUONFIG_ENVIRONMENT", raising=False)
 
@@ -109,19 +115,19 @@ def test_client_pin_takes_precedence_over_meta(monkeypatch) -> None:
         send_to_client_sdk=True,
         default=RuleSet(rules=[_always_true(Value(type="bool", value=True))]),
         environment=Environment(
-            id="development",
+            id="production",
             rules=[_always_true(Value(type="bool", value=False))],
         ),
     )
     envelope = ConfigEnvelope(
         configs=[config],
-        meta=Meta(version="v1", environment="staging"),
+        meta=Meta(version="v1", environment="production"),
     )
 
     client = Quonfig(
         sdk_key="sdk-test",
         api_urls=["http://localhost:0"],
-        environment="development",
+        environment="staging",  # mismatched pin — must be ignored in delivery mode
         collect_evaluation_summaries=False,
         context_upload_mode="none",
         fallback_poll_enabled=False,
@@ -137,7 +143,67 @@ def test_client_pin_takes_precedence_over_meta(monkeypatch) -> None:
             time.sleep(0.01)
         assert client._store.get("my.flag") is not None, "config never installed"
 
-        # Pin 'development' matches the env block -> False, despite meta=staging.
-        assert client.get_bool("my.flag", default=None) is False
+        # meta.environment='production' selects the env block -> False, despite
+        # the mismatched 'staging' pin (which would otherwise fall to default).
+        assert client.get_bool("my.flag", default=None) is False, (
+            "expected env override (False) from meta.environment='production'; "
+            "the 'staging' pin must be ignored in delivery mode"
+        )
     finally:
         client.close()
+
+
+def test_pin_in_delivery_mode_emits_warning(monkeypatch, caplog) -> None:
+    """Setting an env pin in delivery mode logs a WARNING (once, at init).
+
+    The pin is dead in delivery mode (server is authoritative), so the SDK
+    surfaces it through its logger rather than silently ignoring it (qfg-pinh).
+    """
+    import logging
+
+    monkeypatch.delenv("QUONFIG_ENVIRONMENT", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="quonfig.client"):
+        client = Quonfig(
+            sdk_key="sdk-test",
+            api_urls=["http://localhost:0"],
+            environment="staging",
+            collect_evaluation_summaries=False,
+            context_upload_mode="none",
+            fallback_poll_enabled=False,
+            init_timeout_ms=2000,
+            on_init_failure="return_zero_value",
+        )
+        client.close()
+
+    warnings = [
+        r for r in caplog.records if r.levelno == logging.WARNING and "delivery" in r.getMessage()
+    ]
+    assert len(warnings) == 1, f"expected exactly one delivery-mode pin warning, got {warnings!r}"
+    msg = warnings[0].getMessage()
+    assert "staging" in msg
+    assert "ignored" in msg
+
+
+def test_no_pin_in_delivery_mode_emits_no_warning(monkeypatch, caplog) -> None:
+    """No pin in delivery mode -> no warning."""
+    import logging
+
+    monkeypatch.delenv("QUONFIG_ENVIRONMENT", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="quonfig.client"):
+        client = Quonfig(
+            sdk_key="sdk-test",
+            api_urls=["http://localhost:0"],
+            collect_evaluation_summaries=False,
+            context_upload_mode="none",
+            fallback_poll_enabled=False,
+            init_timeout_ms=2000,
+            on_init_failure="return_zero_value",
+        )
+        client.close()
+
+    warnings = [
+        r for r in caplog.records if r.levelno == logging.WARNING and "delivery" in r.getMessage()
+    ]
+    assert warnings == [], f"expected no delivery-mode pin warning, got {warnings!r}"

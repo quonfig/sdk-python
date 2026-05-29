@@ -313,6 +313,20 @@ class Quonfig:
                 sdk_key=self._sdk_key,
             )
 
+        # qfg-pinh: an environment pin (`environment=` / QUONFIG_ENVIRONMENT)
+        # only takes effect in datadir mode, where the loader uses it to pick
+        # the env. In SDK-key delivery mode the server's `meta.environment` is
+        # authoritative and the pin is ignored — warn once at construction so a
+        # misconfigured pin is visible rather than silently dead.
+        if self._environment and self._transport is not None and not self._datadir:
+            logger.warning(
+                "Quonfig: environment '%s' was set but the client is in delivery "
+                "(SDK-key) mode; the active environment is determined by the SDK "
+                "key, so this setting is ignored (it applies only when loading "
+                "from a local data dir).",
+                self._environment,
+            )
+
         # Layer 2 fallback poller state. The poller itself is only constructed
         # once a transport exists; the state vars below drive the engage/
         # disengage decision when SSE state changes arrive.

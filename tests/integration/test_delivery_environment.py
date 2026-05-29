@@ -45,7 +45,7 @@ def test_singular_environment_override_wins_over_default_when_env_not_pinned() -
     server, port = start_delivery_server(envelope_json)
     try:
         client = Quonfig(
-            sdk_key='sdk-test',
+            sdk_key="sdk-test",
             api_urls=[f"http://127.0.0.1:{port}"],
             fallback_poll_enabled=False,
             collect_evaluation_summaries=False,
@@ -55,7 +55,7 @@ def test_singular_environment_override_wins_over_default_when_env_not_pinned() -
         )
         try:
             client.init()
-            assert client.get_bool('flag.env-scoped', default=None) is False, (
+            assert client.get_bool("flag.env-scoped", default=None) is False, (
                 "delivery-wire env override: expected False for flag.env-scoped"
             )
         finally:
@@ -64,25 +64,31 @@ def test_singular_environment_override_wins_over_default_when_env_not_pinned() -
         server.shutdown()
 
 
-# explicit environment pin wins over meta.environment
-def test_explicit_environment_pin_wins_over_meta_environment() -> None:
+# explicit environment pin is IGNORED in delivery mode (meta.environment authoritative)
+def test_explicit_environment_pin_ignored_in_delivery_mode() -> None:
+    # qfg-pinh (Jeff 2026-05-29, Option A): in SDK-key delivery mode
+    # meta.environment is authoritative; an explicit environment pin is
+    # datadir-only and IGNORED here. meta.environment='staging' has no matching
+    # env block (config block is 'development'), so eval falls to default=true.
+    # The 'development' pin must NOT pull in the env block.
     envelope_json = '{"meta":{"version":"v1","environment":"staging"},"configs":[{"id":"c-env","key":"flag.env-scoped","type":"bool","valueType":"bool","sendToClientSdk":false,"default":{"rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":true}}]},"environment":{"id":"development","rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":false}}]}}]}'
     server, port = start_delivery_server(envelope_json)
     try:
         client = Quonfig(
-            sdk_key='sdk-test',
+            sdk_key="sdk-test",
             api_urls=[f"http://127.0.0.1:{port}"],
             fallback_poll_enabled=False,
             collect_evaluation_summaries=False,
             context_upload_mode="none",
             init_timeout_ms=5000,
             on_init_failure="raise",
-            environment='development',
+            environment="development",
         )
         try:
             client.init()
-            assert client.get_bool('flag.env-scoped', default=None) is False, (
-                "delivery-wire env override: expected False for flag.env-scoped"
+            assert client.get_bool("flag.env-scoped", default=None) is True, (
+                "delivery-wire: pin ignored, meta.environment='staging' has no "
+                "env block, so expected default True for flag.env-scoped"
             )
         finally:
             client.close()
@@ -96,7 +102,7 @@ def test_config_without_environment_block_falls_back_to_default_in_delivery_mode
     server, port = start_delivery_server(envelope_json)
     try:
         client = Quonfig(
-            sdk_key='sdk-test',
+            sdk_key="sdk-test",
             api_urls=[f"http://127.0.0.1:{port}"],
             fallback_poll_enabled=False,
             collect_evaluation_summaries=False,
@@ -106,7 +112,7 @@ def test_config_without_environment_block_falls_back_to_default_in_delivery_mode
         )
         try:
             client.init()
-            assert client.get_bool('flag.default-only', default=None) is True, (
+            assert client.get_bool("flag.default-only", default=None) is True, (
                 "delivery-wire env override: expected True for flag.default-only"
             )
         finally:

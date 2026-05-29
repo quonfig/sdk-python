@@ -17,25 +17,26 @@ _MAX_UINT32 = 4_294_967_295.0
 
 
 class Evaluator:
-    def __init__(self, store: "ConfigStore", environment_id: str) -> None:
+    def __init__(self, store: "ConfigStore", environment_id: str = "") -> None:
         self.store = store
-        # The client-pinned environment (from ``environment=`` /
-        # ``QUONFIG_ENVIRONMENT``). May be "" in SDK-key delivery mode, where the
-        # active env id comes from the server's ``meta.environment`` instead —
-        # see ``_effective_environment_id``.
+        # NOTE: ``environment_id`` is accepted for back-compat but is NOT used
+        # to choose the eval environment. The active env id is ALWAYS the
+        # installed envelope's ``meta.environment`` (qfg-pinh). In datadir mode
+        # the loader sets ``meta.environment`` to the pinned env, so the pin
+        # still selects the env there; in SDK-key delivery mode the server is
+        # authoritative and the pin is ignored. Mirrors sdk-go, where eval
+        # never branches on the pin — only the datadir loader consumes it.
         self.environment_id = environment_id
 
     def _effective_environment_id(self) -> str:
         """Resolve the env id to evaluate against.
 
-        A client-pinned environment always wins (datadir mode + explicit pins).
-        When unpinned, fall back to the server-reported ``meta.environment`` so
-        SDK-key delivery mode (singular ``environment`` block scoped by key)
-        matches its env rules instead of silently using ``default``. Mirrors
-        sdk-go's ``c.envID = envelope.Meta.Environment`` (qfg-xpln.3).
+        Always the installed envelope's ``meta.environment``. In SDK-key
+        delivery mode the server is authoritative (any client pin is ignored);
+        in datadir mode the loader has already set ``meta.environment`` to the
+        pinned env. Mirrors sdk-go's ``c.envID = envelope.Meta.Environment``
+        (qfg-pinh).
         """
-        if self.environment_id:
-            return self.environment_id
         return self.store.get_meta_environment()
 
     def evaluate(self, key: str, contexts: Contexts) -> EvalResult:
