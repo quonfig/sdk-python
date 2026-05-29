@@ -19,7 +19,24 @@ _MAX_UINT32 = 4_294_967_295.0
 class Evaluator:
     def __init__(self, store: "ConfigStore", environment_id: str) -> None:
         self.store = store
+        # The client-pinned environment (from ``environment=`` /
+        # ``QUONFIG_ENVIRONMENT``). May be "" in SDK-key delivery mode, where the
+        # active env id comes from the server's ``meta.environment`` instead —
+        # see ``_effective_environment_id``.
         self.environment_id = environment_id
+
+    def _effective_environment_id(self) -> str:
+        """Resolve the env id to evaluate against.
+
+        A client-pinned environment always wins (datadir mode + explicit pins).
+        When unpinned, fall back to the server-reported ``meta.environment`` so
+        SDK-key delivery mode (singular ``environment`` block scoped by key)
+        matches its env rules instead of silently using ``default``. Mirrors
+        sdk-go's ``c.envID = envelope.Meta.Environment`` (qfg-xpln.3).
+        """
+        if self.environment_id:
+            return self.environment_id
+        return self.store.get_meta_environment()
 
     def evaluate(self, key: str, contexts: Contexts) -> EvalResult:
         config = self.store.get(key)
@@ -35,16 +52,13 @@ class Evaluator:
             )
 
         # Try environment-specific rules first
+        env_id = self._effective_environment_id()
         matching_env = None
         for env in config.environments:
-            if env.id == self.environment_id:
+            if env.id == env_id:
                 matching_env = env
                 break
-        if (
-            matching_env is None
-            and config.environment
-            and config.environment.id == self.environment_id
-        ):
+        if matching_env is None and config.environment and config.environment.id == env_id:
             matching_env = config.environment
 
         if matching_env is not None:
