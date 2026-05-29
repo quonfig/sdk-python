@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.19 - 2026-05-29
+
+- **Fix: per-environment overrides now apply in HTTP+SSE delivery mode; `meta.environment` is authoritative (qfg-xpln.3).** The evaluator now derives its target environment from the `meta.environment` field on the delivered config envelope rather than from any client-side setting, so per-environment rule overrides resolve correctly when the SDK runs in delivery (HTTP+SSE) mode. Previously a config's environment-specific rules could be skipped because the evaluator lacked the authoritative environment that api-delivery had already resolved.
+- **Fix: explicit environment pin is datadir-only and is ignored (with a WARN) in delivery mode (qfg-pinh).** An explicit environment pin — `environment=` constructor kwarg or the `QUONFIG_ENVIRONMENT` env var — now applies only in datadir mode. In delivery mode the pin is ignored because `meta.environment` from the delivered envelope is authoritative; the SDK logs a `WARNING` when a pin is supplied in delivery mode so the misconfiguration is visible rather than silently honored.
+
 ## 0.0.18 - 2026-05-28
 
 - **Feat: collapse `init_timeout` + `initialization_timeout_sec` into canonical `init_timeout_ms` (qfg-o8zr).** sdk-1.0 unification, Section 1. The SDK previously accepted two seconds-based init-timeout kwargs (`init_timeout: float` and `initialization_timeout_sec: float`, the latter winning); only sdk-ruby (also renamed in qfg-39za) and sdk-python were on seconds while sdk-node uses `initTimeout` (ms) and sdk-javascript uses `timeout` (ms). New canonical kwarg `init_timeout_ms: int = 10_000` (milliseconds) aligns all SDKs. The legacy `init_timeout` and `initialization_timeout_sec` kwargs are kept as deprecated aliases for one minor cycle — each emits a `DeprecationWarning` and is forwarded as `value * 1000` into `_init_timeout_ms`. The canonical kwarg wins when more than one is passed.
