@@ -64,14 +64,11 @@ def test_singular_environment_override_wins_over_default_when_env_not_pinned() -
         server.shutdown()
 
 
-# explicit environment pin is IGNORED in delivery mode (meta.environment authoritative)
-def test_explicit_environment_pin_ignored_in_delivery_mode() -> None:
-    # qfg-pinh (Jeff 2026-05-29, Option A): in SDK-key delivery mode
-    # meta.environment is authoritative; an explicit environment pin is
-    # datadir-only and IGNORED here. meta.environment='staging' has no matching
-    # env block (config block is 'development'), so eval falls to default=true.
-    # The 'development' pin must NOT pull in the env block.
-    envelope_json = '{"meta":{"version":"v1","environment":"staging"},"configs":[{"id":"c-env","key":"flag.env-scoped","type":"bool","valueType":"bool","sendToClientSdk":false,"default":{"rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":true}}]},"environment":{"id":"development","rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":false}}]}}]}'
+# explicit environment pin is ignored in delivery mode (meta.environment authoritative)
+def test_explicit_environment_pin_is_ignored_in_delivery_mode_meta_environment_authoritative() -> (
+    None
+):
+    envelope_json = '{"meta":{"version":"v1","environment":"development"},"configs":[{"id":"c-env","key":"flag.env-scoped","type":"bool","valueType":"bool","sendToClientSdk":false,"default":{"rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":true}}]},"environment":{"id":"development","rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":false}}]}}]}'
     server, port = start_delivery_server(envelope_json)
     try:
         client = Quonfig(
@@ -82,13 +79,12 @@ def test_explicit_environment_pin_ignored_in_delivery_mode() -> None:
             context_upload_mode="none",
             init_timeout_ms=5000,
             on_init_failure="raise",
-            environment="development",
+            environment="staging",
         )
         try:
             client.init()
-            assert client.get_bool("flag.env-scoped", default=None) is True, (
-                "delivery-wire: pin ignored, meta.environment='staging' has no "
-                "env block, so expected default True for flag.env-scoped"
+            assert client.get_bool("flag.env-scoped", default=None) is False, (
+                "delivery-wire env override: expected False for flag.env-scoped"
             )
         finally:
             client.close()
