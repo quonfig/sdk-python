@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.20 - 2026-05-30
+
+- **Fix: auto-load the SDK key from `QUONFIG_BACKEND_SDK_KEY`, not `QUONFIG_SDK_KEY` (qfg-ujcq).** A bare `Quonfig()` (no `sdk_key=`) now reads the SDK key from `QUONFIG_BACKEND_SDK_KEY` — the same env var every other Quonfig SDK (go/node/ruby/java) and the `qfg run` CLI auto-load, and the var the Python docs already documented. Previously the SDK read `QUONFIG_SDK_KEY`, a python-only outlier, so `export QUONFIG_BACKEND_SDK_KEY=...` followed by `Quonfig()` silently resolved no key. Clean switch with no fallback (alpha-phase, no backward compatibility); the legacy var was never documented.
+
 ## 0.0.19 - 2026-05-29
 
 - **Fix: per-environment overrides now apply in HTTP+SSE delivery mode; `meta.environment` is authoritative (qfg-xpln.3).** The evaluator now derives its target environment from the `meta.environment` field on the delivered config envelope rather than from any client-side setting, so per-environment rule overrides resolve correctly when the SDK runs in delivery (HTTP+SSE) mode. Previously a config's environment-specific rules could be skipped because the evaluator lacked the authoritative environment that api-delivery had already resolved.
