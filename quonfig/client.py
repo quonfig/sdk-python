@@ -201,7 +201,9 @@ class Quonfig:
         enable_quonfig_user_context: bool = False,
     ) -> None:
         # Resolve configuration from params or env vars
-        self._sdk_key = sdk_key or os.environ.get("QUONFIG_SDK_KEY", "")
+        # `QUONFIG_BACKEND_SDK_KEY` is the canonical auto-load var shared by
+        # every Quonfig SDK (go/node/ruby/java) and the `qfg run` CLI.
+        self._sdk_key = sdk_key or os.environ.get("QUONFIG_BACKEND_SDK_KEY", "")
         self._environment = environment or os.environ.get("QUONFIG_ENVIRONMENT", "")
         self._datadir = datadir or os.environ.get("QUONFIG_DIR")
 
