@@ -198,7 +198,14 @@ class Quonfig:
         # ``{"quonfig-user": {"email": ...}}`` into the global context.
         # Customer-supplied ``quonfig-user`` keys win on collision.
         # Mirrors sdk-node/sdk-go/sdk-ruby.
-        enable_quonfig_user_context: bool = False,
+        #
+        # Tri-state (``None`` = unset). Default ON, gated only by the
+        # presence of the tokens file: production servers do not have it, so
+        # injection is a no-op there by construction. Precedence: this
+        # explicit option (if not ``None``) wins, else ``QUONFIG_DEV_CONTEXT``
+        # (``"true"``/``"false"``), else ``True``. Pass ``False`` (or
+        # ``QUONFIG_DEV_CONTEXT=false``) to opt out.
+        enable_quonfig_user_context: Optional[bool] = None,
     ) -> None:
         # Resolve configuration from params or env vars
         # `QUONFIG_BACKEND_SDK_KEY` is the canonical auto-load var shared by
@@ -263,9 +270,16 @@ class Quonfig:
         # Dev-context injection (qfg-jopa): mirror sdk-node/go/ruby behavior.
         # Customer-supplied `global_context` wins on collision because it
         # passes second to merge_contexts (later-wins).
-        dev_context_enabled = (
-            enable_quonfig_user_context or os.environ.get("QUONFIG_DEV_CONTEXT") == "true"
-        )
+        if enable_quonfig_user_context is not None:
+            dev_context_enabled = enable_quonfig_user_context
+        else:
+            env_dev_context = os.environ.get("QUONFIG_DEV_CONTEXT")
+            if env_dev_context == "true":
+                dev_context_enabled = True
+            elif env_dev_context == "false":
+                dev_context_enabled = False
+            else:
+                dev_context_enabled = True
         dev_context: Optional[Contexts] = None
         if dev_context_enabled:
             from .dev_context import load_quonfig_user_context

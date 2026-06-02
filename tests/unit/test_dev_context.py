@@ -143,14 +143,47 @@ def test_quonfig_injects_email_when_option_enabled(tokens_home: Path) -> None:
     assert client._global_context == {"quonfig-user": {"email": "bob@foo.com"}}
 
 
-def test_quonfig_disabled_by_default(tokens_home: Path) -> None:
+def test_quonfig_enabled_by_default(tokens_home: Path) -> None:
+    # The flip: with no opt-in (no enable_quonfig_user_context, no
+    # QUONFIG_DEV_CONTEXT) the token file alone triggers injection, and
+    # customer context is preserved alongside it.
     _write_tokens(tokens_home, {"userEmail": "bob@foo.com"})
 
     customer_ctx = {"user": {"plan": "pro"}}
     client = _empty_client(global_context=customer_ctx)
 
-    assert client._global_context == {"user": {"plan": "pro"}}
+    assert client._global_context == {
+        "user": {"plan": "pro"},
+        "quonfig-user": {"email": "bob@foo.com"},
+    }
+
+
+def test_quonfig_option_false_disables(tokens_home: Path) -> None:
+    _write_tokens(tokens_home, {"userEmail": "bob@foo.com"})
+
+    client = _empty_client(enable_quonfig_user_context=False)
+
     assert "quonfig-user" not in client._global_context
+
+
+def test_quonfig_env_false_disables(tokens_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_tokens(tokens_home, {"userEmail": "bob@foo.com"})
+    monkeypatch.setenv("QUONFIG_DEV_CONTEXT", "false")
+
+    client = _empty_client()
+
+    assert "quonfig-user" not in client._global_context
+
+
+def test_quonfig_option_true_overrides_env_false(
+    tokens_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_tokens(tokens_home, {"userEmail": "bob@foo.com"})
+    monkeypatch.setenv("QUONFIG_DEV_CONTEXT", "false")
+
+    client = _empty_client(enable_quonfig_user_context=True)
+
+    assert client._global_context == {"quonfig-user": {"email": "bob@foo.com"}}
 
 
 def test_quonfig_env_var_enables(tokens_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
