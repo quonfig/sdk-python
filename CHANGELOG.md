@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.21 - 2026-06-02
+
+- **Dev-context injection is now default-on (qfg-bw7g.4).** `enable_quonfig_user_context` is now `Optional[bool]` (`None` = unset). When left unset it defaults to **on**, gated solely by the presence of the qfg-login tokens file; the loader no-ops without it, so this stays inert in production. Precedence: explicit `enable_quonfig_user_context` ?? `QUONFIG_DEV_CONTEXT` env (`true`/`false`) ?? `True`. Pass `enable_quonfig_user_context=False` or set `QUONFIG_DEV_CONTEXT=false` to opt out.
+
 ## 0.0.20 - 2026-05-30
 
 - **Fix: auto-load the SDK key from `QUONFIG_BACKEND_SDK_KEY`, not `QUONFIG_SDK_KEY` (qfg-ujcq).** A bare `Quonfig()` (no `sdk_key=`) now reads the SDK key from `QUONFIG_BACKEND_SDK_KEY` — the same env var every other Quonfig SDK (go/node/ruby/java) and the `qfg run` CLI auto-load, and the var the Python docs already documented. Previously the SDK read `QUONFIG_SDK_KEY`, a python-only outlier, so `export QUONFIG_BACKEND_SDK_KEY=...` followed by `Quonfig()` silently resolved no key. Clean switch with no fallback (alpha-phase, no backward compatibility); the legacy var was never documented.
