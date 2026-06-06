@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0 - 2026-06-06
+
+- **Stable 1.0.0 release.** The Quonfig Python SDK is now declared stable. No API or
+  behavior changes from 0.0.21 — this is a coordinated 1.0.0 version stamp across
+  the entire Quonfig SDK family.
+
 ## 0.0.21 - 2026-06-02
 
 - **Dev-context injection is now default-on (qfg-bw7g.4).** `enable_quonfig_user_context` is now `Optional[bool]` (`None` = unset). When left unset it defaults to **on**, gated solely by the presence of the qfg-login tokens file; the loader no-ops without it, so this stays inert in production. Precedence: explicit `enable_quonfig_user_context` ?? `QUONFIG_DEV_CONTEXT` env (`true`/`false`) ?? `True`. Pass `enable_quonfig_user_context=False` or set `QUONFIG_DEV_CONTEXT=false` to opt out.
