@@ -12,12 +12,12 @@ name: Failover Chaos
 # Meta.generations for ordering — so this job only has to boot toxiproxy via
 # scripts/run-failover-chaos.sh. Wall clock ~2 min.
 #
-# Scenarios gated here: f01-f05 (failover) + o02-o04 (ordering). o01-secondary-
-# newer is SKIPPED (CHAOS_SKIP=o01) — it asserts cross-leg "max-wins" (hold the
-# higher generation even when the older primary leg is healthy), which the
-# backend SDKs do not yet implement (out of the §5f reject-older scope, "no
-# source ranking"). That behaviour is owned by qfg-7h5d.1.14; drop the
-# CHAOS_SKIP below to re-gate o01 once it lands.
+# Scenarios gated here: f01-f05 (failover) + o01-o05 (ordering). Nothing is
+# skipped: the parallel-failover hedge (qfg-7h5d.1.14) makes the HTTP
+# config-fetch a hedge (primary first; secondary in parallel only on a slow or
+# erroring primary), so o01 (fast primary wins, secondary never contacted), o03
+# (heal forward to a slow newer primary), and o05 (slow older primary loses to a
+# fast newer secondary) all go green. CHAOS_SKIP is cleared below.
 
 on:
   push:
@@ -53,11 +53,12 @@ jobs:
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
-          # Tracks main: the scenarios-failover/ + scenarios-ordering/ corpus
-          # this job drives only exists on main and is not yet in a tag (the
-          # tag chaos.yaml pins, v2026.05.13, predates it). Pin to a tag once the
-          # corpus is rev'd into one, matching chaos.yaml's pinning rationale.
-          ref: v2026.06.19
+          # Pinned to the reframed corpus tag (qfg-7h5d.1.14): v2026.06.19.1 has
+          # the o01 cold-standby reframe (fast primary wins: held==41,
+          # resolvedFrom==primary, installCount==1), new o05 (slow older primary
+          # loses to fast newer secondary), and o03 heal-forward — all of which
+          # the parallel-failover hedge now satisfies.
+          ref: v2026.06.19.1
 
       - name: Checkout api-delivery
         # api-delivery is private; the default GITHUB_TOKEN cannot read it. A PAT
@@ -124,9 +125,12 @@ jobs:
         if: env.HAS_REPO_TOKEN == 'true'
         working-directory: sdk-python
         env:
-          # o01-secondary-newer needs cross-leg max-wins (qfg-7h5d.1.14); not
-          # implemented yet. Drop this once o01 can go green.
-          CHAOS_SKIP: o01,o03
+          # Parallel-failover hedge landed (qfg-7h5d.1.14): o01 (cold standby),
+          # o03 (heal forward), and the new o05 (slow older primary loses to fast
+          # newer secondary) all go green, so nothing is skipped. The full
+          # f01-f05 + o01-o05 gate runs. (Empty string clears the script default,
+          # which would otherwise re-skip o01.)
+          CHAOS_SKIP: ""
         run: ./scripts/run-failover-chaos.sh
 
       - name: Upload chaos logs on failure

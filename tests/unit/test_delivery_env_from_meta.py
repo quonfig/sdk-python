@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 
 from quonfig import Quonfig
+from quonfig.transport import LegResult
 from quonfig.types import (
     ConfigEnvelope,
     ConfigResponse,
@@ -74,8 +75,14 @@ def test_delivery_mode_takes_env_from_meta_when_unpinned(monkeypatch) -> None:
     )
     try:
         assert client._transport is not None
+        # The initial fetch goes through the parallel-failover hedge
+        # (qfg-7h5d.1.14), so stub `fetch_hedged` to yield a single primary leg.
         monkeypatch.setattr(
-            client._transport, "fetch", lambda etag=None: _delivery_envelope("development")
+            client._transport,
+            "fetch_hedged",
+            lambda *a, **k: iter(
+                [LegResult(source_index=0, envelope=_delivery_envelope("development"))]
+            ),
         )
         client.init()
         # Let the background initial-fetch thread install the envelope.
@@ -136,7 +143,11 @@ def test_client_pin_ignored_in_delivery_mode(monkeypatch) -> None:
     )
     try:
         assert client._transport is not None
-        monkeypatch.setattr(client._transport, "fetch", lambda etag=None: envelope)
+        monkeypatch.setattr(
+            client._transport,
+            "fetch_hedged",
+            lambda *a, **k: iter([LegResult(source_index=0, envelope=envelope)]),
+        )
         client.init()
         deadline = time.time() + 2.0
         while time.time() < deadline and client._store.get("my.flag") is None:

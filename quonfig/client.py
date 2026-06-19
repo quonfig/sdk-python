@@ -168,6 +168,25 @@ class Quonfig:
         # WithConfigFetchTimeout. Applies to the HTTP config path only — the
         # long-lived SSE stream keeps its own read deadline.
         config_fetch_timeout_ms: int = 3000,
+        # Parallel-failover hedge timings (qfg-7h5d.1.14). The HTTP config-fetch
+        # is now a hedge: fire the primary first, and only if it is slow past
+        # ``hedge_delay_ms`` OR errors fast, ALSO fire the secondary in parallel
+        # (without cancelling the primary). A healthy sub-second primary answers
+        # well inside the delay, so the secondary stays a cold standby and a
+        # healthy system adds zero secondary load. Both are additive and
+        # backward-compatible; mirror sdk-go's WithConfigFetchHedgeDelay /
+        # WithConfigFetchHedgeAbort.
+        #
+        #   * ``hedge_delay_ms`` (~1000): how long to wait for the primary before
+        #     also firing the secondary in parallel.
+        #   * ``config_fetch_hedge_abort_ms`` (~6000): the per-leg hard-abort
+        #     deadline on the hedged path. It MUST exceed the longest healable
+        #     primary latency (so a late-but-newer primary heals forward rather
+        #     than aborting) and SHOULD be < ``init_timeout_ms`` (so the init-path
+        #     heal leg is not clipped) — the client logs a warning at construction
+        #     if ``init_timeout_ms <= config_fetch_hedge_abort_ms``.
+        hedge_delay_ms: int = 1000,
+        config_fetch_hedge_abort_ms: int = 6000,
         # Cross-SDK observability hooks (mirror sdk-go's WithOnConfigUpdate /
         # WithSSEStateCallback and sdk-node's onConfigUpdate /
         # onSSEConnectionStateChange). Fire on each successful config install
@@ -334,12 +353,29 @@ class Quonfig:
         # background fetch instead of letting `_wait_initialized` raise
         # `QuonfigInitTimeoutError`.
         self._config_fetch_timeout_ms = config_fetch_timeout_ms
+        # Parallel-failover hedge timings (qfg-7h5d.1.14). The per-leg hedge
+        # abort must sit BELOW init_timeout_ms so a late-but-newer primary's heal
+        # leg is not clipped by the init budget. Warn (don't hard-fail) so a
+        # deliberately short init timeout still works — just without init-path
+        # heal-forward. Mirrors sdk-go's construction-time warning.
+        self._hedge_delay_ms = hedge_delay_ms
+        self._config_fetch_hedge_abort_ms = config_fetch_hedge_abort_ms
+        if self._init_timeout_ms > 0 and self._init_timeout_ms <= config_fetch_hedge_abort_ms:
+            logger.warning(
+                "Quonfig: init_timeout_ms (%dms) <= config_fetch_hedge_abort_ms "
+                "(%dms); the init-path heal-forward leg may be clipped. Raise "
+                "init_timeout_ms or lower config_fetch_hedge_abort_ms.",
+                self._init_timeout_ms,
+                config_fetch_hedge_abort_ms,
+            )
         self._transport: Optional[Transport] = None
         if (not self._datadir and self._sdk_key) or (explicit_api_urls and not self._datadir):
             self._transport = Transport(
                 api_urls=self._api_urls,
                 sdk_key=self._sdk_key,
                 timeout=config_fetch_timeout_ms / 1000.0,
+                hedge_delay=hedge_delay_ms / 1000.0,
+                hedge_abort=config_fetch_hedge_abort_ms / 1000.0,
             )
 
         # Canonical-ordering observability (qfg-7h5d.1.8). ``_resolved_from_index``
@@ -398,6 +434,10 @@ class Quonfig:
                 shutdown_event=self._shutdown,
                 on_config_update=self._fire_on_config_update,
                 install=lambda env: self._install_network_envelope(env, from_http=True),
+                # Hedged refresh (qfg-7h5d.1.14): each poll tick drives a full
+                # parallel-failover hedge so an established client heals forward
+                # to a newer leg on the poll loop too, not just at init.
+                refresh=lambda: self._fetch_and_install_hedged(initial=False),
             )
 
     # ------------------------------------------------------------------
@@ -449,12 +489,18 @@ class Quonfig:
                 e,
             )
 
-    def _install_network_envelope(self, envelope: "ConfigEnvelope", *, from_http: bool) -> bool:
+    def _install_network_envelope(
+        self,
+        envelope: "ConfigEnvelope",
+        *,
+        from_http: bool,
+        source_index: Optional[int] = None,
+    ) -> bool:
         """Install an envelope arriving on a network path under the reject-older
         guard (qfg-7h5d.1.8).
 
         Every network install path funnels through here — the initial HTTP
-        fetch, the failover/poll fetch, and SSE snapshot/update — so the
+        fetch, the hedged failover/poll fetch, and SSE snapshot/update — so the
         canonical-ordering rule is applied uniformly: an established client
         installs only if ``incoming.generation`` advances the held generation.
         Returns ``True`` when the install was accepted.
@@ -462,11 +508,59 @@ class Quonfig:
         On an accepted HTTP install, record which leg produced the held config
         so ``resolved_from()`` reflects it; SSE installs leave it untouched
         because the stream is pinned to the primary leg.
+
+        The hedge runs two legs concurrently, so the produced-by leg is passed
+        in explicitly via ``source_index`` (a shared ``transport.last_fetch_index``
+        scalar cannot identify which of two in-flight legs produced this result).
+        The store update + resolved-from stamp are taken together under the
+        store's lock so a reader cannot observe a new generation paired with a
+        stale resolved-from index. Legacy callers that omit ``source_index`` fall
+        back to ``transport.last_fetch_index`` (sequential-path behavior).
         """
         installed = self._store.update(envelope, guard=True)
         if installed and from_http and self._transport is not None:
-            self._resolved_from_index = self._transport.last_fetch_index
+            if source_index is not None:
+                self._resolved_from_index = source_index
+            else:
+                self._resolved_from_index = self._transport.last_fetch_index
         return installed
+
+    def _fetch_and_install_hedged(self, *, initial: bool) -> bool:
+        """Drive ONE hedged config-fetch cycle and install whatever arrives
+        through the reject-older guard. Mirrors sdk-go's ``fetchAndInstall``.
+
+        The hedge fires the primary first and, only if it is slow or errors,
+        fires the secondary in parallel; results are installed as they arrive so
+        watermark-max falls out (higher generation wins, a late older payload
+        never regresses, a late newer payload heals forward). Returns ``True`` if
+        at least one envelope was installed this cycle.
+
+        Concurrent hedge cycles (a manual refresh racing the fallback poller,
+        say) are SAFE and are NOT coalesced: each leg uses its own per-URL ETag
+        slot, every install is serialized through the store lock + the
+        reject-older guard (so an equal-or-older payload is a no-op and the
+        install count can't double), and each leg is bounded by hedge_abort.
+        Coalescing here would make a manual ``refresh()`` silently no-op whenever
+        a background fetch is in flight, which violates the refresh contract.
+        """
+        if self._transport is None:
+            return False
+        installed_once = False
+        for lr in self._transport.fetch_hedged():
+            if lr.error is not None:
+                continue
+            if lr.not_changed or lr.envelope is None:
+                continue
+            accepted = self._install_network_envelope(
+                lr.envelope, from_http=True, source_index=lr.source_index
+            )
+            if accepted:
+                self._fire_on_config_update()
+                if not installed_once:
+                    installed_once = True
+                    if initial:
+                        self._finish_init()
+        return installed_once
 
     def _load_from_datadir(self) -> None:
         from .datadir import load_datadir
@@ -555,11 +649,15 @@ class Quonfig:
 
         def _initial_fetch() -> None:
             try:
-                envelope = transport.fetch()
-                if envelope is not None and self._install_network_envelope(
-                    envelope, from_http=True
-                ):
-                    self._fire_on_config_update()
+                # Parallel-failover hedge (qfg-7h5d.1.14): fire the primary first
+                # and, only if it is slow past hedge_delay OR errors fast, also
+                # fire the secondary in parallel. Readiness latches on the first
+                # accepted install (inside _fetch_and_install_hedged); a late
+                # newer leg heals forward, a late older leg is rejected. On the
+                # both-legs-fail path nothing installs and the finally below
+                # latches init so on_init_failure applies — preserving the
+                # init-failure contract for the both-fail case.
+                self._fetch_and_install_hedged(initial=True)
             except Exception as e:
                 logger.warning("Initial fetch failed: %s — starting SSE anyway", e)
             finally:
@@ -1244,6 +1342,57 @@ class Quonfig:
                 timer.start()
             return
         # connecting / disconnected → no-op
+
+    def refresh(self) -> bool:
+        """Manually drive one parallel-failover hedge config-fetch cycle
+        (qfg-7h5d.1.14). Mirrors sdk-go's ``Refresh``.
+
+        Fires the primary first and, only if it is slow past ``hedge_delay_ms``
+        OR errors fast, also fires the secondary in parallel. Returns ``True``
+        once the FIRST leg's envelope has been installed (or ``False`` if every
+        fired leg failed / 304'd with nothing newer). A late-but-newer leg keeps
+        draining on a detached daemon thread (bounded by ``hedge_abort``) and
+        heals the client forward after this call has already returned.
+
+        This is NOT coalesced against a background fetch in flight — a manual
+        refresh always actually fetches. Concurrent installs are safe: per-leg
+        ETag isolation + the reject-older guard keep an equal/older payload a
+        no-op and the install count from doubling.
+        """
+        if self._transport is None:
+            return False
+
+        installed_first = threading.Event()
+        result: Dict[str, bool] = {"installed": False}
+
+        def _drive() -> None:
+            transport = self._transport
+            if transport is None:
+                installed_first.set()
+                return
+            try:
+                for lr in transport.fetch_hedged():
+                    if lr.error is not None or lr.not_changed or lr.envelope is None:
+                        continue
+                    accepted = self._install_network_envelope(
+                        lr.envelope, from_http=True, source_index=lr.source_index
+                    )
+                    if accepted:
+                        self._fire_on_config_update()
+                        if not result["installed"]:
+                            result["installed"] = True
+                            installed_first.set()
+            finally:
+                # Unblock the caller even if nothing installed (all legs failed /
+                # 304'd) so refresh() always returns rather than hanging.
+                installed_first.set()
+
+        threading.Thread(target=_drive, daemon=True, name="quonfig-refresh").start()
+        # Return as soon as the first leg installs (or every fired leg settles
+        # with nothing new). Bounded by hedge_abort so a hung leg can't wedge the
+        # caller past the per-leg deadline.
+        installed_first.wait(timeout=self._config_fetch_hedge_abort_ms / 1000.0)
+        return result["installed"]
 
     def fallback_poller_active(self) -> bool:
         """``True`` when the Layer 2 HTTP fallback poller is currently

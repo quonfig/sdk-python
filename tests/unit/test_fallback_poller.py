@@ -113,20 +113,24 @@ def test_fallback_disabled_never_engages() -> None:
 
 
 def test_engaged_poller_calls_transport_fetch(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """Once engaged, the poller actually calls Transport.fetch on its interval."""
+    """Once engaged, the poller actually drives a config fetch on its interval.
+
+    Each poll tick now drives the parallel-failover hedge (qfg-7h5d.1.14), so the
+    poller calls ``Transport.fetch_hedged`` (which fires the legs in parallel)
+    rather than the sequential ``Transport.fetch``."""
     client = _make_client(fallback_poll_interval_ms=50)
     try:
         called = threading.Event()
 
-        def fake_fetch(etag=None):  # type: ignore[no-untyped-def]
+        def fake_fetch_hedged(*args, **kwargs):  # type: ignore[no-untyped-def]
             called.set()
-            return None
+            return iter(())  # no legs settled -> nothing installed
 
         assert client._transport is not None
-        monkeypatch.setattr(client._transport, "fetch", fake_fetch)
+        monkeypatch.setattr(client._transport, "fetch_hedged", fake_fetch_hedged)
 
         client._handle_sse_state_change("error")
         assert client.fallback_poller_active() is True
-        assert called.wait(2.0), "transport.fetch was not called by fallback poller"
+        assert called.wait(2.0), "transport.fetch_hedged was not called by fallback poller"
     finally:
         client.close()

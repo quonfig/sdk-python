@@ -26,10 +26,15 @@ tests/unit/test_config_fetch_timeout.py and tests/unit/test_reject_older_guard.p
   - o02 (secondary older) is RED without the reject-older install guard — a
     failover fetch of the older secondary regresses the held generation.
 
-o01-secondary-newer is SKIPPED (CHAOS_SKIP) — it needs cross-leg "max-wins"
-(hold the higher generation even when the older primary leg is healthy), which
-is out of the §5f reject-older scope ("no source ranking") and owned by
-qfg-7h5d.1.14. This mirrors the sdk-go pilot's CI gate (f01-f05 + o02-o04).
+As of qfg-7h5d.1.14 the HTTP config-fetch is a PARALLEL-FAILOVER HEDGE: the
+primary is fired first and the secondary is fired in parallel only if the
+primary is slow past the hedge delay OR errors fast. This makes o01 (fast
+primary wins, secondary never contacted — cold standby), o03 (heal forward to a
+slow newer primary), and o05 (slow older primary loses to a fast newer
+secondary) all green, so NOTHING is skipped — the full f01-f05 + o01-o05 gate
+runs. Each arriving leg is installed through the existing reject-older guard, so
+watermark-max (higher generation wins, late older never regresses, late newer
+heals forward) falls out without any source ranking.
 
 Excluded from default pytest collection (testpaths = ["tests"]); invoke via
 ``pytest chaos/test_failover_chaos.py`` or the wrapper script.

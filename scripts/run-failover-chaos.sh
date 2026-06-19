@@ -17,13 +17,13 @@
 # Env knobs:
 #   CHAOS_ONLY   comma list of scenario numbers to run,  e.g. "f02,o02"
 #   CHAOS_SKIP   comma list of scenario numbers to skip, e.g. "o01"
-#                (default: o01 — needs cross-leg max-wins, qfg-7h5d.1.14)
+#                (default: none — the hedge makes o01/o03/o05 green, qfg-7h5d.1.14)
 #   PYTEST_ARGS  extra args forwarded to pytest
 #
 # Examples:
 #   ./scripts/run-failover-chaos.sh
 #   CHAOS_ONLY=f02 ./scripts/run-failover-chaos.sh   # just the hang scenario
-#   CHAOS_SKIP=    ./scripts/run-failover-chaos.sh   # include o01 (will be RED)
+#   CHAOS_SKIP=o05 ./scripts/run-failover-chaos.sh   # skip the slow-primary heal
 
 set -euo pipefail
 
@@ -43,10 +43,11 @@ fi
 export QUONFIG_CHAOS_SESSION="${QUONFIG_CHAOS_SESSION:-sdk-python-failover-$$-$(date +%s)}"
 export QUONFIG_CHAOS_OWNER_PID=$$
 
-# o01-secondary-newer needs cross-leg max-wins (qfg-7h5d.1.14); not implemented
-# yet. Skip it by default (mirrors the sdk-go failover-chaos CI gate). Clear
-# CHAOS_SKIP to include it (it will be RED).
-export CHAOS_SKIP="${CHAOS_SKIP-o01}"
+# Parallel-failover hedge landed (qfg-7h5d.1.14): o01 (fast primary wins,
+# secondary never contacted), o03 (heal forward), and o05 (slow older primary
+# loses to fast newer secondary) all go green, so nothing is skipped by default.
+# Set CHAOS_SKIP=<nums> to skip specific scenarios.
+export CHAOS_SKIP="${CHAOS_SKIP-}"
 
 cleanup_done=0
 cleanup() {

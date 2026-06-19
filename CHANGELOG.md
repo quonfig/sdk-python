@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.1.0 - 2026-06-19
+
+- **Feat: the HTTP config-fetch is now a parallel-failover hedge (qfg-7h5d.1.14).**
+  On init/refresh, the SDK fires the **primary** URL first. If it answers within
+  the hedge delay (~1s) it wins and the **secondary is never contacted** (cold
+  standby — a healthy system adds zero secondary load). Only if the primary is
+  slow past the hedge delay **or** errors fast does the SDK *also* fire the
+  secondary **in parallel** — it does not cancel the primary and does not wait
+  for one-or-the-other. Each arriving leg is installed through the existing
+  reject-older guard, so watermark-max falls out: a higher generation wins, a
+  late older payload never regresses an established client, and a late newer
+  payload heals forward. `ready()` latches on the first successful install;
+  heal-forward happens after. Each leg uses its own ETag slot.
+- **Feat: two additive options — `hedge_delay_ms` (default `1000`) and
+  `config_fetch_hedge_abort_ms` (default `6000`).** `hedge_delay_ms` is how long
+  to wait for the primary before also firing the secondary in parallel.
+  `config_fetch_hedge_abort_ms` is the per-leg hard-abort deadline on the hedged
+  path; it must exceed the longest healable primary latency (so a late-but-newer
+  primary heals forward instead of aborting) and should be `< init_timeout_ms`
+  (so the init-path heal leg is not clipped) — the client logs a warning at
+  construction when `init_timeout_ms <= config_fetch_hedge_abort_ms`. The
+  existing `config_fetch_timeout_ms` is unchanged (it still governs the
+  sequential `fetch` path).
+- **Behavioral notes (backward-compatible, minor bump).** These follow from the
+  hedge and are intentional:
+  - `resolved_from()` may now return `"primary"` in a fast-both topology where
+    1.0.0 returned `"secondary"` (1.0.0 reached the secondary on the sequential
+    failover path; the hedge keeps a fast primary on `"primary"`).
+  - An extra post-`ready()` `on_config_update` callback may fire on heal-forward
+    (a late-but-newer leg installs after readiness has already latched).
+  - ETags are now tracked **per leg** (per base URL) rather than as a single
+    shared value, so a 304 from one leg can no longer mask the other.
+
 ## 1.0.0 - 2026-06-06
 
 - **Stable 1.0.0 release.** The Quonfig Python SDK is now declared stable. No API or
