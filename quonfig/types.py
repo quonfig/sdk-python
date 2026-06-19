@@ -179,12 +179,24 @@ class ConfigResponse:
 class Meta:
     version: str
     environment: str
+    # Monotonic, per-branch commit counter (api-delivery `git rev-list --count
+    # HEAD`). Unlike the SHA in ``version`` — which is unordered — ``generation``
+    # lets the SDK order two snapshots: a higher generation is strictly newer.
+    # Purely additive on the wire; old payloads (and datadir mode) report 0. Used
+    # by the reject-older install guard (canonical ordering, qfg-7h5d.1.8).
+    generation: int = 0
 
     @classmethod
     def from_dict(cls, data: dict) -> "Meta":
+        gen = data.get("generation", 0)
+        try:
+            generation = int(gen)
+        except (TypeError, ValueError):
+            generation = 0
         return cls(
             version=str(data.get("version", "")),
             environment=str(data.get("environment", "")),
+            generation=generation,
         )
 
 

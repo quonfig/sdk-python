@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from .bound_client import BoundQuonfig
-    from .types import ConfigResponse
+    from .types import ConfigEnvelope, ConfigResponse
 
 from .context import (
     clear_thread_context,
@@ -157,6 +157,17 @@ class Quonfig:
         # always-on parallel poll (qfg-47c2.8).
         fallback_poll_enabled: bool = True,
         fallback_poll_interval_ms: int = 60000,
+        # Per-URL config-fetch deadline (qfg-7h5d.1.8). Bounds a single per-leg
+        # config-fetch attempt — the initial fetch and every fallback-poller
+        # fetch alike — so a hung primary aborts fast and the secondary is
+        # reached inside ``init_timeout_ms`` instead of being starved until it.
+        # Additive and backward-compatible: the ~3s default already makes a hung
+        # upstream fail over, so existing callers need not set this. Raise it
+        # only if a healthy upstream legitimately takes longer than 3s to answer
+        # a config fetch; lower it to fail over even faster. Mirrors sdk-go's
+        # WithConfigFetchTimeout. Applies to the HTTP config path only — the
+        # long-lived SSE stream keeps its own read deadline.
+        config_fetch_timeout_ms: int = 3000,
         # Cross-SDK observability hooks (mirror sdk-go's WithOnConfigUpdate /
         # WithSSEStateCallback and sdk-node's onConfigUpdate /
         # onSSEConnectionStateChange). Fire on each successful config install
@@ -322,12 +333,23 @@ class Quonfig:
         # surface a tiny init as a generic `requests.Timeout` from the
         # background fetch instead of letting `_wait_initialized` raise
         # `QuonfigInitTimeoutError`.
+        self._config_fetch_timeout_ms = config_fetch_timeout_ms
         self._transport: Optional[Transport] = None
         if (not self._datadir and self._sdk_key) or (explicit_api_urls and not self._datadir):
             self._transport = Transport(
                 api_urls=self._api_urls,
                 sdk_key=self._sdk_key,
+                timeout=config_fetch_timeout_ms / 1000.0,
             )
+
+        # Canonical-ordering observability (qfg-7h5d.1.8). ``_resolved_from_index``
+        # is the api_urls index of the leg that produced the config we currently
+        # hold (set only on the HTTP install path, never by SSE); -1 until the
+        # first successful HTTP install. ``_sse_stream_index`` is always 0 — SSE
+        # is pinned to the primary leg and does not fail over — so
+        # ``sse_failed_over_to_secondary()`` is an asserted invariant (f05).
+        self._resolved_from_index = -1
+        self._sse_stream_index = 0
 
         # qfg-pinh: an environment pin (`environment=` / QUONFIG_ENVIRONMENT)
         # only takes effect in datadir mode, where the loader uses it to pick
@@ -375,6 +397,7 @@ class Quonfig:
                 interval_seconds=self._fallback_poll_interval_ms / 1000.0,
                 shutdown_event=self._shutdown,
                 on_config_update=self._fire_on_config_update,
+                install=lambda env: self._install_network_envelope(env, from_http=True),
             )
 
     # ------------------------------------------------------------------
@@ -425,6 +448,25 @@ class Quonfig:
                 type(e).__name__,
                 e,
             )
+
+    def _install_network_envelope(self, envelope: "ConfigEnvelope", *, from_http: bool) -> bool:
+        """Install an envelope arriving on a network path under the reject-older
+        guard (qfg-7h5d.1.8).
+
+        Every network install path funnels through here — the initial HTTP
+        fetch, the failover/poll fetch, and SSE snapshot/update — so the
+        canonical-ordering rule is applied uniformly: an established client
+        installs only if ``incoming.generation`` advances the held generation.
+        Returns ``True`` when the install was accepted.
+
+        On an accepted HTTP install, record which leg produced the held config
+        so ``resolved_from()`` reflects it; SSE installs leave it untouched
+        because the stream is pinned to the primary leg.
+        """
+        installed = self._store.update(envelope, guard=True)
+        if installed and from_http and self._transport is not None:
+            self._resolved_from_index = self._transport.last_fetch_index
+        return installed
 
     def _load_from_datadir(self) -> None:
         from .datadir import load_datadir
@@ -514,8 +556,9 @@ class Quonfig:
         def _initial_fetch() -> None:
             try:
                 envelope = transport.fetch()
-                if envelope is not None:
-                    self._store.update(envelope)
+                if envelope is not None and self._install_network_envelope(
+                    envelope, from_http=True
+                ):
                     self._fire_on_config_update()
             except Exception as e:
                 logger.warning("Initial fetch failed: %s — starting SSE anyway", e)
@@ -535,6 +578,7 @@ class Quonfig:
             self._shutdown,
             state_listener=self._handle_sse_state_change,
             on_config_update=self._fire_on_config_update,
+            install=lambda env: self._install_network_envelope(env, from_http=False),
         )
         self._sse.start()
 
@@ -1207,6 +1251,49 @@ class Quonfig:
         the chaos harness; the documented public ``connection_state()``
         accessor below is the customer-facing surface."""
         return self._fallback_poller is not None and self._fallback_poller.is_active()
+
+    # ------------------------------------------------------------------
+    # Failover + canonical-ordering observability (qfg-7h5d.1.8)
+    #
+    # Read by the failover/ordering chaos rigs and useful to customers who want
+    # to introspect which leg served the held config and at what generation.
+    # ------------------------------------------------------------------
+
+    def ready(self) -> bool:
+        """``True`` once the client has initialized AND installed at least one
+        config envelope — i.e. it can actually serve resolved values."""
+        return self._initialized.is_set() and self._store.install_count() > 0
+
+    def resolved_from(self) -> str:
+        """Which configured upstream leg produced the config the client is
+        currently holding: ``"primary"`` (the first API URL), ``"secondary"``
+        (any later URL reached via failover), or ``""`` before the first
+        successful HTTP install. Reflects the HTTP config-fetch path only — SSE
+        installs do not change it."""
+        if self._resolved_from_index < 0:
+            return ""
+        if self._resolved_from_index == 0:
+            return "primary"
+        return "secondary"
+
+    def held_generation(self) -> int:
+        """``Meta.generation`` of the currently-installed envelope (0 before the
+        first install or in datadir mode)."""
+        return self._store.get_generation()
+
+    def config_install_count(self) -> int:
+        """Number of envelopes installed over the client's lifetime (every
+        install path). The reject-older guard keeps this from advancing on a
+        same-or-older payload."""
+        return self._store.install_count()
+
+    def sse_failed_over_to_secondary(self) -> bool:
+        """Whether the live SSE stream ever repointed to a non-primary leg.
+        Always ``False`` by design — SSE is pinned to the primary stream and
+        failover is an HTTP-only property — exposed so the chaos suite can
+        assert that invariant (f05) and catch a regression that silently
+        repoints the stream."""
+        return self._sse_stream_index > 0
 
     # ------------------------------------------------------------------
     # Customer-visible health primitives (qfg-47c2.15)

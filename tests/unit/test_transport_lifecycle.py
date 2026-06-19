@@ -41,9 +41,10 @@ def test_init_timeout_does_not_cap_request_timeout() -> None:
         init_timeout_ms=10,
     )
     assert client._transport is not None
-    # Request timeout stays at the Transport default (10s); the init-timeout
-    # is enforced by `_wait_initialized`, not by the per-request timeout.
-    assert client._transport.timeout == 10.0
+    # Request timeout stays at the per-URL config-fetch default (~3s, qfg-7h5d.1.8);
+    # the init-timeout is enforced by `_wait_initialized`, not by the per-request
+    # timeout, so a tiny init_timeout_ms does NOT cap the request timeout.
+    assert client._transport.timeout == 3.0
 
 
 def test_transport_close_releases_session() -> None:

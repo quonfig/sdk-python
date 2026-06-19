@@ -51,17 +51,33 @@ except PackageNotFoundError:
     QUONFIG_VERSION = "0.0.0-dev"
 
 
+# Per-URL config-fetch deadline (qfg-7h5d.1.8). Bounds a single per-leg attempt
+# — the initial fetch and every fallback-poller fetch alike — so a hung primary
+# (accepts the connection but never responds) aborts fast and the secondary is
+# reached inside the overall init budget instead of being starved until it. ~3s
+# is short enough that a hung primary fails over well inside a default init
+# budget, yet long enough to tolerate a slow-but-healthy upstream. It bounds the
+# HTTP config path only — the long-lived SSE stream keeps its own read deadline.
+DEFAULT_CONFIG_FETCH_TIMEOUT_SECONDS = 3.0
+
+
 class Transport:
     def __init__(
         self,
         api_urls: List[str],
         sdk_key: str,
-        timeout: float = 10.0,
+        timeout: float = DEFAULT_CONFIG_FETCH_TIMEOUT_SECONDS,
     ) -> None:
         self.api_urls = api_urls
         self.sdk_key = sdk_key
+        # Per-URL config-fetch deadline. Applied to every per-leg request so a
+        # hung leg aborts after this duration and failover continues.
         self.timeout = timeout
         self._current_url_idx = 0
+        # Index of the leg that produced the most recent fetch result (200 or
+        # 304); -1 before the first fetch. The client reads this to report
+        # `resolved_from()`.
+        self.last_fetch_index = -1
         self._session = requests.Session()
         # Test seam: when set, SSE routes here instead of deriving the URL
         # from `api_urls`. Mirrors sdk-node's `__testStreamUrlOverride`.
@@ -84,7 +100,12 @@ class Transport:
         return self.api_urls[self._current_url_idx % len(self.api_urls)]
 
     def _current_stream_url(self) -> str:
-        return derive_stream_url(self._current_url())
+        # SSE is pinned to the primary leg by design — the live stream does NOT
+        # fail over (failover is an HTTP-only property; chaos scenario f05).
+        # Deriving from the primary URL keeps the stream from silently
+        # repointing to the secondary after an HTTP config-fetch failover has
+        # moved ``_current_url_idx``.
+        return derive_stream_url(self.api_urls[0])
 
     def _failover(self) -> None:
         self._current_url_idx += 1
@@ -104,20 +125,29 @@ class Transport:
         if etag:
             headers["If-None-Match"] = etag
 
-        for _ in range(len(self.api_urls)):
+        last_error: Optional[Exception] = None
+        # Always start the failover loop at the primary leg (index 0) — the loop
+        # is NOT sticky to the leg that last worked. This way a recovered primary
+        # is preferred again on the next fetch, and a newer primary heals an
+        # established client forward when it lands late (chaos scenario o03).
+        # Each per-leg request is bounded by ``self.timeout`` so a hung primary
+        # aborts fast and the secondary is reached inside the init budget (f02).
+        for idx in range(len(self.api_urls)):
+            self._current_url_idx = idx
             try:
-                url = f"{self._current_url()}/api/v2/configs"
+                url = f"{self.api_urls[idx]}/api/v2/configs"
                 response = self._session.get(url, headers=headers, timeout=self.timeout)
                 if response.status_code == 304:
+                    self.last_fetch_index = idx
                     return None
                 response.raise_for_status()
                 envelope = ConfigEnvelope.from_dict(response.json())
+                self.last_fetch_index = idx
                 return envelope
-            except (requests.ConnectionError, requests.Timeout):
-                self._failover()
-            except requests.HTTPError:
-                self._failover()
-        raise RuntimeError("All API URLs failed")
+            except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as e:
+                last_error = e
+                continue
+        raise RuntimeError(f"All API URLs failed: {last_error}")
 
 
 class FallbackPoller:
@@ -138,12 +168,20 @@ class FallbackPoller:
         interval_seconds: float,
         shutdown_event: threading.Event,
         on_config_update: Optional[Callable[[], None]] = None,
+        install: Optional[Callable[["ConfigEnvelope"], bool]] = None,
     ) -> None:
         self._transport = transport
         self._store = store
         self._interval = interval_seconds
         self._shutdown = shutdown_event
         self._on_config_update = on_config_update
+        # Guarded install hook (qfg-7h5d.1.8). A poll fetch is installed through
+        # the client's reject-older guard, which returns whether the install was
+        # accepted; ``on_config_update`` fires only on an accepted install so a
+        # failover to a stale (same-or-older) secondary can't regress or flap an
+        # established client. Falls back to an unconditional store update when no
+        # hook is wired (legacy callers).
+        self._install = install
         self._lock = threading.Lock()
         self._stop_event: Optional[threading.Event] = None
         self._thread: Optional[threading.Thread] = None
@@ -203,8 +241,13 @@ class FallbackPoller:
                 etag = self._store.get_etag()
                 envelope = self._transport.fetch(etag=etag)
                 if envelope is not None:
-                    self._store.update(envelope)
-                    if self._on_config_update is not None:
+                    if self._install is not None:
+                        installed = self._install(envelope)
+                    else:
+                        installed = self._store.update(envelope)
+                    # Reject-older guard dropped a same-or-older payload — the
+                    # held config is unchanged, so skip the update callback.
+                    if installed and self._on_config_update is not None:
                         try:
                             self._on_config_update()
                         except Exception as e:  # noqa: BLE001

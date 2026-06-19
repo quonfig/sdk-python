@@ -29,12 +29,20 @@ class SSEClient:
         shutdown_event: threading.Event,
         state_listener: Optional[Callable[[SSEState], None]] = None,
         on_config_update: Optional[Callable[[], None]] = None,
+        install: Optional[Callable[[ConfigEnvelope], bool]] = None,
     ) -> None:
         self.transport = transport
         self.store = store
         self.shutdown_event = shutdown_event
         self._state_listener = state_listener
         self._on_config_update = on_config_update
+        # Guarded install hook (qfg-7h5d.1.8). When provided, an SSE snapshot /
+        # update is installed through the client's reject-older guard, which
+        # returns whether the install was accepted; ``on_config_update`` fires
+        # only on an accepted install so a stale (same-or-older) snapshot can't
+        # flap an established client. Falls back to an unconditional store
+        # update when no hook is wired (datadir / legacy callers).
+        self._install = install
         self._thread: Optional[threading.Thread] = None
         self._stream_url_override: Optional[str] = None
 
@@ -92,13 +100,21 @@ class SSEClient:
                     if event.data:
                         try:
                             envelope = ConfigEnvelope.from_dict(json.loads(event.data))
-                            self.store.update(envelope)
+                            if self._install is not None:
+                                installed = self._install(envelope)
+                            else:
+                                installed = self.store.update(envelope)
                         except Exception as e:
                             _LOG.warning(
                                 "Quonfig SSE: dropping malformed event: %s: %s",
                                 type(e).__name__,
                                 e,
                             )
+                            continue
+                        # Reject-older guard dropped a same-or-older snapshot —
+                        # the held config is unchanged, so do not fire the
+                        # update callback (no flap).
+                        if not installed:
                             continue
                         if self._on_config_update is not None:
                             try:
