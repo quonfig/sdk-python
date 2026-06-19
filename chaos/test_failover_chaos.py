@@ -430,8 +430,26 @@ def _run_rig_scenario(
     # rig's fallback-poll refresh loop.
     dead_sse_url = f"http://127.0.0.1:{_free_port()}/api/v2/sse/config"
 
+    # Partition chaos events: injects at at_ms <= 0 MUST be applied (and, since
+    # the toxiproxy admin call is a blocking `requests` call, confirmed) BEFORE
+    # the client is constructed and starts its first config fetch. Otherwise the
+    # primary fetch can win the race and resolve off the still-healthy primary
+    # before the fault lands (qfg-7h5d.1.15 — f01-primary-refused flake). Injects
+    # at at_ms > 0 fire after the client is up, relative to baseline. Mirrors the
+    # sdk-ruby reference runner (failover_chaos.rb).
+    events = run.get("chaos") or []
+    pre_init = [ev for ev in events if ev.get("inject") and int(ev.get("at_ms") or 0) <= 0]
+    scheduled = [ev for ev in events if ev.get("inject") and int(ev.get("at_ms") or 0) > 0]
+
     client: Optional[Quonfig] = None
     try:
+        # Apply pre-init injects synchronously — _apply_inject's toxiproxy admin
+        # calls block until the fault is in place, and it folds in any self-restore
+        # timer (e.g. primary_refused_ms), which therefore counts from this moment.
+        for ev in pre_init:
+            _apply_inject(tp, ev["inject"])
+            print(f"[pre-init] inject {ev['inject']}")
+
         client = Quonfig(
             sdk_key="test-backend-key",
             api_urls=[primary_url, secondary_url],
@@ -462,11 +480,11 @@ def _run_rig_scenario(
 
         baseline = time.monotonic()
 
-        # Schedule chaos events against the primary leg.
-        for ev in run.get("chaos") or []:
-            inj = ev.get("inject")
-            if not inj:
-                continue
+        # Schedule the remaining (at_ms > 0) chaos events against the primary leg,
+        # relative to baseline. Pre-init (at_ms <= 0) injects were already applied
+        # synchronously above, before the client's first fetch.
+        for ev in scheduled:
+            inj = ev["inject"]
             at = int(ev.get("at_ms") or 0)
 
             def _fire(inj: Dict[str, Any] = inj, at: int = at) -> None:
