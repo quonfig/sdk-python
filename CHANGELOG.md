@@ -4,7 +4,7 @@
 
 - **Feat: the HTTP config-fetch is now a parallel-failover hedge (qfg-7h5d.1.14).**
   On init/refresh, the SDK fires the **primary** URL first. If it answers within
-  the hedge delay (~1s) it wins and the **secondary is never contacted** (cold
+  the hedge delay (~2s) it wins and the **secondary is never contacted** (cold
   standby — a healthy system adds zero secondary load). Only if the primary is
   slow past the hedge delay **or** errors fast does the SDK *also* fire the
   secondary **in parallel** — it does not cancel the primary and does not wait
@@ -13,7 +13,7 @@
   late older payload never regresses an established client, and a late newer
   payload heals forward. `ready()` latches on the first successful install;
   heal-forward happens after. Each leg uses its own ETag slot.
-- **Feat: two additive options — `hedge_delay_ms` (default `1000`) and
+- **Feat: two additive options — `hedge_delay_ms` (default `2000`) and
   `config_fetch_hedge_abort_ms` (default `6000`).** `hedge_delay_ms` is how long
   to wait for the primary before also firing the secondary in parallel.
   `config_fetch_hedge_abort_ms` is the per-leg hard-abort deadline on the hedged

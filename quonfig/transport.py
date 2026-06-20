@@ -69,9 +69,9 @@ DEFAULT_CONFIG_FETCH_TIMEOUT_SECONDS = 3.0
 # HEDGE_DELAY is how long the hedge waits for the PRIMARY leg before ALSO firing
 # the secondary in parallel (it does NOT cancel the primary). A healthy
 # sub-second primary answers well inside the delay, so the secondary stays a cold
-# standby and a healthy system adds zero secondary load. ~1s is below a realistic
+# standby and a healthy system adds zero secondary load. ~2s is below a realistic
 # slow-but-alive primary's worst case yet far enough below the per-leg abort.
-DEFAULT_CONFIG_FETCH_HEDGE_DELAY_SECONDS = 1.0
+DEFAULT_CONFIG_FETCH_HEDGE_DELAY_SECONDS = 2.0
 
 # HEDGE_ABORT is the per-leg hard-abort deadline on the hedged path. It MUST
 # exceed the longest healable primary latency (the corpus o03/o05 use a 3s slow

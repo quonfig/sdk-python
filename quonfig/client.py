@@ -177,7 +177,7 @@ class Quonfig:
         # backward-compatible; mirror sdk-go's WithConfigFetchHedgeDelay /
         # WithConfigFetchHedgeAbort.
         #
-        #   * ``hedge_delay_ms`` (~1000): how long to wait for the primary before
+        #   * ``hedge_delay_ms`` (~2000): how long to wait for the primary before
         #     also firing the secondary in parallel.
         #   * ``config_fetch_hedge_abort_ms`` (~6000): the per-leg hard-abort
         #     deadline on the hedged path. It MUST exceed the longest healable
@@ -185,7 +185,7 @@ class Quonfig:
         #     than aborting) and SHOULD be < ``init_timeout_ms`` (so the init-path
         #     heal leg is not clipped) — the client logs a warning at construction
         #     if ``init_timeout_ms <= config_fetch_hedge_abort_ms``.
-        hedge_delay_ms: int = 1000,
+        hedge_delay_ms: int = 2000,
         config_fetch_hedge_abort_ms: int = 6000,
         # Cross-SDK observability hooks (mirror sdk-go's WithOnConfigUpdate /
         # WithSSEStateCallback and sdk-node's onConfigUpdate /
