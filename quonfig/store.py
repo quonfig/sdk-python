@@ -41,14 +41,23 @@ class ConfigStore:
         ``Meta.generation`` is strictly greater than the held generation, so a
         late failover to a stale secondary can never move the client backward
         and an equal second leg is a no-op. A fresh store (nothing installed)
-        always seeds off the first snapshot it sees, even at generation 0.
+        always seeds off the first snapshot it sees, even at generation 0. An
+        UNVERSIONED snapshot (generation <= 0 — a server that predates the
+        watermark, or one whose rev-count failed) carries no ordering info, so
+        it is never rejected as "older"; freezing the client on stale config
+        would be worse (mirrors sdk-node's carve-out).
 
         When ``guard`` is ``False`` (the default — datadir load/reload) the
         install is unconditional: a local data dir is the source of truth and
         always reports generation 0, so it must not be gated by the watermark.
         """
         with self._lock:
-            if guard and self._installs > 0 and envelope.meta.generation <= self._generation:
+            if (
+                guard
+                and self._installs > 0
+                and envelope.meta.generation > 0
+                and envelope.meta.generation <= self._generation
+            ):
                 return False
             self._configs = {c.key: c for c in envelope.configs}
             self._etag = envelope.meta.version

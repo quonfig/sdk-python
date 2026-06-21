@@ -43,6 +43,18 @@ def test_established_client_never_regresses_to_older_generation() -> None:
     assert store.install_count() == 1
 
 
+def test_established_client_installs_unversioned_carve_out() -> None:
+    store = ConfigStore()
+    assert store.update(_envelope(42), guard=True) is True
+    # An UNVERSIONED snapshot (generation 0 — a pre-watermark server, or one
+    # whose rev-count failed) carries no ordering information, so the guard must
+    # NOT reject it as "older"; freezing the client on stale config would be
+    # worse. Mirrors sdk-node's long-standing carve-out (qfg-7h5d.1.18).
+    assert store.update(_envelope(0, version="unversioned"), guard=True) is True
+    assert store.get_generation() == 0
+    assert store.install_count() == 2
+
+
 def test_same_generation_is_a_noop() -> None:
     store = ConfigStore()
     assert store.update(_envelope(42), guard=True) is True
