@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 - 2026-06-19
+## 1.1.0 - 2026-07-01
 
 - **Feat: the HTTP config-fetch is now a parallel-failover hedge (qfg-7h5d.1.14).**
   On init/refresh, the SDK fires the **primary** URL first. If it answers within
@@ -32,6 +32,11 @@
     (a late-but-newer leg installs after readiness has already latched).
   - ETags are now tracked **per leg** (per base URL) rather than as a single
     shared value, so a 304 from one leg can no longer mask the other.
+- **Install-guard carve-out for unversioned snapshots.** A delivery payload
+  whose `generation` is absent or `<= 0` (e.g. from a server that predates the
+  generation watermark) is installed by an established client rather than
+  rejected as older. Defensive back-compat guard — with servers that emit true
+  generations it never triggers.
 
 ## 1.0.0 - 2026-06-06
 
