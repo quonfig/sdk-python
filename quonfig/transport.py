@@ -518,42 +518,50 @@ class FallbackPoller:
         return True
 
     def _loop(self, stop_event: threading.Event) -> None:
+        # Fetch IMMEDIATELY on engage, then settle into the interval cadence
+        # (qfg-41nh.10, matches sdk-go/java/net). The poller only engages when
+        # SSE is already unavailable, so the held config is already suspect —
+        # waiting a full interval before the first fetch put first-data-after-
+        # SSE-loss at grace + interval (~180s) vs ~120s in sdk-go. The engage-
+        # right-after-init case is harmless: the leg ETags turn it into a 304.
         while not stop_event.is_set() and not self._shutdown.is_set():
-            # Wait the interval first; matches the long-polling cadence (the
-            # initial config snapshot already came from `Transport.fetch` at
-            # init-time) and lets disengage() short-circuit a sleeping cycle.
+            self._poll_once()
+            # Wait the interval AFTER the fetch; lets disengage() short-circuit
+            # a sleeping cycle.
             if stop_event.wait(self._interval):
                 return
             if self._shutdown.is_set():
                 return
-            try:
-                if self._refresh is not None:
-                    # Hedged path (qfg-7h5d.1.14): the refresh callable installs
-                    # through the reject-older guard and fires on_config_update
-                    # itself, so there is nothing more to do here.
-                    self._refresh()
-                    continue
-                etag = self._store.get_etag()
-                envelope = self._transport.fetch(etag=etag)
-                if envelope is not None:
-                    if self._install is not None:
-                        installed = self._install(envelope)
-                    else:
-                        installed = self._store.update(envelope)
-                    # Reject-older guard dropped a same-or-older payload — the
-                    # held config is unchanged, so skip the update callback.
-                    if installed and self._on_config_update is not None:
-                        try:
-                            self._on_config_update()
-                        except Exception as e:  # noqa: BLE001
-                            _LOG.error(
-                                "Quonfig fallback poll: onConfigUpdate threw: %s: %s",
-                                type(e).__name__,
-                                e,
-                            )
-            except Exception as e:  # noqa: BLE001 — fallback errors must not kill the loop
-                _LOG.debug(
-                    "Quonfig fallback poll iteration failed: %s: %s",
-                    type(e).__name__,
-                    e,
-                )
+
+    def _poll_once(self) -> None:
+        try:
+            if self._refresh is not None:
+                # Hedged path (qfg-7h5d.1.14): the refresh callable installs
+                # through the reject-older guard and fires on_config_update
+                # itself, so there is nothing more to do here.
+                self._refresh()
+                return
+            etag = self._store.get_etag()
+            envelope = self._transport.fetch(etag=etag)
+            if envelope is not None:
+                if self._install is not None:
+                    installed = self._install(envelope)
+                else:
+                    installed = self._store.update(envelope)
+                # Reject-older guard dropped a same-or-older payload — the
+                # held config is unchanged, so skip the update callback.
+                if installed and self._on_config_update is not None:
+                    try:
+                        self._on_config_update()
+                    except Exception as e:  # noqa: BLE001
+                        _LOG.error(
+                            "Quonfig fallback poll: onConfigUpdate threw: %s: %s",
+                            type(e).__name__,
+                            e,
+                        )
+        except Exception as e:  # noqa: BLE001 — fallback errors must not kill the loop
+            _LOG.debug(
+                "Quonfig fallback poll iteration failed: %s: %s",
+                type(e).__name__,
+                e,
+            )

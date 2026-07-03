@@ -112,6 +112,38 @@ def test_fallback_disabled_never_engages() -> None:
         client.close()
 
 
+def test_engage_fetches_immediately_not_after_full_interval(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The poller must fire its FIRST fetch immediately on engage (qfg-41nh.10).
+
+    The poller only engages when SSE is already unavailable, so the held config
+    is already suspect — waiting a full interval before the first fetch put
+    first-data-after-SSE-loss at grace + interval (~180s) vs ~120s in sdk-go,
+    which fetches on engage. With a production-sized 60s interval, the first
+    fetch must arrive within seconds of engage, not after the interval.
+
+    RED baseline (pre-fix): ``_loop`` waited ``interval`` BEFORE the first
+    fetch, so with a 60s interval nothing is fetched within the 2s window.
+    """
+    client = _make_client(fallback_poll_interval_ms=60000)
+    try:
+        called = threading.Event()
+
+        def fake_fetch_hedged(*args, **kwargs):  # type: ignore[no-untyped-def]
+            called.set()
+            return iter(())
+
+        assert client._transport is not None
+        monkeypatch.setattr(client._transport, "fetch_hedged", fake_fetch_hedged)
+
+        client._handle_sse_state_change("error")
+        assert client.fallback_poller_active() is True
+        assert called.wait(2.0), (
+            "first fallback fetch did not fire on engage — the poller waited for the full interval"
+        )
+    finally:
+        client.close()
+
+
 def test_engaged_poller_calls_transport_fetch(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Once engaged, the poller actually drives a config fetch on its interval.
 
