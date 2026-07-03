@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -78,6 +80,47 @@ DEFAULT_CONFIG_FETCH_HEDGE_DELAY_SECONDS = 2.0
 # primary) so a late-but-newer primary heals forward rather than aborting, and
 # MUST be < init_timeout so the init-path heal leg is not clipped.
 DEFAULT_CONFIG_FETCH_HEDGE_ABORT_SECONDS = 6.0
+
+
+def _read_body_within_deadline(response: "requests.Response", deadline: float) -> bytes:
+    """Drain a ``stream=True`` response body under a WALL-CLOCK deadline
+    (``time.monotonic()`` seconds), raising ``requests.Timeout`` once it passes.
+
+    Why this exists (qfg-41nh.10): a scalar ``requests`` timeout only bounds
+    connect + BETWEEN-BYTES gaps. A slow-drip upstream (one byte before every
+    timeout tick, body never finishes) resets the read timer forever, so the
+    "per-leg hard abort" was not actually wall-clock and a dripping leg wedged
+    the fallback-poll loop while SSE was already down.
+
+    Reads at most one raw socket recv at a time so the deadline is checked as
+    bytes arrive, never after a full chunk accumulates:
+
+    - urllib3 v2 exposes ``HTTPResponse.read1`` (returns whatever a single recv
+      produced, up to ``amt``) — the fast path.
+    - urllib3 1.x has no ``read1``; fall back to ``iter_content(chunk_size=1)``,
+      where each next() is satisfied by ONE buffered recv (correct, slower —
+      compatibility only).
+
+    Worst case is bounded by deadline + one between-bytes read timeout (the
+    recv in flight when the deadline passes), i.e. ~2x the per-leg budget —
+    versus unbounded before.
+    """
+    buf = bytearray()
+    raw = getattr(response, "raw", None)
+    read1 = getattr(raw, "read1", None)
+    if callable(read1):
+        while True:
+            if time.monotonic() >= deadline:
+                raise requests.Timeout("per-leg wall-clock deadline exceeded reading body")
+            piece = read1(16384, decode_content=True)
+            if not piece:
+                return bytes(buf)
+            buf += piece
+    for piece in response.iter_content(chunk_size=1):
+        if time.monotonic() >= deadline:
+            raise requests.Timeout("per-leg wall-clock deadline exceeded reading body")
+        buf += piece
+    return bytes(buf)
 
 
 @dataclass
@@ -183,18 +226,28 @@ class Transport:
         # is NOT sticky to the leg that last worked. This way a recovered primary
         # is preferred again on the next fetch, and a newer primary heals an
         # established client forward when it lands late (chaos scenario o03).
-        # Each per-leg request is bounded by ``self.timeout`` so a hung primary
-        # aborts fast and the secondary is reached inside the init budget (f02).
+        # Each per-leg request is bounded by ``self.timeout`` as a true
+        # WALL-CLOCK deadline — connect + headers + full body read — so a hung
+        # OR slow-drip primary aborts fast and the secondary is reached inside
+        # the init budget (f02). The scalar requests timeout alone only bounds
+        # between-bytes gaps, which a drip resets forever (qfg-41nh.10).
         for idx in range(len(self.api_urls)):
             self._current_url_idx = idx
             try:
                 url = f"{self.api_urls[idx]}/api/v2/configs"
-                response = self._session.get(url, headers=headers, timeout=self.timeout)
-                if response.status_code == 304:
-                    self.last_fetch_index = idx
-                    return None
-                response.raise_for_status()
-                envelope = ConfigEnvelope.from_dict(response.json())
+                deadline = time.monotonic() + self.timeout
+                response = self._session.get(
+                    url, headers=headers, timeout=self.timeout, stream=True
+                )
+                try:
+                    if response.status_code == 304:
+                        self.last_fetch_index = idx
+                        return None
+                    response.raise_for_status()
+                    body = _read_body_within_deadline(response, deadline)
+                finally:
+                    response.close()
+                envelope = ConfigEnvelope.from_dict(json.loads(body))
                 self.last_fetch_index = idx
                 return envelope
             except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as e:
@@ -226,16 +279,29 @@ class Transport:
 
         try:
             url = f"{base_url}/api/v2/configs"
-            response = self._session.get(url, headers=headers, timeout=abort)
-            if response.status_code == 304:
-                self.last_fetch_index = idx
-                return LegResult(source_index=idx, not_changed=True)
-            response.raise_for_status()
-            new_etag = response.headers.get("ETag")
+            # ``abort`` is a WALL-CLOCK deadline over the whole leg — connect +
+            # headers + full body read. The scalar requests timeout below only
+            # bounds connect/between-bytes gaps (a slow-drip upstream resets it
+            # forever), so the body is drained under an explicit monotonic
+            # deadline (qfg-41nh.10).
+            deadline = time.monotonic() + abort
+            response = self._session.get(url, headers=headers, timeout=abort, stream=True)
+            try:
+                if response.status_code == 304:
+                    self.last_fetch_index = idx
+                    return LegResult(source_index=idx, not_changed=True)
+                response.raise_for_status()
+                new_etag = response.headers.get("ETag")
+                body = _read_body_within_deadline(response, deadline)
+            finally:
+                response.close()
+            envelope = ConfigEnvelope.from_dict(json.loads(body))
+            # Store the leg's ETag only AFTER the body fully arrived and
+            # decoded — recording it earlier would make the next conditional
+            # request 304 against a payload this client never installed.
             if new_etag:
                 with self._etag_lock:
                     self._etags[base_url] = new_etag
-            envelope = ConfigEnvelope.from_dict(response.json())
             self.last_fetch_index = idx
             return LegResult(source_index=idx, envelope=envelope)
         except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as e:
@@ -341,11 +407,27 @@ class Transport:
         with fire_lock:
             total = fired
 
-        # Drain exactly ``total`` settled legs in arrival order. ``_fetch_leg`` is
-        # bounded by ``abort`` and always puts exactly one result, so this never
-        # blocks indefinitely.
-        for _ in range(total):
-            yield out.get()
+        # Drain exactly ``total`` settled legs in arrival order. ``_fetch_leg``
+        # self-aborts at its wall-clock deadline, but the queue read is ALSO
+        # bounded (qfg-41nh.10): this generator is driven by the fallback-poll
+        # loop, and an untimed get() would wedge BOTH refresh layers if a leg
+        # ever outlived its deadline. Budget: the secondary fires up to ``delay``
+        # after start, and each leg's true worst case is ~2x ``abort`` (deadline
+        # elapse + one last between-bytes read), plus scheduling grace.
+        drain_deadline = time.monotonic() + delay + (2 * abort) + 1.0
+        for drained in range(total):
+            remaining = drain_deadline - time.monotonic()
+            if remaining <= 0:
+                remaining = 0.001  # deadline passed — poll, don't block
+            try:
+                yield out.get(timeout=remaining)
+            except queue.Empty:
+                _LOG.warning(
+                    "[quonfig] hedge drain abandoned %d unsettled leg(s) after "
+                    "the per-leg deadlines elapsed — continuing without them",
+                    total - drained,
+                )
+                return
 
 
 class FallbackPoller:
