@@ -513,17 +513,23 @@ class Quonfig:
         in explicitly via ``source_index`` (a shared ``transport.last_fetch_index``
         scalar cannot identify which of two in-flight legs produced this result).
         The store update + resolved-from stamp are taken together under the
-        store's lock so a reader cannot observe a new generation paired with a
-        stale resolved-from index. Legacy callers that omit ``source_index`` fall
-        back to ``transport.last_fetch_index`` (sequential-path behavior).
+        store's lock (via the ``on_installed`` hook, which the store invokes
+        while holding it) so a reader cannot observe a new generation paired
+        with a stale resolved-from index. Legacy callers that omit
+        ``source_index`` fall back to ``transport.last_fetch_index``
+        (sequential-path behavior).
         """
-        installed = self._store.update(envelope, guard=True)
-        if installed and from_http and self._transport is not None:
+
+        def _stamp_resolved_from() -> None:
+            # Runs UNDER the store lock, only on an accepted install.
+            if not from_http or self._transport is None:
+                return
             if source_index is not None:
                 self._resolved_from_index = source_index
             else:
                 self._resolved_from_index = self._transport.last_fetch_index
-        return installed
+
+        return self._store.update(envelope, guard=True, on_installed=_stamp_resolved_from)
 
     def _fetch_and_install_hedged(self, *, initial: bool) -> bool:
         """Drive ONE hedged config-fetch cycle and install whatever arrives

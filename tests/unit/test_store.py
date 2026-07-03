@@ -135,3 +135,49 @@ class TestConfigStoreConcurrency:
             t.join(timeout=1.0)
 
         assert errors == [], f"Concurrent read/write errors: {errors}"
+
+
+def make_gen_envelope(generation: int) -> ConfigEnvelope:
+    return ConfigEnvelope(
+        configs=[make_config("k")],
+        meta=Meta(version=f"gen-{generation}", environment="test", generation=generation),
+    )
+
+
+class TestUpdateOnInstalledHook:
+    """`update(..., on_installed=...)` runs the callback UNDER the store lock,
+    exactly when the install is accepted (qfg-41nh.10). The client uses this to
+    stamp `resolved_from` atomically with the install, so a reader can never
+    observe a new generation paired with a stale resolved-from index.
+
+    RED baseline (pre-fix): `update` has no `on_installed` parameter
+    (TypeError) and the client stamped the index after — outside — the lock.
+    """
+
+    def test_on_installed_runs_under_store_lock_when_accepted(self):
+        store = ConfigStore()
+        seen: dict = {}
+
+        def _cb() -> None:
+            # RLock._is_owned(): True iff the CURRENT thread holds the lock.
+            seen["lock_owned"] = store._lock._is_owned()  # type: ignore[attr-defined]
+
+        installed = store.update(make_gen_envelope(5), guard=True, on_installed=_cb)
+        assert installed is True
+        assert seen.get("lock_owned") is True, "on_installed must run while the store lock is held"
+
+    def test_on_installed_not_called_when_guard_rejects(self):
+        store = ConfigStore()
+        assert store.update(make_gen_envelope(5), guard=True) is True
+        called: list = []
+        installed = store.update(
+            make_gen_envelope(4), guard=True, on_installed=lambda: called.append(1)
+        )
+        assert installed is False
+        assert called == [], "on_installed must NOT fire on a guard-rejected install"
+
+    def test_on_installed_called_on_unguarded_update(self):
+        store = ConfigStore()
+        called: list = []
+        store.update(make_gen_envelope(1), on_installed=lambda: called.append(1))
+        assert called == [1]

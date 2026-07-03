@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .types import ConfigEnvelope, ConfigResponse
 
@@ -29,11 +29,24 @@ class ConfigStore:
         with self._lock:
             return list(self._configs.keys())
 
-    def update(self, envelope: ConfigEnvelope, *, guard: bool = False) -> bool:
+    def update(
+        self,
+        envelope: ConfigEnvelope,
+        *,
+        guard: bool = False,
+        on_installed: Optional[Callable[[], None]] = None,
+    ) -> bool:
         """Atomically replace all configs from a ConfigEnvelope.
 
         Returns ``True`` when the envelope was installed, ``False`` when the
         reject-older guard dropped it.
+
+        ``on_installed``, when given, runs UNDER the store lock immediately
+        after an ACCEPTED install (never on a guard reject). It lets a caller
+        stamp install-paired metadata — the client's ``resolved_from`` leg
+        index — atomically with the install, so a reader can never observe a
+        new generation paired with stale metadata (qfg-41nh.10). Keep it cheap
+        and non-blocking: it holds up every store reader.
 
         When ``guard`` is ``True`` (every network install path: initial fetch,
         failover/poll fetch, SSE snapshot/update) the canonical-ordering rule
@@ -67,6 +80,8 @@ class ConfigStore:
             self._meta_environment = envelope.meta.environment
             self._generation = envelope.meta.generation
             self._installs += 1
+            if on_installed is not None:
+                on_installed()
             return True
 
     def get_etag(self) -> Optional[str]:
