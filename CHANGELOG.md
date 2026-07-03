@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.1 - 2026-07-03
 
 - **Fix: per-leg config-fetch aborts are now true wall-clock deadlines
   (qfg-41nh.10).** Previously the per-leg "hard abort" was a scalar `requests`
