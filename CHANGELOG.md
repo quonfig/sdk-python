@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: per-leg config-fetch aborts are now true wall-clock deadlines
+  (qfg-41nh.10).** Previously the per-leg "hard abort" was a scalar `requests`
+  timeout, which only bounds connect + between-bytes gaps — a slow-drip
+  upstream (one byte before every timeout tick, body never finishing) reset
+  the read timer forever, wedging the hedge's result drain and with it the
+  fallback-poll loop, exactly when SSE was already down (both refresh layers
+  dead, zero signal). Every leg — hedged and sequential — now drains the
+  response body under an explicit monotonic deadline sized from its per-URL
+  budget, and the hedge drain additionally bounds its queue reads as a
+  backstop, abandoning (with a warning) any leg that outlives its deadline.
+  A leg's ETag is now recorded only after its body fully arrives and decodes,
+  so an aborted read can no longer make the next conditional request 304
+  against a payload that was never installed.
+- **Fix: the fallback poller now fetches immediately on engage
+  (qfg-41nh.10).** The poller only engages when SSE is already unavailable, so
+  the held config is already suspect — waiting a full interval before the
+  first fetch put first-data-after-SSE-loss at grace + interval (~180s with
+  defaults) vs ~120s in sdk-go, which fetches on engage. The first fetch now
+  fires immediately; the interval cadence follows. An engage right after init
+  is harmless (per-leg ETags turn the redundant fetch into a 304).
+- **Fix: `resolved_from()` is now stamped under the store lock, atomically
+  with the accepted install (qfg-41nh.10).** The docstring already promised
+  this; the stamp actually happened after the lock was released, so a reader
+  could observe a new generation paired with a stale resolved-from index.
+  `ConfigStore.update` gained an optional `on_installed` callback that runs
+  under the lock only on accepted installs (additive, backward-compatible).
+
 ## 1.1.0 - 2026-07-01
 
 - **Feat: the HTTP config-fetch is now a parallel-failover hedge (qfg-7h5d.1.14).**
