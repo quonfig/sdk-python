@@ -59,10 +59,30 @@ class ExampleContexts:
 
 
 @dataclass
+class Failover:
+    """Per-flush-window failover counters (qfg-41nh.18).
+
+    Additive on the wire — an older api-telemetry strips the unknown field — and
+    only sent when at least one counter is non-zero, so a healthy client emits
+    nothing. ``start``/``end`` are unix MILLISECONDS, matching the eval-summary
+    window convention. Mirrors sdk-go's ``FailoverEvent``.
+    """
+
+    start: int
+    end: int
+    hedge_fired: int
+    guard_rejected: int
+    resolved_from_primary: int
+    resolved_from_secondary: int
+    resolved_from_lkg: int
+
+
+@dataclass
 class TelemetryEvent:
     summaries: Optional[EvalSummaries] = None
     context_shapes: Optional[ContextShapes] = None
     example_contexts: Optional[ExampleContexts] = None
+    failover: Optional[Failover] = None
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -95,6 +115,18 @@ class TelemetryEvent:
                     }
                     for e in self.example_contexts.examples
                 ]
+            }
+        if self.failover:
+            # camelCase EXACTLY as api-telemetry's Zod schema + ClickHouse MV
+            # parse them, matching sdk-go's FailoverEvent JSON tags.
+            result["failover"] = {
+                "start": self.failover.start,
+                "end": self.failover.end,
+                "hedgeFired": self.failover.hedge_fired,
+                "guardRejected": self.failover.guard_rejected,
+                "resolvedFromPrimary": self.failover.resolved_from_primary,
+                "resolvedFromSecondary": self.failover.resolved_from_secondary,
+                "resolvedFromLkg": self.failover.resolved_from_lkg,
             }
         return result
 

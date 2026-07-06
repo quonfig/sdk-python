@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Feat: the SDK now emits failover telemetry (qfg-41nh.18).** A new
+  `failover` telemetry event carries the operational counters for the
+  secondary-delivery hardening: `hedgeFired` (config-fetch cycles where the
+  parallel hedge fired its secondary leg), `guardRejected` (installs dropped by
+  the reject-older ordering guard, on both the HTTP config-fetch path and the
+  SSE message path), and `resolvedFromPrimary` / `resolvedFromSecondary` (which
+  upstream leg served each successful HTTP install; SSE/datadir installs are not
+  counted). The event carries no user data, rides any enabled telemetry stream
+  (so a full telemetry opt-out still suppresses it), and is emitted only when at
+  least one counter is non-zero in the flush window — a healthy steady-state
+  client emits nothing. Wire keys are camelCase, matching sdk-go and the
+  api-telemetry schema. Mirrors sdk-go's `FailoverAggregator`.
+
 ## 1.1.1 - 2026-07-03
 
 - **Fix: per-leg config-fetch aborts are now true wall-clock deadlines

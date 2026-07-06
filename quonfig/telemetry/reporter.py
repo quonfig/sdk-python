@@ -9,7 +9,12 @@ import requests  # type: ignore[import-untyped]
 
 from ..transport import QUONFIG_VERSION
 from ..types import Contexts, EvalResult
-from .collectors import ContextShapeCollector, EvaluationSummaryCollector, ExampleContextCollector
+from .collectors import (
+    ContextShapeCollector,
+    EvaluationSummaryCollector,
+    ExampleContextCollector,
+    FailoverCollector,
+)
 from .models import TelemetryEvent, TelemetryPayload
 
 
@@ -35,6 +40,12 @@ class TelemetryReporter:
         )
         self._ctx_collector = ContextShapeCollector(context_upload_mode=context_upload_mode)
         self._example_collector = ExampleContextCollector(context_upload_mode=context_upload_mode)
+        # Failover counters (qfg-41nh.18) carry no user data and are the
+        # operational signal for the secondary-delivery hardening, so they ride
+        # any enabled telemetry stream regardless of the eval/context opt-outs.
+        # The reporter itself is only constructed when telemetry is enabled, so
+        # this still honors a full telemetry opt-out.
+        self._failover_collector = FailoverCollector()
 
         self._shutdown = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -51,6 +62,20 @@ class TelemetryReporter:
     def record_context(self, contexts: Contexts) -> None:
         self._ctx_collector.record(contexts)
         self._example_collector.record(contexts)
+
+    def record_hedge_fired(self) -> None:
+        """Record one config-fetch cycle whose hedge fired the secondary leg."""
+        self._failover_collector.record_hedge_fired()
+
+    def record_guard_rejected(self) -> None:
+        """Record one install dropped by the reject-older ordering guard."""
+        self._failover_collector.record_guard_rejected()
+
+    def record_resolved_from(self, source_index: int) -> None:
+        """Record one successful HTTP install by the leg that served it
+        (source_index 0 = primary, > 0 = secondary; a negative index is
+        ignored)."""
+        self._failover_collector.record_resolved_from(source_index)
 
     def stop(self) -> None:
         self._shutdown.set()
@@ -82,6 +107,10 @@ class TelemetryReporter:
             events.append(ev)
 
         ev = self._example_collector.drain()
+        if ev:
+            events.append(ev)
+
+        ev = self._failover_collector.drain()
         if ev:
             events.append(ev)
 

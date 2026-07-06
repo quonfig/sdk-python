@@ -529,7 +529,28 @@ class Quonfig:
             else:
                 self._resolved_from_index = self._transport.last_fetch_index
 
-        return self._store.update(envelope, guard=True, on_installed=_stamp_resolved_from)
+        accepted = self._store.update(envelope, guard=True, on_installed=_stamp_resolved_from)
+
+        # Failover observability (qfg-41nh.18). Recorded OUTSIDE the store lock —
+        # the on_installed hook holds up every store reader and must stay cheap.
+        # On an ACCEPTED HTTP install, record which leg (primary/secondary)
+        # served the config now held; an equal-or-older payload dropped by the
+        # reject-older guard on ANY network path (HTTP config-fetch OR SSE
+        # message) counts as a guard rejection. SSE/datadir installs don't move
+        # resolved_from, so they're not counted there.
+        if self._telemetry is not None:
+            if accepted:
+                if from_http and self._transport is not None:
+                    idx = (
+                        source_index
+                        if source_index is not None
+                        else self._transport.last_fetch_index
+                    )
+                    self._telemetry.record_resolved_from(idx)
+            else:
+                self._telemetry.record_guard_rejected()
+
+        return accepted
 
     def _fetch_and_install_hedged(self, *, initial: bool) -> bool:
         """Drive ONE hedged config-fetch cycle and install whatever arrives
@@ -552,7 +573,9 @@ class Quonfig:
         if self._transport is None:
             return False
         installed_once = False
+        fired = 0
         for lr in self._transport.fetch_hedged():
+            fired += 1
             if lr.error is not None:
                 continue
             if lr.not_changed or lr.envelope is None:
@@ -566,6 +589,12 @@ class Quonfig:
                     installed_once = True
                     if initial:
                         self._finish_init()
+        # Failover observability (qfg-41nh.18): if more than the primary leg
+        # fired, the hedge fired its secondary leg this cycle (the primary was
+        # slow or errored). Recorded once per cycle regardless of which leg's
+        # payload won the guard. Mirrors sdk-go's `fired > 1` check.
+        if fired > 1 and self._telemetry is not None:
+            self._telemetry.record_hedge_fired()
         return installed_once
 
     def _load_from_datadir(self) -> None:
@@ -1377,7 +1406,9 @@ class Quonfig:
                 installed_first.set()
                 return
             try:
+                fired = 0
                 for lr in transport.fetch_hedged():
+                    fired += 1
                     if lr.error is not None or lr.not_changed or lr.envelope is None:
                         continue
                     accepted = self._install_network_envelope(
@@ -1388,6 +1419,10 @@ class Quonfig:
                         if not result["installed"]:
                             result["installed"] = True
                             installed_first.set()
+                # Failover observability (qfg-41nh.18): a fired secondary leg
+                # this cycle means the hedge fired (primary slow/errored).
+                if fired > 1 and self._telemetry is not None:
+                    self._telemetry.record_hedge_fired()
             finally:
                 # Unblock the caller even if nothing installed (all legs failed /
                 # 304'd) so refresh() always returns rather than hanging.

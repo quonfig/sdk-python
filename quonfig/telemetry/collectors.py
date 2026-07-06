@@ -15,6 +15,7 @@ from .models import (
     EvaluationSummary,
     ExampleContext,
     ExampleContexts,
+    Failover,
     TelemetryEvent,
 )
 
@@ -230,3 +231,98 @@ class ExampleContextCollector:
     def _prune_cache(self) -> None:
         now = _millis()
         self._seen = {k: v for k, v in self._seen.items() if now - v < self._rate_limit_ms}
+
+
+class FailoverCollector:
+    """Accumulates failover-behavior counters over a flush window (qfg-41nh.18).
+
+    Tracks how many config-fetch cycles fired the parallel hedge's secondary leg
+    (``hedge_fired``), how many installs the reject-older ordering guard dropped
+    (``guard_rejected``), and which upstream leg served each successful HTTP
+    install (``resolved_from_primary`` / ``resolved_from_secondary``). Every
+    counter is additive and carries no user data. The collector is independently
+    thread-safe (its own lock) and is written directly from the failover call
+    sites rather than through a queue — the call rate is per-config-refresh, not
+    per-evaluation, so a plain lock has negligible overhead. Mirrors sdk-go's
+    ``FailoverAggregator``.
+
+    ``resolved_from_lkg`` is reserved (last-known-good resolution) and is always
+    0 for backend SDKs; it exists to keep the wire shape identical across SDKs.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._start = 0  # unix millis; set on the first record of a window
+        self._hedge_fired = 0
+        self._guard_rejected = 0
+        self._resolved_from_primary = 0
+        self._resolved_from_secondary = 0
+        self._resolved_from_lkg = 0
+
+    def _ensure_start(self) -> None:
+        """Stamp the window start on the first record. Caller holds the lock."""
+        if self._start == 0:
+            self._start = _millis()
+
+    def record_hedge_fired(self) -> None:
+        """Count one config-fetch cycle whose hedge fired the secondary leg
+        (the primary was slow or errored)."""
+        with self._lock:
+            self._ensure_start()
+            self._hedge_fired += 1
+
+    def record_guard_rejected(self) -> None:
+        """Count one install dropped by the reject-older ordering guard (an
+        equal-or-older snapshot on any install path, HTTP or SSE)."""
+        with self._lock:
+            self._ensure_start()
+            self._guard_rejected += 1
+
+    def record_resolved_from(self, source_index: int) -> None:
+        """Count one successful HTTP install by the leg that served it:
+        ``source_index`` 0 is the primary, any index > 0 is a
+        failover/secondary leg. A negative index (SSE/datadir install with no
+        HTTP leg) is ignored."""
+        if source_index < 0:
+            return
+        with self._lock:
+            self._ensure_start()
+            if source_index == 0:
+                self._resolved_from_primary += 1
+            else:
+                self._resolved_from_secondary += 1
+
+    def drain(self) -> Optional[TelemetryEvent]:
+        """Return the window's counters as a TelemetryEvent and reset state.
+        Returns ``None`` if no failover activity occurred (every counter zero),
+        so a healthy steady-state client emits no failover event at all."""
+        with self._lock:
+            if (
+                self._hedge_fired == 0
+                and self._guard_rejected == 0
+                and self._resolved_from_primary == 0
+                and self._resolved_from_secondary == 0
+                and self._resolved_from_lkg == 0
+            ):
+                return None
+
+            event = TelemetryEvent(
+                failover=Failover(
+                    start=self._start,
+                    end=_millis(),
+                    hedge_fired=self._hedge_fired,
+                    guard_rejected=self._guard_rejected,
+                    resolved_from_primary=self._resolved_from_primary,
+                    resolved_from_secondary=self._resolved_from_secondary,
+                    resolved_from_lkg=self._resolved_from_lkg,
+                )
+            )
+
+            self._start = 0
+            self._hedge_fired = 0
+            self._guard_rejected = 0
+            self._resolved_from_primary = 0
+            self._resolved_from_secondary = 0
+            self._resolved_from_lkg = 0
+
+            return event
