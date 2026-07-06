@@ -230,6 +230,42 @@ Resolution order (highest wins):
 The previously-supported `QUONFIG_API_URL`, `QUONFIG_API_URLS`, and
 `QUONFIG_TELEMETRY_URL` env vars have been removed.
 
+## Failover & `QUONFIG_DOMAIN`
+
+By default the SDK derives every hostname from `QUONFIG_DOMAIN` (default
+`quonfig.com`):
+
+| Role                     | URL                                    |
+|--------------------------|----------------------------------------|
+| Config fetch (primary)   | `https://primary.quonfig.com`          |
+| SSE stream (primary)     | `https://stream.primary.quonfig.com`   |
+| Config fetch (secondary) | `https://secondary.quonfig.com`        |
+| SSE stream (secondary)   | `https://stream.secondary.quonfig.com` |
+| Telemetry                | `https://telemetry.quonfig.com`        |
+
+Set `QUONFIG_DOMAIN` to move all of them together (e.g.
+`QUONFIG_DOMAIN=quonfig-staging.com`). **Automatic failover and hedging between
+the primary and the secondary are on by default** — the secondary runs on
+separate infrastructure, and the SDK fails over to it if the primary is
+unreachable and hedges to it if the primary is slow.
+
+An explicit `api_urls=` replaces the derived list wholesale. To keep automatic
+failover with custom URLs, **pass both a primary and a secondary URL**:
+
+```python
+client = Quonfig(
+    sdk_key="your-sdk-key",
+    api_urls=[
+        "https://primary.your-proxy.example",
+        "https://secondary.your-proxy.example",
+    ],
+)
+```
+
+A single URL disables failover, and the SDK logs a warning at init. See
+https://docs.quonfig.com/docs/explanations/architecture/resiliency for the full
+model.
+
 ## Health primitives
 
 The client exposes two diagnostic getters:

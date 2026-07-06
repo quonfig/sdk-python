@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Feat: warn when an explicit `api_urls` disables failover (qfg-41nh.26).**
+  The default (and every `QUONFIG_DOMAIN`-derived) `api_urls` list carries a
+  primary and a secondary leg, and the SDK hedges/fails over between them. An
+  explicit `api_urls=` with a single entry silently dropped the secondary; the
+  SDK now logs a one-line `WARNING` at init pointing the caller at the fix (pass
+  both a primary and a secondary URL). Behavior is otherwise unchanged; no new
+  dependencies. A new README "Failover & `QUONFIG_DOMAIN`" section documents the
+  URL derivation and the failover model. Mirrors sdk-go.
 - **Feat: the SDK now emits failover telemetry (qfg-41nh.18).** A new
   `failover` telemetry event carries the operational counters for the
   secondary-delivery hardening: `hedgeFired` (config-fetch cycles where the

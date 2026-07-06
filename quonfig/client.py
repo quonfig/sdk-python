@@ -378,6 +378,18 @@ class Quonfig:
                 hedge_abort=config_fetch_hedge_abort_ms / 1000.0,
             )
 
+            # A single explicit `api_urls` entry disables automatic failover:
+            # the default (and every QUONFIG_DOMAIN-derived) list carries both a
+            # primary and a secondary leg, and the SDK hedges/fails over between
+            # them. An explicit `api_urls=` replaces that list wholesale, so a
+            # one-entry override silently drops the secondary. Warn once at init
+            # pointing the caller at the fix (mirrors sdk-go). See qfg-41nh.26.
+            if explicit_api_urls and len(self._api_urls) < 2:
+                logger.warning(
+                    "Quonfig: explicit api_urls disables automatic failover to "
+                    "the secondary; pass both primary and secondary URLs to keep it"
+                )
+
         # Canonical-ordering observability (qfg-7h5d.1.8). ``_resolved_from_index``
         # is the api_urls index of the leg that produced the config we currently
         # hold (set only on the HTTP install path, never by SSE); -1 until the
