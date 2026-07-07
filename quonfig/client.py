@@ -477,19 +477,33 @@ class Quonfig:
 
         return self
 
+    def _record_successful_refresh(self) -> None:
+        """Stamp 'now' as the most recent successful refresh — the last moment
+        the SDK confirmed its config source reachable and its held config
+        current (qfg-41nh.11).
+
+        Called by ``_fire_on_config_update`` for installs, and directly at the
+        successful-but-NOT-installed sites: a 304 Not Modified, a 200 the
+        reject-older guard dropped as equal-or-older, or a guard-no-op'd SSE
+        message. Transport errors never call it.
+        """
+        with self._health_lock:
+            self._last_successful_refresh = datetime.datetime.now(datetime.timezone.utc)
+
     def _fire_on_config_update(self) -> None:
         """Invoke the user's on_config_update callback, swallowing any
         exceptions and logging them. Mirrors sdk-node's `invokeOnConfigUpdate`
         — chaos scenario 10 requires the SDK supervisor to catch user-callback
         throws so the rest of the SDK keeps running.
 
-        Also stamps `last_successful_refresh()` — this is the single central
-        post-install hook (datadir, initial fetch, SSE event, fallback poll
-        all funnel through here), so it's the right place to record the
-        wall-clock time of the most recent install.
+        Also stamps `last_successful_refresh()`: every install path funnels
+        through here (datadir, initial fetch, SSE event, fallback poll), so an
+        install always advances the liveness stamp. The successful-but-NOT-
+        installed paths (a 304, a guard-rejected payload) call
+        ``_record_successful_refresh`` directly instead, so an install never
+        double-stamps (qfg-41nh.11).
         """
-        with self._health_lock:
-            self._last_successful_refresh = datetime.datetime.now(datetime.timezone.utc)
+        self._record_successful_refresh()
         if self._on_config_update is None:
             return
         try:
@@ -590,7 +604,13 @@ class Quonfig:
             fired += 1
             if lr.error is not None:
                 continue
-            if lr.not_changed or lr.envelope is None:
+            if lr.not_changed:
+                # 304 Not Modified: the leg answered and confirmed the held
+                # config is current — a successful refresh with nothing to
+                # install, so liveness still advances (qfg-41nh.11).
+                self._record_successful_refresh()
+                continue
+            if lr.envelope is None:
                 continue
             accepted = self._install_network_envelope(
                 lr.envelope, from_http=True, source_index=lr.source_index
@@ -601,6 +621,11 @@ class Quonfig:
                     installed_once = True
                     if initial:
                         self._finish_init()
+            else:
+                # 200 dropped by the reject-older guard (equal-or-older
+                # payload): the fetch itself succeeded, so liveness advances —
+                # only the install was a no-op (qfg-41nh.11).
+                self._record_successful_refresh()
         # Failover observability (qfg-41nh.18): if more than the primary leg
         # fired, the hedge fired its secondary leg this cycle (the primary was
         # slow or errored). Recorded once per cycle regardless of which leg's
@@ -724,6 +749,7 @@ class Quonfig:
             state_listener=self._handle_sse_state_change,
             on_config_update=self._fire_on_config_update,
             install=lambda env: self._install_network_envelope(env, from_http=False),
+            record_refresh=self._record_successful_refresh,
         )
         self._sse.start()
 
@@ -1421,7 +1447,14 @@ class Quonfig:
                 fired = 0
                 for lr in transport.fetch_hedged():
                     fired += 1
-                    if lr.error is not None or lr.not_changed or lr.envelope is None:
+                    if lr.error is not None:
+                        continue
+                    if lr.not_changed:
+                        # 304 Not Modified: fetch succeeded, held config
+                        # confirmed current — advance liveness (qfg-41nh.11).
+                        self._record_successful_refresh()
+                        continue
+                    if lr.envelope is None:
                         continue
                     accepted = self._install_network_envelope(
                         lr.envelope, from_http=True, source_index=lr.source_index
@@ -1431,6 +1464,11 @@ class Quonfig:
                         if not result["installed"]:
                             result["installed"] = True
                             installed_first.set()
+                    else:
+                        # Guard-rejected 200 (equal-or-older): the fetch
+                        # succeeded, only the install was a no-op — advance
+                        # liveness (qfg-41nh.11).
+                        self._record_successful_refresh()
                 # Failover observability (qfg-41nh.18): a fired secondary leg
                 # this cycle means the hedge fired (primary slow/errored).
                 if fired > 1 and self._telemetry is not None:
@@ -1507,11 +1545,18 @@ class Quonfig:
     # ------------------------------------------------------------------
 
     def last_successful_refresh(self) -> Optional[datetime.datetime]:
-        """Wall-clock time of the most recent installed config envelope.
+        """Wall-clock time of the most recent successful refresh — the last
+        moment the SDK confirmed its config source reachable and its held
+        config current. This is a LIVENESS signal, not an install counter
+        (qfg-41nh.11).
 
-        Returns ``None`` before the first install. Updated on every install
-        source — datadir load, initial HTTP fetch, SSE event, fallback
-        poll — via the shared ``_fire_on_config_update`` hook.
+        Advanced by any envelope install (datadir load, initial HTTP fetch, SSE
+        event, fallback poll — via the shared ``_fire_on_config_update`` hook)
+        AND by an HTTP config fetch that completed successfully without
+        installing — a 304 Not Modified, or a 200 the reject-older guard dropped
+        as equal-or-older — and by a received-and-processed SSE message that was
+        a guard no-op. Transport errors never advance it. Returns ``None``
+        before the first successful refresh.
         """
         with self._health_lock:
             return self._last_successful_refresh

@@ -30,12 +30,19 @@ class SSEClient:
         state_listener: Optional[Callable[[SSEState], None]] = None,
         on_config_update: Optional[Callable[[], None]] = None,
         install: Optional[Callable[[ConfigEnvelope], bool]] = None,
+        record_refresh: Optional[Callable[[], None]] = None,
     ) -> None:
         self.transport = transport
         self.store = store
         self.shutdown_event = shutdown_event
         self._state_listener = state_listener
         self._on_config_update = on_config_update
+        # Liveness stamp for a received-and-processed SSE message that was a
+        # guard no-op (equal-or-older): the stream proved live and the held
+        # config current even though nothing installed, so it counts as a
+        # successful refresh. On an accepted install, ``on_config_update``
+        # stamps instead, so an install never double-stamps (qfg-41nh.11).
+        self._record_refresh = record_refresh
         # Guarded install hook (qfg-7h5d.1.8). When provided, an SSE snapshot /
         # update is installed through the client's reject-older guard, which
         # returns whether the install was accepted; ``on_config_update`` fires
@@ -113,8 +120,13 @@ class SSEClient:
                             continue
                         # Reject-older guard dropped a same-or-older snapshot —
                         # the held config is unchanged, so do not fire the
-                        # update callback (no flap).
+                        # update callback (no flap). But the message WAS
+                        # received and processed, so the stream proved live and
+                        # the held config current: advance the liveness stamp
+                        # (qfg-41nh.11).
                         if not installed:
+                            if self._record_refresh is not None:
+                                self._record_refresh()
                             continue
                         if self._on_config_update is not None:
                             try:

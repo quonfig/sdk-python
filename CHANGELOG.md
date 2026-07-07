@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Fix: `last_successful_refresh()` now tracks liveness, not just installs
+  (qfg-41nh.11).** The stamp is a liveness signal — the last moment the SDK
+  confirmed its config source reachable and its held config current — but it
+  previously advanced only on an envelope install. A healthy long-lived client
+  parked on 304s (or same-generation payloads) under-reported liveness: the
+  stamp froze even though every fetch succeeded. It now also advances on an HTTP
+  config fetch that completed successfully WITHOUT installing (a 304 Not
+  Modified, or a 200 the reject-older guard dropped as equal-or-older) and on a
+  received-and-processed SSE message that was a guard no-op. Transport errors
+  still never advance it. Diagnostic-only accessor; no behavior change to config
+  resolution and no new dependencies. Mirrors sdk-go.
 - **Feat: warn when an explicit `api_urls` disables failover (qfg-41nh.26).**
   The default (and every `QUONFIG_DOMAIN`-derived) `api_urls` list carries a
   primary and a secondary leg, and the SDK hedges/fails over between them. An
