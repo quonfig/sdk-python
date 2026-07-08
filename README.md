@@ -201,7 +201,7 @@ for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
 
 | Param | Env var | Default |
 |-------|---------|---------|
-| `sdk_key` | `QUONFIG_SDK_KEY` | required for API mode |
+| `sdk_key` | `QUONFIG_BACKEND_SDK_KEY` | required for API mode |
 | `api_urls` | -- (derived from `QUONFIG_DOMAIN`) | `["https://primary.quonfig.com", "https://secondary.quonfig.com"]` |
 | `telemetry_url` | -- (derived from `QUONFIG_DOMAIN`) | `https://telemetry.quonfig.com` |
 | `environment` | `QUONFIG_ENVIRONMENT` | `""` |
