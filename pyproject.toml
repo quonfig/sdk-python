@@ -15,7 +15,7 @@ mmh3 = ">=3.0.0,<6.0.0"
 # >=48.0.1 floors out GHSA-537c-gmf6-5ccf (bundled OpenSSL CVE in the 48.0.0
 # wheel); pip-audit in CI fails on anything below. cryptography is transitive
 # (pulled via requests); this floor keeps the locked resolution patched.
-cryptography = ">=48.0.1"
+cryptography = ">=50.0.0"
 tenacity = ">=8.0.0"
 isodate = ">=0.6.1,<0.8.0"
 packaging = ">=21.0"
