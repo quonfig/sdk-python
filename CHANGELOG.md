@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: telemetry is no longer submitted without an SDK key (qfg-j001).** The
+  `TelemetryReporter` was constructed whenever any collector was enabled,
+  regardless of whether an SDK key was configured. On the open-source /
+  no-account path — a datadir-only client, which needs no key — every
+  `close()` (and every flush interval) POSTed to the telemetry endpoint with
+  `Authorization: Basic base64("1:")`, an unauthenticated request the backend
+  rejects and the reporter then retries with backoff. The reporter is now gated
+  on SDK-key presence rather than on the mode, matching sdk-node. A datadir
+  client **with** a key still emits exactly as before (the dogfood path used by
+  app-quonfig and api-telemetry is unaffected), and telemetry from any keyed
+  client is unchanged. No new dependencies.
+
 ## 1.2.0 - 2026-07-08
 
 - **Fix: `last_successful_refresh()` now tracks liveness, not just installs

@@ -327,9 +327,20 @@ class Quonfig:
         self._evaluator: Optional[Evaluator] = None
         self._resolver = Resolver(self._store)
 
-        # Telemetry (optional)
+        # Telemetry (optional).
+        #
+        # The SDK key is required, not optional: the telemetry endpoint
+        # authenticates with it and the backend attributes every event to the
+        # workspace it names. Without one there is nothing to attribute the
+        # data to, so the reporter must not be constructed at all — otherwise
+        # the collectors fill up and each flush POSTs `Authorization: Basic
+        # base64("1:")`, an unauthenticated request that is rejected and then
+        # retried with backoff. This is reachable on the open-source /
+        # no-account path: a datadir-only client has no SDK key, so the gate
+        # keys off the key rather than off the mode (qfg-j001). sdk-node's
+        # `isTelemetryEnabled` is the reference implementation.
         self._telemetry = None
-        if collect_evaluation_summaries or context_upload_mode != "none":
+        if self._sdk_key and (collect_evaluation_summaries or context_upload_mode != "none"):
             try:
                 from .telemetry import TelemetryReporter
 
