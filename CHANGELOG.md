@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 - 2026-08-11
 
 - **Fix: telemetry is no longer submitted without an SDK key (qfg-j001).** The
   `TelemetryReporter` was constructed whenever any collector was enabled,
