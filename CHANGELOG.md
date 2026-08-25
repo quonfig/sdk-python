@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.3.0 - 2026-08-25
+
+Lambda-friendly client options (qfg-0xj3). All three are additive and
+backward-compatible; defaults are unchanged.
+
+- **Feat: `enable_sse` constructor option (default `True`).** Pass
+  `enable_sse=False` on hosts where a long-lived stream is useless or harmful
+  (serverless / Lambda, short-lived batch jobs). With the fallback poller
+  enabled, HTTP polling becomes the primary update channel and engages
+  immediately; with both disabled, the client fetches once at init and only
+  updates via `refresh()` / `update_if_staler_than()`. The chosen update
+  channel is logged once at init. `connection_state()` derives from the
+  liveness stamp in SSE-off mode (poll-as-primary reports `connected`, not
+  `falling_back`). Mirrors sdk-node's `enableSSE`.
+- **Feat: `update_if_staler_than(max_age_ms)` — non-blocking
+  stale-while-revalidate refresh.** Returns `False` with zero work when the
+  held config is fresher than `max_age_ms`; when stale, fires one hedged
+  refresh cycle on a background daemon thread and returns `True` immediately —
+  the request path never waits on the network. Staleness-triggered refreshes
+  are coalesced (at most one in flight), so calling this per-request against a
+  slow or down upstream cannot stack threads. A thread frozen mid-fetch by a
+  serverless host completes on the next thaw; the reject-older guard makes
+  late installs safe.
+- **Feat: public `flush()`.** Synchronously drains and delivers all pending
+  telemetry (eval summaries, context shapes, example contexts, failover
+  counters). For serverless handlers: the periodic background timer does not
+  fire while the execution environment is frozen, so call `flush()` before
+  returning a response to deliver telemetry recorded during the request. No-op
+  when telemetry is disabled; never raises. Concurrent `flush()` and
+  timer-loop flushes are serialized so drained events are never sent twice,
+  and a POST that exhausts its retries now logs the dropped window instead of
+  failing silently.
+
+No new dependencies.
+
 ## 1.2.1 - 2026-08-11
 
 - **Fix: telemetry is no longer submitted without an SDK key (qfg-j001).** The

@@ -197,6 +197,84 @@ is meaningfully too slow for your use case.
 See the [open-source / local how-to](https://docs.quonfig.com/docs/how-tos/open-source-local)
 for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
 
+## Serverless / AWS Lambda
+
+On a host that freezes the process between invocations, the SSE stream and the
+telemetry timers are dead weight — they can't run while the environment is
+frozen. Build the client once at module scope, turn the background channels
+off, and drive updates and telemetry from the handler instead.
+
+```python
+import os
+
+from quonfig import Quonfig
+
+# Module scope — once per execution environment, on cold start.
+client = Quonfig(
+    sdk_key=os.environ["QUONFIG_BACKEND_SDK_KEY"],
+    enable_sse=False,                    # no long-lived stream
+    fallback_poll_enabled=False,         # no background poller
+    collect_evaluation_summaries=False,  # no background telemetry
+    context_upload_mode="none",          # no background telemetry
+).init()
+
+
+def lambda_handler(event, context):
+    client.update_if_staler_than(60_000)  # non-blocking; returns immediately
+    body = client.get_string("greeting", default="hello")
+    client.flush()                        # no-op here (telemetry off); delivers it if enabled
+    return {"statusCode": 200, "body": body}
+```
+
+See the [Lambdas / Serverless docs](https://docs.quonfig.com/docs/sdks/python/lambdas)
+for the full walkthrough.
+
+### `enable_sse`
+
+Defaults to `True` — the historical behavior, so existing callers are
+unaffected. Combined with `fallback_poll_enabled` it selects the update
+channel:
+
+- `True` + `fallback_poll_enabled=True` (default): SSE is the primary channel;
+  the HTTP poller engages only when SSE fails.
+- `False` + `fallback_poll_enabled=True`: no SSE client is constructed and the
+  HTTP poller becomes the primary channel, engaged immediately after init.
+- `False` + `fallback_poll_enabled=False`: the client fetches once at `init()`
+  and then moves only via `refresh()` / `update_if_staler_than()`.
+
+The chosen channel is logged once at init. With `enable_sse=False` there is no
+stream to be connected to, so `connection_state()` is derived from the liveness
+stamp alone — `connected` once a refresh has succeeded, and never
+`falling_back` (poll-as-primary is the configured design, not a degraded
+state).
+
+### `update_if_staler_than(max_age_ms)`
+
+Stale-while-revalidate, and **non-blocking** — it never puts a network
+round-trip on the request path.
+
+- Fresher than `max_age_ms`: returns `False`, having done nothing.
+- Stale (or never refreshed): fires one refresh on a background daemon thread
+  and returns `True` immediately. The caller keeps serving the config already
+  in memory; a later call sees the fresher one.
+- Already refreshing: returns `False`. Refreshes are coalesced — at most one is
+  ever in flight, so a per-request caller can't stack threads against a slow or
+  unreachable upstream.
+
+`True` means "a refresh was triggered", not "a refresh completed". A worker
+frozen mid-fetch completes on the next thaw; installing then is safe, because
+the reject-older guard drops a payload that isn't newer than what the client
+holds.
+
+### `flush()`
+
+Synchronously drains and POSTs all pending telemetry. The periodic timer that
+normally delivers it doesn't fire while the environment is frozen, so anything
+recorded during a request would sit in the collectors until the container is
+recycled — and be lost. A no-op when telemetry is disabled, and it never raises:
+a failing POST is logged. `close()` already flushes, so this is only needed when
+the process outlives the request.
+
 ## Configuration
 
 | Param | Env var | Default |
@@ -210,6 +288,8 @@ for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
 | `on_init_failure` | -- | `"raise"` |
 | `on_no_default` | -- | `"error"` |
 | `logger_key` | -- | `None` |
+| `enable_sse` | -- | `True` |
+| `fallback_poll_enabled` | -- | `True` |
 | `data_dir_auto_reload` | -- | `False` |
 | `data_dir_auto_reload_debounce_ms` | -- | `200` |
 
@@ -281,7 +361,9 @@ client.connection_state()         # -> "connected" | "disconnected" | "falling_b
   install.
 - `connection_state()` reports the SDK's current view of its delivery
   pipeline. `falling_back` means SSE is down and the HTTP fallback poller
-  is engaged.
+  is engaged. (With `enable_sse=False` there is no stream to fall back
+  from, so an engaged poller reports `connected` — see the
+  [`enable_sse`](#enable_sse) section.)
 
 > Do not wire `last_successful_refresh()` or `connection_state()` directly into a Kubernetes liveness probe. These signals are diagnostic, not pass/fail. A liveness probe based on SDK freshness will amplify transient network blips into restart cascades.
 
