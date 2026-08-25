@@ -151,6 +151,25 @@ class Quonfig:
         on_no_default: str = "error",  # "error" | "warn" | "ignore"
         datadir: Optional[str] = None,
         logger_key: Optional[str] = None,
+        # Real-time SSE update channel (qfg-0xj3.1). Default ``True`` — the
+        # historical (and only) behavior, so existing callers are unaffected.
+        # Pass ``False`` on hosts where a long-lived stream is useless or
+        # harmful (serverless / Lambda, short-lived batch jobs, environments
+        # that block streaming responses). Mirrors sdk-node's ``enableSSE``.
+        #
+        #   * ``True`` + ``fallback_poll_enabled=True`` (default): SSE is the
+        #     primary channel; the Layer 2 poller engages only when SSE fails.
+        #   * ``False`` + ``fallback_poll_enabled=True``: no SSE client is
+        #     constructed at all and the fallback poller becomes the PRIMARY
+        #     update channel — engaged right after the initial fetch is kicked
+        #     off, since the SSE state edges that normally engage it never
+        #     arrive.
+        #   * ``False`` + ``fallback_poll_enabled=False``: initial fetch only.
+        #     Config then moves only via ``refresh()`` /
+        #     ``update_if_staler_than()``.
+        #
+        # The chosen channel is logged once at init.
+        enable_sse: bool = True,
         # Layer 2 HTTP fallback poller. Off-by-default-when-SSE-is-up: only
         # engages on initial-SSE-failure or after a sustained disconnect
         # (`fallback_poll_interval_ms` * 2 grace). Replaces the previous
@@ -427,9 +446,14 @@ class Quonfig:
         # Layer 2 fallback poller state. The poller itself is only constructed
         # once a transport exists; the state vars below drive the engage/
         # disengage decision when SSE state changes arrive.
+        self._enable_sse = enable_sse
         self._fallback_poll_enabled = fallback_poll_enabled
         self._fallback_poll_interval_ms = fallback_poll_interval_ms
         self._fallback_poller: Optional[FallbackPoller] = None
+        # The live SSE client, when one is running. Stays ``None`` in datadir
+        # mode and whenever ``enable_sse=False`` (qfg-0xj3.1) — the SSE client
+        # is then never even constructed.
+        self._sse: Optional[Any] = None  # quonfig.sse.SSEClient
         self._sse_ever_connected = False
         self._fallback_engage_timer: Optional[threading.Timer] = None
         self._fallback_lock = threading.Lock()
@@ -449,6 +473,15 @@ class Quonfig:
         self._last_successful_refresh: Optional[datetime.datetime] = None
         self._last_sse_state: Optional[str] = None
         self._health_lock = threading.Lock()
+
+        # Staleness-triggered refresh coalescing (qfg-0xj3.2).
+        # ``update_if_staler_than`` is called per-request on serverless hosts,
+        # so a slow or down upstream must never stack worker threads: at most
+        # one staleness-triggered refresh is in flight at a time. The flag is
+        # set under ``_staleness_lock`` before the thread starts and cleared in
+        # the worker's ``finally``.
+        self._staleness_lock = threading.Lock()
+        self._staleness_refresh_in_flight = False
         if self._transport is not None and self._fallback_poll_enabled:
             self._fallback_poller = FallbackPoller(
                 transport=self._transport,
@@ -742,31 +775,80 @@ class Quonfig:
                 # init-failure contract for the both-fail case.
                 self._fetch_and_install_hedged(initial=True)
             except Exception as e:
-                logger.warning("Initial fetch failed: %s — starting SSE anyway", e)
+                # The update channel is started regardless (see below) so a
+                # client that missed its initial fetch can still heal forward.
+                logger.warning(
+                    "Initial fetch failed: %s — starting the %s update channel anyway",
+                    e,
+                    "SSE" if self._enable_sse else "HTTP poll",
+                )
             finally:
                 self._finish_init()
 
         threading.Thread(target=_initial_fetch, daemon=True, name="quonfig-init").start()
 
-        # Start SSE for live updates. SSE state edges drive the Layer 2
-        # fallback poller (engage on initial failure / sustained disconnect,
-        # disengage on recovery) — see `_handle_sse_state_change`.
-        from .sse import SSEClient
+        # Announce the chosen update channel once, before wiring it up, so a
+        # deployer can see from the logs which one is live. Mirrors sdk-node's
+        # `logBootMode` (qfg-47c2.7 / qfg-0xj3.1).
+        self._log_boot_mode()
 
-        self._sse = SSEClient(
-            transport,
-            self._store,
-            self._shutdown,
-            state_listener=self._handle_sse_state_change,
-            on_config_update=self._fire_on_config_update,
-            install=lambda env: self._install_network_envelope(env, from_http=False),
-            record_refresh=self._record_successful_refresh,
-        )
-        self._sse.start()
+        if self._enable_sse:
+            # Start SSE for live updates. SSE state edges drive the Layer 2
+            # fallback poller (engage on initial failure / sustained disconnect,
+            # disengage on recovery) — see `_handle_sse_state_change`.
+            from .sse import SSEClient
+
+            self._sse = SSEClient(
+                transport,
+                self._store,
+                self._shutdown,
+                state_listener=self._handle_sse_state_change,
+                on_config_update=self._fire_on_config_update,
+                install=lambda env: self._install_network_envelope(env, from_http=False),
+                record_refresh=self._record_successful_refresh,
+            )
+            self._sse.start()
+        elif self._fallback_poller is not None:
+            # SSE is off, so the Layer 2 poller is the ONLY update channel —
+            # engage it now rather than waiting on `_handle_sse_state_change`,
+            # which can never fire without an SSE client (qfg-0xj3.1). Mirrors
+            # sdk-node's `engageFallbackPoller("sse-disabled")`. The poller
+            # fetches immediately on engage; that first tick racing the initial
+            # fetch is harmless (per-leg ETags + the reject-older guard).
+            self._fallback_poller.engage("sse-disabled")
 
         # Start telemetry
         if self._telemetry is not None:
             self._telemetry.start()
+
+    def _log_boot_mode(self) -> None:
+        """Log which channel will actually deliver config updates.
+
+        Message shapes mirror sdk-node's ``logBootMode`` so the four modes read
+        identically across SDKs.
+        """
+        if self._enable_sse and self._fallback_poll_enabled:
+            logger.info(
+                "[quonfig] update channel: SSE (real-time) with HTTP fallback poll every "
+                "%dms when SSE is unavailable",
+                self._fallback_poll_interval_ms,
+            )
+        elif self._enable_sse:
+            logger.info(
+                "[quonfig] update channel: SSE only (fallback poll disabled — set "
+                "fallback_poll_enabled=True for HTTP fallback during SSE outages)"
+            )
+        elif self._fallback_poll_enabled:
+            logger.info(
+                "[quonfig] update channel: HTTP polling only (every %dms; SSE disabled)",
+                self._fallback_poll_interval_ms,
+            )
+        else:
+            logger.info(
+                "[quonfig] update channel: NONE (both SSE and fallback poll are disabled — "
+                "config will not refresh after init; call refresh() or "
+                "update_if_staler_than() to pull a new snapshot)"
+            )
 
     def _finish_init(self) -> None:
         self._evaluator = Evaluator(self._store, self._environment)
@@ -1496,6 +1578,80 @@ class Quonfig:
         installed_first.wait(timeout=self._config_fetch_hedge_abort_ms / 1000.0)
         return result["installed"]
 
+    def update_if_staler_than(self, max_age_ms: int) -> bool:
+        """Refresh the config in the background if it is older than
+        ``max_age_ms`` — stale-while-revalidate. NON-BLOCKING (qfg-0xj3.2).
+
+        Built for serverless hosts (AWS Lambda, Vercel) where the background
+        SSE stream and fallback poller are frozen between invocations, so the
+        held config can be arbitrarily stale at the top of a request. Call this
+        first thing in a handler to bound staleness without paying a network
+        round-trip on the request path. Mirrors sdk-node's
+        ``updateIfStalerThan``.
+
+        Behavior:
+
+        * Fresh (``now - last_successful_refresh() <= max_age_ms``) — returns
+          ``False`` having done nothing but take one lock and read the clock.
+        * Stale, or never refreshed — fires ONE hedged refresh cycle on a
+          daemon thread and returns ``True`` **immediately**. The caller never
+          waits on the network.
+        * Already refreshing — returns ``False``. Staleness-triggered
+          refreshes are coalesced: at most one is ever in flight, so calling
+          this per-request against a slow or down upstream cannot stack
+          threads.
+        * No transport (datadir mode), or the client is closed — ``False``.
+
+        ``True`` means "a refresh was **triggered**", not "a refresh
+        completed". The new envelope installs asynchronously, so the value the
+        current request reads is usually still the previous one; the next
+        request sees the fresher config.
+
+        Lambda freeze semantics: the worker thread may not finish before the
+        execution environment is frozen. It resumes and completes on the next
+        thaw, and installing then is safe — every network install goes through
+        the reject-older guard, so a late payload that is equal to or older
+        than what the client now holds is dropped rather than regressing it.
+
+        Exceptions raised by the refresh are caught and logged on the worker
+        thread; they are never raised into the caller, which has typically
+        already returned its response.
+        """
+        if self._transport is None:
+            return False
+        if self._shutdown.is_set():
+            return False
+
+        with self._health_lock:
+            last = self._last_successful_refresh
+        if last is not None:
+            age_ms = (datetime.datetime.now(datetime.timezone.utc) - last).total_seconds() * 1000.0
+            if age_ms <= max_age_ms:
+                return False
+
+        with self._staleness_lock:
+            if self._staleness_refresh_in_flight:
+                return False
+            self._staleness_refresh_in_flight = True
+
+        def _refresh_in_background() -> None:
+            try:
+                self._fetch_and_install_hedged(initial=False)
+            except Exception as e:  # noqa: BLE001 — never escape into the caller
+                logger.warning(
+                    "Quonfig: staleness-triggered refresh failed: %s: %s",
+                    type(e).__name__,
+                    e,
+                )
+            finally:
+                with self._staleness_lock:
+                    self._staleness_refresh_in_flight = False
+
+        threading.Thread(
+            target=_refresh_in_background, daemon=True, name="quonfig-stale-refresh"
+        ).start()
+        return True
+
     def fallback_poller_active(self) -> bool:
         """``True`` when the Layer 2 HTTP fallback poller is currently
         scheduled. Mirrors sdk-node's ``fallbackPollerActive()`` — used by
@@ -1586,7 +1742,20 @@ class Quonfig:
           the fallback poller hasn't engaged yet (grace window).
         - ``initializing``: no SSE state has been observed AND no envelope
           has been installed — the SDK hasn't reached a known good state.
+
+        With ``enable_sse=False`` there is no stream to be connected to and no
+        SSE state will ever be observed, so the enum is derived from the
+        liveness stamp alone — exactly like datadir mode: ``connected`` once a
+        refresh has succeeded, ``initializing`` before that. An engaged poller
+        is NOT reported as ``falling_back`` in that mode: ``falling_back``
+        means "degraded — SSE died and Layer 2 caught the client", whereas
+        poll-as-primary is the configured design and is not degraded
+        (qfg-0xj3.1).
         """
+        if not self._enable_sse:
+            with self._health_lock:
+                last_refresh = self._last_successful_refresh
+            return "connected" if last_refresh is not None else "initializing"
         if self._fallback_poller is not None and self._fallback_poller.is_active():
             return "falling_back"
         with self._health_lock:
@@ -1601,6 +1770,33 @@ class Quonfig:
             # Datadir mode, or an HTTP install completed before SSE wired up.
             return "connected"
         return "initializing"
+
+    def flush(self) -> None:
+        """Synchronously drain and deliver all pending telemetry (qfg-0xj3.3).
+
+        Evaluation summaries, context shapes, example contexts and failover
+        counters are batched in memory and POSTed by a periodic background timer.
+        On a serverless host (AWS Lambda, Vercel) that timer does not fire
+        while the execution environment is frozen, so telemetry recorded during
+        a request can sit in the collectors until the container is recycled —
+        and is then lost. Call this before returning a response:
+
+            value = client.get_string("my.flag")
+            client.flush()
+            return value
+
+        A no-op when telemetry is disabled (no SDK key, or all collectors off).
+        Never raises — a failing POST is logged, because a telemetry outage
+        must not break the caller's request path. Mirrors sdk-node's
+        ``flush()``. ``close()`` already flushes, so this is only needed when
+        the process outlives the request.
+        """
+        if self._telemetry is None:
+            return
+        try:
+            self._telemetry.flush()
+        except Exception as e:  # noqa: BLE001 — telemetry never breaks the caller
+            logger.warning("Quonfig: telemetry flush failed: %s: %s", type(e).__name__, e)
 
     def close(self) -> None:
         self._shutdown.set()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import threading
 import time
 from typing import List, Optional
@@ -16,6 +17,8 @@ from .collectors import (
     FailoverCollector,
 )
 from .models import TelemetryEvent, TelemetryPayload
+
+_LOG = logging.getLogger(__name__)
 
 
 class TelemetryReporter:
@@ -50,6 +53,16 @@ class TelemetryReporter:
         self._shutdown = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._session = requests.Session()
+        # Serializes the drain+POST cycle (qfg-0xj3.3). The public `flush()`
+        # can now run on a caller's thread at the same moment the periodic timer
+        # loop (or `stop()`) flushes, and `requests.Session` is not documented
+        # as thread-safe. Each collector's `drain()` is already atomic, so the
+        # two racers would take disjoint event sets — but they would still
+        # share the Session, and the loser would POST a half-window. One lock
+        # around the whole cycle keeps a flush all-or-nothing per window: the
+        # first caller takes everything, the second finds the collectors empty
+        # and sends nothing.
+        self._flush_lock = threading.Lock()
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, daemon=True, name="quonfig-telemetry")
@@ -77,6 +90,26 @@ class TelemetryReporter:
         ignored)."""
         self._failover_collector.record_resolved_from(source_index)
 
+    def flush(self) -> None:
+        """Drain every collector and POST synchronously — the public,
+        thread-safe flush (qfg-0xj3.3).
+
+        Intended for serverless handlers (AWS Lambda, Vercel): the periodic daemon
+        timer does not fire while the execution environment is frozen, so
+        telemetry recorded during a request would otherwise sit in the
+        collectors until the container is recycled — and be lost. Call this
+        before returning a response to deliver it.
+
+        Safe to call concurrently with the timer loop: the drain+POST cycle is
+        serialized, so the same drained events are never sent twice. Never
+        raises — a failing POST is logged and swallowed, because a telemetry
+        outage must not break the caller's request path.
+        """
+        try:
+            self._flush()
+        except Exception as e:  # noqa: BLE001 — telemetry never breaks the caller
+            _LOG.warning("[quonfig] telemetry flush failed: %s: %s", type(e).__name__, e)
+
     def stop(self) -> None:
         self._shutdown.set()
         try:
@@ -95,6 +128,12 @@ class TelemetryReporter:
                 pass
 
     def _flush(self) -> None:
+        # One flush cycle at a time — see `_flush_lock`. Callers: the periodic timer
+        # loop, `stop()`, and the public `flush()`.
+        with self._flush_lock:
+            self._drain_and_post()
+
+    def _drain_and_post(self) -> None:
         events: List[TelemetryEvent] = []
 
         if self._eval_collector is not None:
@@ -127,6 +166,7 @@ class TelemetryReporter:
         }
 
         backoff = 1.0
+        last_error: Optional[Exception] = None
         for attempt in range(3):
             try:
                 url = f"{self.telemetry_url}/api/v1/telemetry/"
@@ -135,7 +175,16 @@ class TelemetryReporter:
                 )
                 resp.raise_for_status()
                 return
-            except Exception:
+            except Exception as e:  # noqa: BLE001 — retried, then logged
+                last_error = e
                 if attempt < 2:
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 30.0)
+        # Every attempt failed. The events are already drained, so they are
+        # gone — say so rather than dropping the window silently.
+        _LOG.warning(
+            "[quonfig] telemetry POST failed after 3 attempts, dropping %d event(s): %s: %s",
+            len(events),
+            type(last_error).__name__,
+            last_error,
+        )
