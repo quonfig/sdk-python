@@ -104,7 +104,7 @@ jobs:
         # On CI we want mise to be a thin passthrough — it just needs
         # to exist on PATH so `mise exec --` resolves to the system
         # poetry that snok/install-poetry installed.
-        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151  # v2.1.11
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d  # v2.1.11
 
       - name: Install sdk-python deps
         working-directory: sdk-python
