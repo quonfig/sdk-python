@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .bound_client import BoundQuonfig
     from .types import ConfigEnvelope, ConfigResponse
 
+from ._fork import register_instance
 from .context import (
     clear_thread_context,
     get_thread_context,
@@ -341,6 +342,11 @@ class Quonfig:
         self._shutdown = threading.Event()
         self._initialized = threading.Event()
         self._init_error: Optional[Exception] = None
+        # ``init()`` has been called at least once. Read by the at-fork hook:
+        # a client that was constructed but never started has no background
+        # components to rebuild, and must not be started behind the caller's
+        # back in the child (qfg-lv4n.2).
+        self._started = False
 
         # Will be set after init
         self._evaluator: Optional[Evaluator] = None
@@ -358,19 +364,12 @@ class Quonfig:
         # no-account path: a datadir-only client has no SDK key, so the gate
         # keys off the key rather than off the mode (qfg-j001). sdk-node's
         # `isTelemetryEnabled` is the reference implementation.
-        self._telemetry = None
-        if self._sdk_key and (collect_evaluation_summaries or context_upload_mode != "none"):
-            try:
-                from .telemetry import TelemetryReporter
-
-                self._telemetry = TelemetryReporter(
-                    telemetry_url=self._telemetry_url,
-                    sdk_key=self._sdk_key,
-                    collect_evaluation_summaries=collect_evaluation_summaries,
-                    context_upload_mode=context_upload_mode,
-                )
-            except Exception:
-                pass  # Telemetry is optional
+        #
+        # Kept on `self` so the at-fork hook can build an identical reporter
+        # with EMPTY buffers in a forked child (qfg-lv4n.2).
+        self._collect_evaluation_summaries = collect_evaluation_summaries
+        self._context_upload_mode = context_upload_mode
+        self._telemetry = self._build_telemetry()
 
         # Transport: stand it up whenever the caller wired an HTTP source.
         # Explicit `api_urls=` without an sdk_key is the integration-suite
@@ -400,13 +399,7 @@ class Quonfig:
             )
         self._transport: Optional[Transport] = None
         if (not self._datadir and self._sdk_key) or (explicit_api_urls and not self._datadir):
-            self._transport = Transport(
-                api_urls=self._api_urls,
-                sdk_key=self._sdk_key,
-                timeout=config_fetch_timeout_ms / 1000.0,
-                hedge_delay=hedge_delay_ms / 1000.0,
-                hedge_abort=config_fetch_hedge_abort_ms / 1000.0,
-            )
+            self._transport = self._build_transport()
 
             # A single explicit `api_urls` entry disables automatic failover:
             # the default (and every QUONFIG_DOMAIN-derived) list carries both a
@@ -483,18 +476,68 @@ class Quonfig:
         self._staleness_lock = threading.Lock()
         self._staleness_refresh_in_flight = False
         if self._transport is not None and self._fallback_poll_enabled:
-            self._fallback_poller = FallbackPoller(
-                transport=self._transport,
-                store=self._store,
-                interval_seconds=self._fallback_poll_interval_ms / 1000.0,
-                shutdown_event=self._shutdown,
-                on_config_update=self._fire_on_config_update,
-                install=lambda env: self._install_network_envelope(env, from_http=True),
-                # Hedged refresh (qfg-7h5d.1.14): each poll tick drives a full
-                # parallel-failover hedge so an established client heals forward
-                # to a newer leg on the poll loop too, not just at init.
-                refresh=lambda: self._fetch_and_install_hedged(initial=False),
+            self._fallback_poller = self._build_fallback_poller()
+
+        # Fork safety (qfg-lv4n.2): track this instance so the child-only
+        # ``os.register_at_fork`` hook in ``quonfig._fork`` can rebuild it
+        # after a fork. Registered LAST so a construction that raised is never
+        # handed to the hook. Weakly held — this does not keep the client
+        # alive.
+        register_instance(self)
+
+    # ------------------------------------------------------------------
+    # Component factories
+    #
+    # Shared by ``__init__`` and the at-fork child rebuild so the two can't
+    # drift: a forked child must get exactly what a fresh instance gets.
+    # ------------------------------------------------------------------
+
+    def _build_telemetry(self) -> Optional[Any]:
+        """Build the telemetry reporter, or ``None`` when telemetry is off.
+
+        Buffers start empty by construction, which is what makes this safe to
+        call in a forked child: the parent's buffered window is the parent's
+        to flush.
+        """
+        if not self._sdk_key:
+            return None
+        if not (self._collect_evaluation_summaries or self._context_upload_mode != "none"):
+            return None
+        try:
+            from .telemetry import TelemetryReporter
+
+            return TelemetryReporter(
+                telemetry_url=self._telemetry_url,
+                sdk_key=self._sdk_key,
+                collect_evaluation_summaries=self._collect_evaluation_summaries,
+                context_upload_mode=self._context_upload_mode,
             )
+        except Exception:  # noqa: BLE001 — telemetry is optional
+            return None
+
+    def _build_fallback_poller(self) -> FallbackPoller:
+        assert self._transport is not None
+        return FallbackPoller(
+            transport=self._transport,
+            store=self._store,
+            interval_seconds=self._fallback_poll_interval_ms / 1000.0,
+            shutdown_event=self._shutdown,
+            on_config_update=self._fire_on_config_update,
+            install=lambda env: self._install_network_envelope(env, from_http=True),
+            # Hedged refresh (qfg-7h5d.1.14): each poll tick drives a full
+            # parallel-failover hedge so an established client heals forward
+            # to a newer leg on the poll loop too, not just at init.
+            refresh=lambda: self._fetch_and_install_hedged(initial=False),
+        )
+
+    def _build_transport(self) -> Transport:
+        return Transport(
+            api_urls=self._api_urls,
+            sdk_key=self._sdk_key,
+            timeout=self._config_fetch_timeout_ms / 1000.0,
+            hedge_delay=self._hedge_delay_ms / 1000.0,
+            hedge_abort=self._config_fetch_hedge_abort_ms / 1000.0,
+        )
 
     # ------------------------------------------------------------------
     # Initialization
@@ -511,6 +554,7 @@ class Quonfig:
         raising ``QuonfigInitTimeoutError`` when ``on_init_failure``
         is ``"raise"``.
         """
+        self._started = True
         if self._datadir:
             self._load_from_datadir()
         elif self._transport:
@@ -520,6 +564,134 @@ class Quonfig:
             self._finish_init()
 
         return self
+
+    # ------------------------------------------------------------------
+    # Fork safety (qfg-lv4n.2)
+    # ------------------------------------------------------------------
+
+    def _rebuild_after_fork_in_child(self) -> None:
+        """Drop inherited concurrency state and rebuild — IN THE CHILD ONLY.
+
+        Called once per live instance from the ``after_in_child`` handler in
+        ``quonfig._fork``. **The parent is never touched**, before or after the
+        syscall. This ports Reforge sdk-python 1.2.2's singleton reset (#26) to
+        Quonfig's instance-based API; see that module's docstring for the
+        survey and the two accepted differences.
+
+        Three rules, in order:
+
+        1. **Nothing inherited is joined or closed.** The parent's threads do
+           not exist in this process (``threading``'s own after-fork reinit has
+           already marked them stopped), so joining one would be a join on a
+           thread that never runs. Its sockets still belong to the parent —
+           closing an inherited TLS connection would write ``close_notify``
+           onto the parent's live connection. Every inherited handle is simply
+           dropped, including the pending ``threading.Timer`` (``cancel()``
+           would touch the timer's inherited ``Event``).
+        2. **Every lock and event the client owns is replaced.** A
+           ``threading.Lock`` / ``RLock`` / ``Event`` held by a non-forking
+           thread at fork time can never be released here, so the first caller
+           to touch it would wedge forever. That is exactly why Reforge's
+           ``_reset_singleton_after_fork`` swaps its module ``_ReadWriteLock``
+           for a fresh one. Only ``is_set()`` is read off the inherited events
+           — it takes no lock; ``set()`` would.
+        3. **Then rebuild**: fresh transport (fresh ``requests.Session``, so a
+           child never reuses a parent's pooled socket), fresh telemetry
+           reporter with EMPTY buffers (the parent flushes its own window —
+           dd-trace-rb discards inherited buffers in the child for the same
+           reason), fresh fallback poller, and a fresh update channel, by
+           re-running the normal ``init()`` path.
+
+        The store's *contents* are deliberately kept: config data carries no
+        threads or sockets, and dropping it would blind the child until its
+        first fetch landed — strictly worse than what it inherited. The store's
+        lock is replaced like every other. Health and liveness state, by
+        contrast, describes a connection the child does not have, so it is
+        reset: a child must not answer ``connected`` until a refresh of its own
+        has actually succeeded.
+        """
+        was_closed = self._shutdown.is_set()
+        was_initialized = self._initialized.is_set()
+        was_started = self._started
+        old_transport = self._transport
+
+        # (2) Fresh locks and events. Never call .set() on an inherited event.
+        self._shutdown = threading.Event()
+        if was_closed:
+            self._shutdown.set()
+        self._initialized = threading.Event()
+        if was_initialized:
+            self._initialized.set()
+        self._fallback_lock = threading.Lock()
+        self._health_lock = threading.Lock()
+        self._staleness_lock = threading.Lock()
+        self._staleness_refresh_in_flight = False
+        self._store._lock = threading.RLock()
+
+        # (1) Drop every inherited background component — no join, no close.
+        self._sse = None
+        self._fallback_poller = None
+        self._fallback_engage_timer = None
+        self._datadir_watcher = None
+        self._telemetry = None
+        self._transport = None
+
+        # Inherited health state belongs to the parent's connection. Keeping it
+        # is the Cheddar Up failure mode: a worker answering "connected" from
+        # state it inherited while receiving nothing (epic qfg-lv4n).
+        self._last_successful_refresh = None
+        self._last_sse_state = None
+        self._sse_ever_connected = False
+        self._resolved_from_index = -1
+
+        if was_closed or not was_started:
+            # A client closed before the fork stays closed. One that was
+            # constructed but never started has nothing to rebuild and must not
+            # be started behind the caller's back.
+            return
+
+        # (3) Rebuild.
+        if old_transport is not None:
+            self._transport = self._build_transport()
+            # Carry the private SSE stream-URL test seam across the rebuild:
+            # it is configuration the chaos rig sets after construction, not
+            # inherited runtime state.
+            override = getattr(old_transport, "_Transport__test_stream_url_override", None)
+            if override:
+                setattr(self._transport, "_Transport__test_stream_url_override", override)
+
+        self._telemetry = self._build_telemetry()
+
+        if self._transport is not None and self._fallback_poll_enabled:
+            self._fallback_poller = self._build_fallback_poller()
+
+        try:
+            self.init()
+        except Exception as e:  # noqa: BLE001 — a fork handler must never raise
+            logger.error(
+                "[quonfig] rebuilding the SDK client after fork failed in pid %d: %s: %s",
+                os.getpid(),
+                type(e).__name__,
+                e,
+            )
+
+        components = []
+        if self._transport is not None:
+            components.append("transport")
+        if self._sse is not None:
+            components.append("SSE stream")
+        if self._fallback_poller is not None:
+            components.append("fallback poller")
+        if self._telemetry is not None:
+            components.append("telemetry")
+        if self._datadir_watcher is not None:
+            components.append("datadir watcher")
+        logger.info(
+            "[quonfig] fork detected: rebuilt the SDK client in child pid %d (%s); "
+            "the parent process is untouched",
+            os.getpid(),
+            ", ".join(components) if components else "no background components",
+        )
 
     def _record_successful_refresh(self) -> None:
         """Stamp 'now' as the most recent successful refresh — the last moment

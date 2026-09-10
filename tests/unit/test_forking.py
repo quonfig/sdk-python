@@ -41,6 +41,26 @@ from quonfig import Quonfig
 requires_fork = pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
 
 
+@pytest.fixture(autouse=True)
+def _no_proxy_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``requests`` away from macOS's ``_scproxy`` for the duration of
+    these tests.
+
+    Unrelated to the SDK: on macOS ``requests`` resolves proxy settings through
+    ``urllib.request.proxy_bypass`` -> ``_scproxy`` -> SystemConfiguration,
+    which enters the Objective-C runtime. If a request thread is inside an ObjC
+    ``+initialize`` when ``fork()`` is called, libobjc deliberately aborts the
+    child ("objc[...]: +[NSNumber initialize] may have been in progress in
+    another thread when fork() was called ... Crashing instead"). Setting
+    ``NO_PROXY`` for the loopback host makes ``requests`` short-circuit before
+    it ever calls ``proxy_bypass``, so the fork under test is the only thing
+    being exercised. Linux (where the forking servers this bead is about
+    actually run, and where CI runs) is unaffected either way.
+    """
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+
+
 # ----------------------------------------------------------------------
 # In-process config server (lives in the parent; the child reaches it over
 # the socket, so a post-fork publish is only visible to a live child poller)
@@ -571,20 +591,33 @@ def test_t6_connection_state_in_child_is_not_inherited_connected() -> None:
 # ----------------------------------------------------------------------
 
 
-@requires_fork
 def test_hook_is_registered_child_only() -> None:
-    """No before-fork or after-in-parent handler exists anywhere in the SDK —
-    the parent is never touched. Guards against a re-introduction of the
-    parent-side teardown that caused the sdk-ruby incident."""
-    import quonfig._fork as fork_module
+    """Exactly one ``os.register_at_fork`` call exists anywhere in the package,
+    and its only keyword is ``after_in_child`` — no ``before=``, no
+    ``after_in_parent=``. The parent is never touched. This is the standing
+    guard against re-introducing the parent-side teardown that caused the
+    sdk-ruby incident (qfg-lv4n)."""
+    import ast
+    import pathlib
 
-    source = os.path.join(os.path.dirname(fork_module.__file__), "_fork.py")
-    with open(source, "r", encoding="utf-8") as fh:
-        text = fh.read()
-    assert "after_in_child=" in text
-    assert "before=" not in text, "the fork hook must not register a before-fork handler"
-    assert "after_in_parent=" not in text, (
-        "the fork hook must not register an after-in-parent handler"
+    import quonfig
+
+    package_root = pathlib.Path(quonfig.__file__).parent
+    calls: list[list[str]] = []
+    for path in sorted(package_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "register_at_fork"
+            ):
+                calls.append([kw.arg or "**kwargs" for kw in node.keywords])
+                assert not node.args, f"{path}: register_at_fork must be called with keywords only"
+
+    assert len(calls) == 1, f"expected exactly one register_at_fork call, found {calls}"
+    assert calls[0] == ["after_in_child"], (
+        f"the fork hook must be child-only; found keywords {calls[0]}"
     )
 
 
