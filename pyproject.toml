@@ -66,3 +66,9 @@ select = ["E", "F", "I"]
 # Chaos harness lives in `chaos/` and only runs via scripts/run-chaos.sh; keep
 # default `pytest` runs scoped to `tests/`. Invoke chaos with `pytest chaos/`.
 testpaths = ["tests"]
+markers = [
+    # tests/unit/test_forking.py — opt out of the autouse fixture that hides
+    # macOS's fork-hostile _scproxy / getaddrinfo paths. Used by the tests that
+    # assert a forked child never reaches them in the first place.
+    "no_macos_fork_isolation: run without the macOS fork-hazard workarounds",
+]

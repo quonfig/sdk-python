@@ -28,8 +28,10 @@ from __future__ import annotations
 import json
 import os
 import select
+import shutil
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -65,11 +67,18 @@ def _isolated_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_from_macos_fork_hazards(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_from_macos_fork_hazards(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Keep the loopback HTTP path out of macOS's two fork-hostile system
     libraries, so these tests exercise the SDK's fork behavior and nothing
     else. Neither hazard involves the SDK, and neither exists on Linux — where
     the forking servers this covers actually run, and where CI runs.
+
+    Tests marked ``no_macos_fork_isolation`` opt OUT: the whole point of the
+    "a child that never calls the SDK does no work" tests is that the child
+    never reaches either hazard, so neutering the hazards would make them
+    vacuous. They run with the real ``getaddrinfo`` and no ``NO_PROXY``.
 
     1. ``_scproxy``. On macOS ``requests`` resolves proxy settings through
        ``urllib.request.proxy_bypass`` -> ``_scproxy`` -> SystemConfiguration,
@@ -88,6 +97,11 @@ def _isolate_from_macos_fork_hazards(monkeypatch: pytest.MonkeyPatch) -> None:
        addresses directly (which is what they are) keeps the child off that
        code path entirely.
     """
+    if "no_macos_fork_isolation" in request.keywords:
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        return
+
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
 
@@ -117,12 +131,20 @@ class _ConfigServer:
     def __init__(self) -> None:
         self.generation = 1
         self.mode = "ok"
+        # Config fetches that carried the SDK's own version header, i.e. ones
+        # the SDK made. Lets a test tell SDK traffic apart from traffic a test
+        # thread generates itself.
+        self.sdk_requests = 0
+        self._count_lock = threading.Lock()
         outer = self
 
         class _H(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.0"
 
             def do_GET(self) -> None:  # noqa: N802
+                if self.headers.get("X-Quonfig-SDK-Version"):
+                    with outer._count_lock:
+                        outer.sdk_requests += 1
                 if outer.mode == "error":
                     self.send_response(503)
                     self.send_header("Content-Length", "0")
@@ -259,17 +281,25 @@ def _fork_child(body: Callable[[Callable[[str], None]], None]) -> "tuple[int, _C
     return pid, _ChildPipe(read_fd)
 
 
-def _reap(pid: int, timeout: float = 10.0) -> None:
+def _reap(pid: int, timeout: float = 10.0) -> str:
     """Wait for the child, SIGKILLing it if it wedged (a deadlocked child must
-    not hang the suite)."""
+    not hang the suite).
+
+    Returns ``exit=N`` | ``signal=NAME`` | ``killed(timeout)`` — a child killed
+    by a signal is how a macOS ``_scproxy`` / ``getaddrinfo`` fork crash shows
+    up, and it must not be mistaken for a clean exit.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        waited, _status = os.waitpid(pid, os.WNOHANG)
+        waited, status = os.waitpid(pid, os.WNOHANG)
         if waited == pid:
-            return
+            if os.WIFSIGNALED(status):
+                return f"signal={signal.Signals(os.WTERMSIG(status)).name}"
+            return f"exit={os.WEXITSTATUS(status)}"
         time.sleep(0.01)
     os.kill(pid, signal.SIGKILL)
     os.waitpid(pid, 0)
+    return "killed(timeout)"
 
 
 class _LockHolder:
@@ -475,6 +505,9 @@ def test_t4_child_telemetry_buffers_are_fresh() -> None:
         client._telemetry._fork_test_marker = "parent"  # type: ignore[attr-defined]
 
         def child(send: Callable[[str], None]) -> None:
+            # The rebuild is lazy: touch the SDK so the child's own telemetry
+            # reporter exists to be inspected.
+            client.connection_state()
             telemetry = client._telemetry
             if telemetry is None:
                 send("telemetry=None")
@@ -623,6 +656,284 @@ def test_t6_connection_state_in_child_is_not_inherited_connected() -> None:
         finally:
             _reap(pid)
             pipe.close()
+    finally:
+        client.close()
+        server.close()
+
+
+# ----------------------------------------------------------------------
+# R1 / R2 — the at-fork hook is CHEAP: a child that never calls the SDK
+# does no network, starts no threads, and touches nothing fork-hostile
+# ----------------------------------------------------------------------
+
+
+@requires_fork
+@pytest.mark.no_macos_fork_isolation
+def test_r1_child_that_never_calls_the_sdk_does_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rebuild is LAZY (Reforge's design). The at-fork handler only drops
+    inherited state; nothing is rebuilt until the child actually uses the SDK.
+
+    A forked child that never touches the client must therefore make ZERO
+    requests and exit cleanly. Deliberately runs WITHOUT the macOS isolation
+    fixture: an eager rebuild reaches ``requests`` -> ``proxy_bypass`` ->
+    ``_scproxy`` -> the Objective-C runtime inside the fork handler, which
+    libobjc kills the child for. With a lazy rebuild the child never gets
+    anywhere near it, so no workaround is needed — that is the assertion.
+    """
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    server = _ConfigServer()
+    # 30s poll interval: the poller fetches once when it engages at init and
+    # then goes quiet, so any SDK request during the child's lifetime is the
+    # child's.
+    client = _make_client(server, fallback_poll_interval_ms=30_000)
+    try:
+        client.init()
+        _await_ready(client)
+        time.sleep(0.3)
+        before = server.sdk_requests
+
+        def child(send: Callable[[str], None]) -> None:
+            # Never calls the SDK. Just proves the child got this far.
+            send("alive")
+            time.sleep(1.0)
+
+        pid, pipe = _fork_child(child)
+        try:
+            message = pipe.read_line(timeout=10.0)
+            status = _reap(pid, timeout=10.0)
+        finally:
+            pipe.close()
+        time.sleep(0.5)
+        after = server.sdk_requests
+
+        assert message == "alive", f"child never ran: {message!r}"
+        assert status == "exit=0", (
+            f"a child that never calls the SDK must exit cleanly, got {status} "
+            "(SIGSEGV/SIGTRAP here is the macOS _scproxy fork crash the eager "
+            "rebuild walked into)"
+        )
+        assert after == before, (
+            f"a child that never calls the SDK made {after - before} SDK request(s); "
+            "the at-fork handler must not fetch"
+        )
+    finally:
+        client.close()
+        server.close()
+
+
+@requires_fork
+@pytest.mark.no_macos_fork_isolation
+def test_r2_subprocess_with_preexec_fn_is_cheap_and_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CPython runs ``after_in_child`` handlers in the pre-exec child of a
+    ``subprocess`` spawn — but only when ``preexec_fn`` is given (that is what
+    makes ``_posixsubprocess`` call ``PyOS_AfterFork_Child``). With an eager
+    rebuild every such spawn paid a full SDK rebuild — fetch, threads, SSE — in
+    a process that was about to ``exec`` anyway, and on macOS crashed outright.
+
+    Two phases. 50 back-to-back spawns must all exit 0 (an eager rebuild
+    crashes the pre-exec child on macOS, and races ``exec`` on Linux). Then a
+    handful of spawns whose ``preexec_fn`` lingers briefly before ``exec`` —
+    long enough that any fetch the handler fired would actually reach the
+    server — must cause zero SDK requests.
+    """
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    true_bin = shutil.which("true")
+    assert true_bin is not None, "no /usr/bin/true on this platform"
+
+    server = _ConfigServer()
+    client = _make_client(server, fallback_poll_interval_ms=30_000)
+    try:
+        client.init()
+        _await_ready(client)
+        time.sleep(0.3)
+        before = server.sdk_requests
+
+        codes = set()
+        for _ in range(50):
+            completed = subprocess.run([true_bin], preexec_fn=lambda: None)  # noqa: PLW1509
+            codes.add(completed.returncode)
+
+        # Linger in the pre-exec child so a fetch fired by the fork handler has
+        # time to reach the server before `exec` wipes the process. Without
+        # this, whether the eager rebuild's request lands is a race with exec.
+        def _lingering_preexec() -> None:
+            time.sleep(0.3)
+
+        for _ in range(5):
+            completed = subprocess.run([true_bin], preexec_fn=_lingering_preexec)  # noqa: PLW1509
+            codes.add(completed.returncode)
+
+        time.sleep(0.5)
+        after = server.sdk_requests
+
+        assert codes == {0}, f"preexec_fn spawns did not all exit 0: {sorted(codes)}"
+        assert after == before, (
+            f"preexec_fn spawns caused {after - before} SDK request(s); the "
+            "at-fork handler must not fetch in a pre-exec child"
+        )
+    finally:
+        client.close()
+        server.close()
+
+
+# ----------------------------------------------------------------------
+# R3 — the lazy rebuild runs exactly once, on first use, and the child
+# serves its OWN freshly-fetched config (not the parent's snapshot)
+# ----------------------------------------------------------------------
+
+
+@requires_fork
+def test_r3_child_rebuilds_once_on_first_use_and_serves_its_own_fetch() -> None:
+    """The child comes out of the fork looking like a newly constructed client:
+    empty store, generation 0, nothing initialized. Its first SDK call runs the
+    normal ``init()`` path — blocking under the usual init-timeout semantics —
+    so the very first value it serves is the CURRENT server config, not the
+    snapshot the parent happened to hold at fork time. The rebuild happens
+    exactly once no matter how many calls follow.
+    """
+    server = _ConfigServer()
+    client = _make_client(server)
+    try:
+        client.init()
+        _await_ready(client)
+        assert client.held_generation() == 1
+
+        # Count rebuilds from inside the child by wrapping the private hook on
+        # the instance BEFORE the fork; the child inherits the wrapper.
+        rebuilds: list[int] = []
+        original_rebuild = client._rebuild_in_child
+
+        def counting_rebuild() -> None:
+            rebuilds.append(1)
+            original_rebuild()
+
+        client._rebuild_in_child = counting_rebuild  # type: ignore[method-assign]
+
+        def child(send: Callable[[str], None]) -> None:
+            # Give the parent time to publish AFTER the fork. A lazy child does
+            # nothing at all in this window — which is what makes the first
+            # fetch below land on the NEW generation.
+            time.sleep(0.6)
+            state_before = client.connection_state()
+            generation_before = client.held_generation()
+            # First evaluation: blocks on the child's own init + fetch.
+            value = client.get_string("no.such.key", default="fallback")
+            client.get_string("no.such.key", default="fallback")
+            client.connection_state()
+            send(
+                f"state_before={state_before} gen_before={generation_before} "
+                f"value={value} gen={client.held_generation()} "
+                f"installs={client.config_install_count()} rebuilds={len(rebuilds)} "
+                f"state={client.connection_state()}"
+            )
+
+        pid, pipe = _fork_child(child)
+        try:
+            # Published AFTER the fork: only the child's own fetch can see it.
+            server.generation = 2
+            message = pipe.read_line(timeout=20.0)
+        finally:
+            _reap(pid)
+            pipe.close()
+
+        fields = dict(part.split("=", 1) for part in message.split(" "))
+        assert fields.get("state_before") != "connected", (
+            f"child claimed connected before any refresh of its own: {message!r}"
+        )
+        assert fields.get("gen_before") == "0", (
+            f"child must start from an EMPTY store, not the parent's snapshot: {message!r}"
+        )
+        assert fields.get("value") == "fallback", message
+        assert fields.get("gen") == "2", (
+            f"child's first call must serve its own fetch of the CURRENT config: {message!r}"
+        )
+        assert fields.get("installs") == "1", (
+            f"child installed {fields.get('installs')} envelopes, expected exactly 1: {message!r}"
+        )
+        assert fields.get("rebuilds") == "1", f"the lazy rebuild must run exactly once: {message!r}"
+        assert fields.get("state") == "connected", message
+    finally:
+        client.close()
+        server.close()
+
+
+# ----------------------------------------------------------------------
+# The child's first fetch is a clean install — no phantom guard rejections
+# ----------------------------------------------------------------------
+
+
+@requires_fork
+def test_child_first_fetch_is_not_counted_as_a_guard_rejection() -> None:
+    """The reject-older guard drops an equal-or-older envelope and the drop is
+    counted as ``guardRejected``, which feeds the ``sdk_failover`` alerting
+    signal. A child that inherited the parent's store at the parent's
+    generation would have its own first full 200 rejected at that same
+    generation — a phantom rejection per forked worker, and ``resolved_from()``
+    stuck at "" forever because it is only stamped on an accepted install.
+
+    Because the child starts from an EMPTY store, its first fetch is accepted:
+    zero guard rejections, and ``resolved_from()`` stamped by the child's own
+    fetch — the same window the parent's own init produces.
+
+    The fallback poller is off so the only fetch in play is the init fetch.
+    With it on, init's fetch and the poller's engage-time fetch race at the
+    same generation and one of them is guard-rejected — in the parent too.
+    That is a real (pre-existing, non-fork) wart in how equal-generation
+    re-delivery is counted, filed separately; it is not what this test is
+    about.
+    """
+    server = _ConfigServer()
+    client = _make_client(
+        server,
+        fallback_poll_enabled=False,
+        collect_evaluation_summaries=True,
+        context_upload_mode="periodic_example",
+        telemetry_url="http://127.0.0.1:1",
+    )
+    try:
+        client.init()
+        _await_ready(client)
+        assert client._telemetry is not None, "test needs telemetry enabled"
+
+        # The parent's own init window is the baseline the child must match.
+        parent_window = client._telemetry._failover_collector.drain()
+        assert parent_window is not None
+        assert parent_window.failover.guard_rejected == 0
+        assert parent_window.failover.resolved_from_primary == 1
+
+        def child(send: Callable[[str], None]) -> None:
+            client.get_string("no.such.key", default="fallback")
+            # Let any late install / rejection land before the window is read,
+            # so a child whose fetch was still in flight cannot pass by racing.
+            time.sleep(0.5)
+            telemetry = client._telemetry
+            assert telemetry is not None
+            event = telemetry._failover_collector.drain()
+            rejected = 0 if event is None else event.failover.guard_rejected
+            primary = 0 if event is None else event.failover.resolved_from_primary
+            send(
+                f"guard_rejected={rejected} resolved_from_primary={primary} "
+                f"resolved_from={client.resolved_from()!r}"
+            )
+
+        pid, pipe = _fork_child(child)
+        try:
+            message = pipe.read_line(timeout=20.0)
+        finally:
+            _reap(pid)
+            pipe.close()
+
+        assert message == "guard_rejected=0 resolved_from_primary=1 resolved_from='primary'", (
+            f"child's first fetch was not a clean, stamped install: {message!r}"
+        )
     finally:
         client.close()
         server.close()
