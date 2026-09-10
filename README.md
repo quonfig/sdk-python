@@ -315,10 +315,20 @@ consequences worth knowing:
   no threads. That matters because at-fork handlers run on **every** fork in
   the process, including `multiprocessing` workers doing unrelated work and the
   pre-exec child of any `subprocess` spawn that passes `preexec_fn`.
-- The **first** call in a forked child pays one config fetch and blocks for it,
-  under the usual `init_timeout_ms` / `on_init_failure` rules. If you would
-  rather pay that before your first request, call `init()` (or any getter) in
-  the worker's post-fork hook.
+- The **first evaluation** in a forked child pays one config fetch and blocks
+  for it, under the usual `init_timeout_ms` / `on_init_failure` rules. What
+  triggers the rebuild is a content read: `get_*`, `is_feature_enabled`, the
+  `*_details` getters, `should_log`, `with_context` and the values you read
+  through it, `keys()`, `raw_config()`, `refresh()`, `update_if_staler_than()`
+  and `flush()`. If you would rather pay that before your first request, call
+  `init()` (or any getter) in the worker's post-fork hook.
+- **Diagnostics never trigger the rebuild.** `connection_state()`, `ready()`,
+  `held_generation()`, `last_successful_refresh()` and the other health
+  accessors answer the child's pre-start state — `initializing`, `False`, `0`,
+  `None` — without starting a thread or making a request, until that child's
+  first content read. A liveness probe, a metrics scrape or a log line in a
+  forked worker therefore costs nothing and cannot stand a client up behind
+  your back.
 
 Details, if you need them:
 
@@ -332,15 +342,24 @@ Details, if you need them:
   a lock held by a non-forking thread at fork time can never be released in the
   child.
 - **`connection_state()` tells the truth in a child.** It reports
-  `initializing` until the child's own first refresh succeeds, rather than
-  inheriting the parent's `connected`.
+  `initializing` — before the rebuild and after it, until the child's own
+  first refresh actually succeeds — rather than inheriting the parent's
+  `connected`.
 - **Telemetry is not duplicated.** The child starts with empty buffers; the
   parent delivers the window it recorded.
 - On its first use the child logs one line naming its pid and the components it
   rebuilt.
-- A client you closed before forking stays closed in the child, and a client
-  you constructed but never `init()`ed is **not** started in the child — the
-  fork does not start something you did not.
+- A client you **closed** before forking stays closed in the child. Calling
+  `close()` in a child before its first use is instant, and getters after it
+  return their defaults immediately instead of blocking `init_timeout_ms`.
+- A client you **constructed but never `init()`ed** is not started behind your
+  back — but you can start it yourself. Construct it in the master and call
+  `init()` in the child (Gunicorn's `post_fork`, Celery's `worker_process_init`)
+  and you get a full client: its own transport, its own update channel, its own
+  telemetry.
+- **Re-forking before first use is safe.** A child that forks again before it
+  has touched the SDK hands the pending rebuild down; the grandchild rebuilds
+  on its own first use exactly as its parent would have.
 
 ### Start methods
 
@@ -402,7 +421,12 @@ near it. If your child *does* call the SDK on macOS, either:
   False`, which the SDK does not expose; `NO_PROXY` is the supported lever; or
 - build the client after the fork.
 
-**Linux is unaffected** — this is a macOS system-library issue, and macOS is a
+Datadir mode has a second macOS-only hazard: with `data_dir_auto_reload=True`
+the child aborts (`SIGABRT`) when the rebuild starts its filesystem watcher,
+because `watchfiles` reaches FSEvents through the same Objective-C runtime —
+build the client after the fork if you need auto-reload on macOS.
+
+**Linux is unaffected** — these are macOS system-library issues, and macOS is a
 development platform for this SDK, not a deployment one.
 
 ## Configuration

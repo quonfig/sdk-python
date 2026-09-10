@@ -20,8 +20,11 @@ new dependencies, no API changes, nothing for callers to wire up.
   its own threads. It does not evaluate from the parent's snapshot.** This is
   Reforge sdk-python's design (`_reset_singleton_after_fork`, #26), where the
   hook only drops the singleton and the next `get_sdk()` builds a fresh SDK.
-  The first call in a forked child therefore pays one config fetch, blocking
-  under the usual `init_timeout_ms` / `on_init_failure` rules.
+  The first *evaluation* in a forked child therefore pays one config fetch,
+  blocking under the usual `init_timeout_ms` / `on_init_failure` rules. Content
+  readers are what trigger it: `get_*`, `is_feature_enabled`, the `*_details`
+  getters, `should_log`, `with_context`, `keys()`, `raw_config()`, `refresh()`,
+  `update_if_staler_than()` and `flush()`.
 - **The at-fork handler does no network I/O, starts no threads and takes no
   inherited lock.** At-fork handlers run on *every* fork in the process,
   including `multiprocessing` workers that never touch the SDK and the pre-exec
@@ -39,14 +42,34 @@ new dependencies, no API changes, nothing for callers to wire up.
   child.
 - **`connection_state()` no longer lies in a child.** It reports
   `initializing` until the child's own first refresh succeeds.
+- **Diagnostics never trigger the post-fork rebuild.** `connection_state()`,
+  `ready()`, `held_generation()`, `last_successful_refresh()`,
+  `resolved_from()`, `config_install_count()`, `fallback_poller_active()` and
+  `sse_failed_over_to_secondary()` are diagnostic-only: in a child that has not
+  read any content yet they answer the pre-start state (`initializing`,
+  `False`, `0`, `None`) without starting a thread or making a request. A
+  liveness probe or a metrics scrape in a forked worker cannot stand the client
+  up behind you. Matches sdk-ruby.
+- **`keys()` and `raw_config()` wait for the child's own fetch** rather than
+  answering from the empty pre-fetch store.
 - **Telemetry is no longer duplicated across a fork.** The child starts with
   empty collectors; the parent delivers the window it recorded.
 - **No phantom `guardRejected` from forked workers.** Because the child starts
   from an empty store at generation zero, its first fetch is accepted by the
   reject-older guard and stamps `resolved_from()`, instead of being counted as
   a rejection against the failover signal.
-- A client closed before the fork stays closed in the child, and one that was
-  constructed but never `init()`ed is not started behind the caller's back.
+- A client closed before the fork stays closed in the child; `close()` in a
+  child before its first use returns instantly and later getters answer with
+  their defaults rather than blocking `init_timeout_ms`. `close()` also
+  serializes against a first-use rebuild, so a rebuild racing a close cannot
+  leave a live telemetry thread on a closed client.
+- A client constructed but never `init()`ed is not started behind the caller's
+  back — but calling `init()` on it **in the child** now works, so the
+  construct-in-master / `init()`-in-`post_fork` shape stands up a full client
+  instead of latching an empty store.
+- **Re-forking before first use is safe.** A child that forks again before
+  touching the SDK hands the pending rebuild down to the grandchild, which
+  rebuilds on its own first use.
 - `spawn` start methods and platforms without `os.fork` are unaffected.
   `forkserver` children are forks of the forkserver process, so the handler
   runs there — a no-op unless a preloaded module built a client. Python 3.14
@@ -58,8 +81,14 @@ new dependencies, no API changes, nothing for callers to wire up.
   of the SDK's background threads to run; on **macOS** any `requests` HTTP in a
   forked child can be killed by libobjc via `_scproxy` proxy detection (this is
   the platform, not the SDK — a plain `requests.get()` reproduces it), so set
-  `NO_PROXY` to cover the API host or build the client after the fork. Linux is
-  unaffected.
+  `NO_PROXY` to cover the API host or build the client after the fork, and with
+  `data_dir_auto_reload=True` a forked child aborts on macOS when its watcher
+  starts (`watchfiles` reaches FSEvents through the same runtime) — build the
+  client after the fork there. Linux is unaffected.
+- `quonfig.datadir_watcher` imports `platform` at module scope. `watchfiles`
+  imports it inside `watch()`, i.e. on the watcher thread, and a fork during
+  that import left the child with a partially initialized module and no
+  watcher at all.
 
 ## 1.3.0 - 2026-08-25
 
