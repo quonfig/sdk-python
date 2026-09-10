@@ -275,6 +275,59 @@ recycled — and be lost. A no-op when telemetry is disabled, and it never raise
 a failing POST is logged. `close()` already flushes, so this is only needed when
 the process outlives the request.
 
+## Forking servers (Gunicorn `--preload`, Celery, uWSGI, `multiprocessing`)
+
+**No wiring required on POSIX.** Importing `quonfig` installs a child-only
+`os.register_at_fork` handler, so every worker forked from a parent that
+already built a client rebuilds its own copy automatically.
+
+```python
+# app.py, imported by `gunicorn --preload -w 8 app:app`
+from quonfig import Quonfig
+
+client = Quonfig(sdk_key="sdk-...").init()   # built once, in the master
+```
+
+Each forked worker gets its own transport, its own SSE stream or HTTP poll
+loop, its own telemetry buffers, and fresh locks. The config the client already
+held is carried over, so a worker serves values immediately and does not have
+to wait for its first fetch.
+
+This covers every fork-based deployment:
+
+| Host | Fork point |
+|------|------------|
+| Gunicorn `--preload` (sync, gthread, gevent) | master forks each worker |
+| Celery, default `prefork` pool | worker forks each child process |
+| uWSGI (without `--lazy-apps`) | master forks each worker |
+| `multiprocessing` / `ProcessPoolExecutor` with the `fork` start method | pool forks each process |
+| a bare `os.fork()` in application code | wherever you call it |
+
+Details, if you need them:
+
+- **The parent is never touched.** Nothing is torn down before the syscall and
+  nothing changes in the parent afterwards, so a process that forks and then
+  keeps evaluating (a Celery worker running a `fork` inside a task, a master
+  that also serves) is unaffected.
+- **The child never reuses inherited state.** Threads that did not survive the
+  fork are dropped rather than joined, inherited sockets are dropped rather
+  than closed (they still belong to the parent), and every lock is replaced —
+  a lock held by a non-forking thread at fork time can never be released in the
+  child.
+- **`connection_state()` tells the truth in a child.** It reports
+  `initializing` until the child's own first refresh succeeds, rather than
+  inheriting the parent's `connected`.
+- **Telemetry is not duplicated.** The child starts with empty buffers; the
+  parent delivers the window it recorded.
+- The child logs one line naming its pid and the components it rebuilt.
+- A client you closed before forking stays closed in the child.
+
+The `spawn` and `forkserver` start methods (`spawn` is the default for
+`multiprocessing` on macOS and Windows) are unaffected: those children run a
+fresh interpreter and build their own client from scratch, so there is nothing
+inherited to rebuild. On platforms without `os.fork` the handler is simply
+never registered.
+
 ## Configuration
 
 | Param | Env var | Default |
