@@ -26,8 +26,12 @@ The design is Reforge sdk-python 1.2.2's, unchanged in principle
   Crucially the handler does no work beyond that: no network, no threads, no
   inherited lock taken. Reforge's hook likewise only nulls the singleton, and
   the next ``get_sdk()`` builds a fresh SDK. Quonfig's equivalent is
-  ``Quonfig._ensure_rebuilt_after_fork``, called from every public entry
-  point, which re-initializes on the child's FIRST USE of the client.
+  ``Quonfig._ensure_rebuilt_after_fork``, called from every CONTENT-READING
+  public entry point, which re-initializes on the child's FIRST USE of the
+  client. Health and diagnostic accessors deliberately do NOT call it — a
+  liveness probe or a metrics scrape must not start threads and fire a fetch
+  from a child that has evaluated nothing; such a child answers its pre-start
+  state (cross-SDK ruling on epic qfg-lv4n; sdk-ruby behaves the same).
 
   This matters because ``after_in_child`` handlers run on every fork in the
   process — ``multiprocessing`` workers that never touch the SDK, and the

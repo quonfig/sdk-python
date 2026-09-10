@@ -652,6 +652,12 @@ class Quonfig:
         A client that was closed before the fork stays closed, and one that was
         constructed but never ``init()``ed is not started behind the caller's
         back; neither is flagged for rebuild, and neither has its store touched.
+        The caller can still start the never-started one itself by calling
+        ``init()`` in the child — see ``init()``, which rebuilds the components
+        this dropped (the construct-in-master / ``init()``-in-``post_fork``
+        shape). A client that is already PENDING from an earlier fork is NOT
+        one of those two cases: it stays pending across a re-fork, or the
+        grandchild would never rebuild at all (qfg-lv4n.2).
         """
         was_closed = self._shutdown.is_set()
         was_initialized = self._initialized.is_set()
