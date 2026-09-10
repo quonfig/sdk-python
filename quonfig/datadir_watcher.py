@@ -14,6 +14,17 @@ from __future__ import annotations
 
 import logging
 import os
+
+# Imported for its side effect, not for use here: ``watchfiles/main.py`` does
+# ``import platform`` INSIDE ``watch()``, i.e. on OUR watcher thread. A fork
+# that lands while that import is in flight hands the child a half-initialized
+# module and its watcher dies immediately with "AttributeError: partially
+# initialized module 'platform' has no attribute 'system'" — a forked child
+# left silently without a datadir watcher (qfg-lv4n.2). Importing it here means
+# the parent completes it on the MAIN thread, at import time, before any fork
+# can interleave; ``watchfiles``'s function-level import is then a
+# ``sys.modules`` hit that cannot be half-done.
+import platform  # noqa: F401
 import threading
 from typing import Callable, Optional
 

@@ -397,18 +397,28 @@ def test_t1_child_receives_update_published_after_fork() -> None:
         assert client.held_generation() == 1
 
         def child(send: Callable[[str], None]) -> None:
+            # Diagnostics deliberately do NOT trigger the rebuild (epic
+            # qfg-lv4n ruling), so the child's first CONTENT read is what
+            # stands it back up.
+            client.get_string("no.such.key", default="fallback")
+            send(f"rebuilt gen={client.held_generation()}")
             saw = _await(lambda: client.held_generation() == 2, within=12.0)
             send(f"gen={client.held_generation()} saw_update={saw}")
 
         pid, pipe = _fork_child(child)
         try:
-            # Publish AFTER the fork. Only a live child-side poller can see it.
+            handshake = pipe.read_line(timeout=20.0)
+            # Published only AFTER the child has finished its own rebuild, so
+            # the update can reach it on nothing but its own live poller.
             server.generation = 2
             message = pipe.read_line(timeout=20.0)
         finally:
             _reap(pid)
             pipe.close()
 
+        assert handshake == "rebuilt gen=1", (
+            f"child did not rebuild on its first content read: {handshake!r}"
+        )
         assert message == "gen=2 saw_update=True", (
             f"child did not receive the post-fork update: {message!r}"
         )
@@ -529,6 +539,12 @@ def test_t4_child_telemetry_buffers_are_fresh() -> None:
     server = _ConfigServer()
     client = _make_client(
         server,
+        # The poller is off so the child's own window is unambiguous: its init
+        # fetch stamps resolved_from_primary and nothing else. With the poller
+        # on, init's fetch and the engage-time tick race at the same generation
+        # and one is guard-rejected — in the parent too — which would look like
+        # an inherited counter.
+        fallback_poll_enabled=False,
         collect_evaluation_summaries=True,
         context_upload_mode="periodic_example",
         telemetry_url="http://127.0.0.1:1",
@@ -539,23 +555,32 @@ def test_t4_child_telemetry_buffers_are_fresh() -> None:
         assert client._telemetry is not None, "test needs telemetry enabled"
 
         # Buffer a window in the PARENT and tag the reporter object so the
-        # child can prove it is not holding the same one.
+        # child can prove it is not holding the same one. hedge_fired and
+        # guard_rejected are counters the child's own traffic cannot produce,
+        # so seeing either of them in the child means it drained the parent's
+        # buffer.
         client._telemetry.record_hedge_fired()
         client._telemetry.record_guard_rejected()
         client._telemetry.record_resolved_from(0)
         client._telemetry._fork_test_marker = "parent"  # type: ignore[attr-defined]
 
         def child(send: Callable[[str], None]) -> None:
-            # The rebuild is lazy: touch the SDK so the child's own telemetry
-            # reporter exists to be inspected.
-            client.connection_state()
+            # The rebuild is lazy, and diagnostics do not trigger it, so make
+            # a real content read: the child's own telemetry reporter has to
+            # exist before it can be inspected.
+            client.get_string("no.such.key", default="fallback")
             telemetry = client._telemetry
             if telemetry is None:
                 send("telemetry=None")
                 return
             inherited = hasattr(telemetry, "_fork_test_marker")
             drained = telemetry._failover_collector.drain()
-            send(f"inherited={inherited} buffered={drained is not None}")
+            parent_counters = (
+                0
+                if drained is None
+                else drained.failover.hedge_fired + drained.failover.guard_rejected
+            )
+            send(f"inherited={inherited} parent_counters={parent_counters}")
 
         pid, pipe = _fork_child(child)
         try:
@@ -564,7 +589,7 @@ def test_t4_child_telemetry_buffers_are_fresh() -> None:
             _reap(pid)
             pipe.close()
 
-        assert message == "inherited=False buffered=False", (
+        assert message == "inherited=False parent_counters=0", (
             f"child inherited the parent's telemetry buffers: {message!r}"
         )
         # The parent still owns its own buffered window.
@@ -662,9 +687,15 @@ def test_t6_connection_state_in_child_is_not_inherited_connected() -> None:
     """The Cheddar Up failure mode: the SDK kept answering "connected" from
     state inherited across a fork while it was in fact receiving nothing.
     Immediately after the fork the child has confirmed nothing, so it must not
-    claim to be connected until a fresh refresh actually succeeds."""
+    claim to be connected until a fresh refresh actually succeeds.
+
+    Three readings, in order: before the child has used the SDK at all (the
+    pre-start state — diagnostics never trigger the rebuild, epic qfg-lv4n);
+    after a content read has rebuilt it but with every fetch failing; and after
+    the upstream recovers, where it must reach ``connected`` on its own.
+    """
     server = _ConfigServer()
-    client = _make_client(server)
+    client = _make_client(server, init_timeout_ms=2000)
     try:
         client.init()
         _await_ready(client)
@@ -676,23 +707,31 @@ def test_t6_connection_state_in_child_is_not_inherited_connected() -> None:
 
         def child(send: Callable[[str], None]) -> None:
             send(f"state1={client.connection_state()}")
+            # A content read rebuilds the client; every fetch still 503s, so
+            # this returns the default once the init timeout elapses.
+            client.get_string("no.such.key", default="fallback")
+            send(f"state2={client.connection_state()}")
             reconnected = _await(lambda: client.connection_state() == "connected", within=12.0)
-            send(f"state2={client.connection_state()} reconnected={reconnected}")
+            send(f"state3={client.connection_state()} reconnected={reconnected}")
 
         pid, pipe = _fork_child(child)
         try:
             state1 = pipe.read_line(timeout=15.0)
-            assert state1 != "state1=connected", (
-                "child reported connected from inherited state without a fresh refresh"
+            assert state1 == "state1=initializing", (
+                f"child must report the pre-start state, not inherited health: {state1!r}"
             )
-            assert state1.startswith("state1="), f"unexpected child message: {state1!r}"
+
+            state2 = pipe.read_line(timeout=20.0)
+            assert state2 == "state2=initializing", (
+                f"child claimed a connection without a fresh refresh: {state2!r}"
+            )
 
             # Now let the child actually refresh; it must recover on its own.
             server.mode = "ok"
             server.generation = 2
-            state2 = pipe.read_line(timeout=20.0)
-            assert state2 == "state2=connected reconnected=True", (
-                f"child never re-established a truthful connected state: {state2!r}"
+            state3 = pipe.read_line(timeout=20.0)
+            assert state3 == "state3=connected reconnected=True", (
+                f"child never re-established a truthful connected state: {state3!r}"
             )
         finally:
             _reap(pid)
@@ -838,23 +877,20 @@ def test_r3_child_rebuilds_once_on_first_use_and_serves_its_own_fetch() -> None:
     snapshot the parent happened to hold at fork time. The rebuild happens
     exactly once no matter how many calls follow.
     """
+    # A 30s poll interval means the parent makes no further requests once it
+    # has settled, so every request the server sees from here on is the
+    # child's. One first use costs exactly two: the init fetch and the
+    # poller's engage-time tick. A second rebuild would double that — which is
+    # what this counts, rather than wrapping the private rebuild method (a
+    # rename would then error the test out instead of failing on behavior).
+    requests_per_first_use = 2
     server = _ConfigServer()
-    client = _make_client(server)
+    client = _make_client(server, fallback_poll_interval_ms=30_000)
     try:
         client.init()
         _await_ready(client)
         assert client.held_generation() == 1
-
-        # Count rebuilds from inside the child by wrapping the private hook on
-        # the instance BEFORE the fork; the child inherits the wrapper.
-        rebuilds: list[int] = []
-        original_rebuild = client._rebuild_in_child
-
-        def counting_rebuild() -> None:
-            rebuilds.append(1)
-            original_rebuild()
-
-        client._rebuild_in_child = counting_rebuild  # type: ignore[method-assign]
+        baseline = _await_server_quiet(server)
 
         def child(send: Callable[[str], None]) -> None:
             # Give the parent time to publish AFTER the fork. A lazy child does
@@ -877,7 +913,7 @@ def test_r3_child_rebuilds_once_on_first_use_and_serves_its_own_fetch() -> None:
             client.get_string("no.such.key", default="fallback")
             send(
                 f"{before} value={value} gen={client.held_generation()} "
-                f"installs={client.config_install_count()} rebuilds={len(rebuilds)} "
+                f"installs={client.config_install_count()} "
                 f"state={client.connection_state()}"
             )
 
@@ -889,6 +925,7 @@ def test_r3_child_rebuilds_once_on_first_use_and_serves_its_own_fetch() -> None:
         finally:
             _reap(pid)
             pipe.close()
+        time.sleep(0.5)  # let any in-flight child request land on the server
 
         fields = dict(part.split("=", 1) for part in message.split(" "))
         assert fields.get("fresh_store") == "True", (
@@ -907,7 +944,11 @@ def test_r3_child_rebuilds_once_on_first_use_and_serves_its_own_fetch() -> None:
         assert fields.get("installs") == "1", (
             f"child installed {fields.get('installs')} envelopes, expected exactly 1: {message!r}"
         )
-        assert fields.get("rebuilds") == "1", f"the lazy rebuild must run exactly once: {message!r}"
+        child_requests = server.sdk_requests - baseline
+        assert child_requests == requests_per_first_use, (
+            f"the lazy rebuild must run exactly once: the child made "
+            f"{child_requests} SDK requests, expected {requests_per_first_use}"
+        )
         assert fields.get("state") == "connected", message
     finally:
         client.close()
