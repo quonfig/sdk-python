@@ -19,10 +19,23 @@ The design is Reforge sdk-python 1.2.2's, unchanged in principle
   touched.** Tearing the parent down before the syscall is what broke sdk-ruby
   (qfg-ryov), and no SDK in the surveyed corpus — LaunchDarkly, Statsig,
   dd-trace-rb, sentry-ruby, redis-client, connection_pool, Reforge — does it.
-* **Drop inherited state, including locks, then rebuild fresh.** A
+* **Drop inherited state, including locks; rebuild LAZILY.** A
   ``threading.Lock`` held by a thread that did not survive the fork stays
   locked forever in the child, so Reforge swaps its module ``_ReadWriteLock``
   for a fresh one rather than trying to use it. Same here, per instance.
+  Crucially the handler does no work beyond that: no network, no threads, no
+  inherited lock taken. Reforge's hook likewise only nulls the singleton, and
+  the next ``get_sdk()`` builds a fresh SDK. Quonfig's equivalent is
+  ``Quonfig._ensure_rebuilt_after_fork``, called from every public entry
+  point, which re-initializes on the child's FIRST USE of the client.
+
+  This matters because ``after_in_child`` handlers run on every fork in the
+  process — ``multiprocessing`` workers that never touch the SDK, and the
+  pre-exec child of any ``subprocess`` spawn that passes ``preexec_fn``.
+  Rebuilding eagerly charged each of them a fetch and a set of threads, and on
+  macOS killed them: ``requests`` reaches ``_scproxy`` for proxy detection,
+  which enters the Objective-C runtime, and libobjc aborts a child that does
+  that after forking from a multi-threaded parent.
 
 The one forced difference from Reforge: Quonfig has no module-level singleton
 to reset — customers construct and hold ``quonfig.Quonfig`` instances — so
@@ -62,7 +75,12 @@ def register_instance(client: "Quonfig") -> None:
 
 
 def _after_fork_in_child() -> None:
-    """Rebuild every live client. Runs ONLY in a forked child."""
+    """Reset every live client and flag it for a lazy rebuild. Runs ONLY in a
+    forked child, and does no network, thread or blocking work — see the module
+    docstring. Nothing is logged on the success path: a child that never uses
+    the SDK should be able to fork and ``_exit`` without this handler emitting
+    anything (and a ``SocketHandler`` in the child would be writing on the
+    parent's connection)."""
     global _registry_lock
 
     # The registry lock may have been held by a thread that did not survive
@@ -79,9 +97,9 @@ def _after_fork_in_child() -> None:
 
     for client in clients:
         try:
-            client._rebuild_after_fork_in_child()
+            client._drop_inherited_state_after_fork_in_child()
         except Exception:  # noqa: BLE001 - one bad client must not strand the rest
-            logger.exception("[quonfig] rebuilding an SDK client after fork failed")
+            logger.exception("[quonfig] resetting an SDK client after fork failed")
 
 
 # Registered once, at import. ``quonfig/__init__.py`` imports this module, so
