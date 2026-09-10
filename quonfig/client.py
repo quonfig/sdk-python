@@ -640,6 +640,7 @@ class Quonfig:
         back; neither is flagged for rebuild, and neither has its store touched.
         """
         was_closed = self._shutdown.is_set()
+        was_initialized = self._initialized.is_set()
         was_started = self._started
         old_transport = self._transport
 
@@ -674,8 +675,13 @@ class Quonfig:
             # Nothing will be rebuilt, so the store is left exactly as it was
             # (a closed client still answers from what it holds; a client that
             # was never started holds nothing anyway). Its lock is replaced
-            # like every other.
+            # like every other, and so is the initialized event — an inherited
+            # ``Event``'s internal lock is not reinitialized by ``threading``'s
+            # own after-fork hook, so ``wait()`` on one could wedge the child.
             self._store._lock = threading.RLock()
+            self._initialized = threading.Event()
+            if was_initialized:
+                self._initialized.set()
             self._needs_rebuild_after_fork = False
             return
 
