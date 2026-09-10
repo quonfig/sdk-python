@@ -579,8 +579,11 @@ class Quonfig:
         # pooled sockets), so a bare ``init()`` here would fall through to the
         # "no data source configured" branch below and latch an empty store
         # forever. Rebuild them first: this is the construct-in-master /
-        # ``init()``-in-``post_fork`` pattern (qfg-lv4n.2).
-        if self._transport is None and self._fork_had_transport:
+        # ``init()``-in-``post_fork`` pattern (qfg-lv4n.2). A client that was
+        # CLOSED before the fork is excluded: closed clients stay closed in the
+        # child, and standing a transport back up here would start a fetch and
+        # a poll thread on one.
+        if self._transport is None and self._fork_had_transport and not self._shutdown.is_set():
             self._build_components_after_fork()
 
         self._started = True
