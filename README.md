@@ -278,8 +278,10 @@ the process outlives the request.
 ## Forking servers (Gunicorn `--preload`, Celery, uWSGI, `multiprocessing`)
 
 **No wiring required on POSIX.** Importing `quonfig` installs a child-only
-`os.register_at_fork` handler, so every worker forked from a parent that
-already built a client rebuilds its own copy automatically.
+`os.register_at_fork` handler. After a fork, the child re-initializes on its
+first use of the client, exactly like a newly constructed client: it fetches
+its own config and starts its own threads. It does not evaluate from the
+parent's snapshot.
 
 ```python
 # app.py, imported by `gunicorn --preload -w 8 app:app`
@@ -289,19 +291,34 @@ client = Quonfig(sdk_key="sdk-...").init()   # built once, in the master
 ```
 
 Each forked worker gets its own transport, its own SSE stream or HTTP poll
-loop, its own telemetry buffers, and fresh locks. The config the client already
-held is carried over, so a worker serves values immediately and does not have
-to wait for its first fetch.
+loop, its own telemetry buffers, and fresh locks.
 
 This covers every fork-based deployment:
 
 | Host | Fork point |
 |------|------------|
-| Gunicorn `--preload` (sync, gthread, gevent) | master forks each worker |
+| Gunicorn `--preload` (sync, gthread; see gevent below) | master forks each worker |
 | Celery, default `prefork` pool | worker forks each child process |
 | uWSGI (without `--lazy-apps`) | master forks each worker |
 | `multiprocessing` / `ProcessPoolExecutor` with the `fork` start method | pool forks each process |
 | a bare `os.fork()` in application code | wherever you call it |
+| `subprocess` with `preexec_fn=` | CPython runs at-fork handlers in the pre-exec child |
+
+### The rebuild is lazy
+
+The at-fork handler itself does no network I/O, starts no threads and takes no
+inherited lock. It only drops what the child inherited and marks the client for
+rebuild; the re-initialization runs on the child's first SDK call. Two
+consequences worth knowing:
+
+- A forked child that never uses the SDK costs nothing — no fetch, no stream,
+  no threads. That matters because at-fork handlers run on **every** fork in
+  the process, including `multiprocessing` workers doing unrelated work and the
+  pre-exec child of any `subprocess` spawn that passes `preexec_fn`.
+- The **first** call in a forked child pays one config fetch and blocks for it,
+  under the usual `init_timeout_ms` / `on_init_failure` rules. If you would
+  rather pay that before your first request, call `init()` (or any getter) in
+  the worker's post-fork hook.
 
 Details, if you need them:
 
@@ -319,14 +336,74 @@ Details, if you need them:
   inheriting the parent's `connected`.
 - **Telemetry is not duplicated.** The child starts with empty buffers; the
   parent delivers the window it recorded.
-- The child logs one line naming its pid and the components it rebuilt.
-- A client you closed before forking stays closed in the child.
+- On its first use the child logs one line naming its pid and the components it
+  rebuilt.
+- A client you closed before forking stays closed in the child, and a client
+  you constructed but never `init()`ed is **not** started in the child — the
+  fork does not start something you did not.
 
-The `spawn` and `forkserver` start methods (`spawn` is the default for
-`multiprocessing` on macOS and Windows) are unaffected: those children run a
-fresh interpreter and build their own client from scratch, so there is nothing
-inherited to rebuild. On platforms without `os.fork` the handler is simply
-never registered.
+### Start methods
+
+The `spawn` start method (the default for `multiprocessing` on macOS and
+Windows) is unaffected: those children run a fresh interpreter and build their
+own client from scratch, so there is nothing inherited to rebuild. On platforms
+without `os.fork` the handler is never registered.
+
+`forkserver` children **are** forks — of the forkserver process, not of your
+main process — so the handler does run in them. It is a no-op unless a module
+you preloaded via `multiprocessing.set_forkserver_preload` built a client;
+normally the forkserver process holds none, so there is nothing to reset. Worth
+knowing because **Python 3.14 makes `forkserver` the default start method on
+Linux.**
+
+CPython 3.12+ emits a `DeprecationWarning` when `os.fork()` is called in a
+multi-threaded process, and the SDK's own background threads (SSE, fallback
+poll, telemetry) are enough to trigger it. The warning is about fork-plus-
+threads in general, not about this SDK — the child-only handler is what makes
+the fork survivable, not what causes the warning.
+
+### gevent
+
+**Build the client after the fork under gevent, or do not use `--preload`.**
+Greenlets are not threads, and `os.register_at_fork` cannot help with them: if
+the parent is monkey-patched, its SSE greenlet is still scheduled in the
+child's copy of the hub and still reading the socket the parent is reading, so
+the **parent** silently loses events (observed in 3 of 5 runs).
+
+Gunicorn's own `--preload -k gevent` shape is fine as long as the *master* is
+not monkey-patched — modern Gunicorn patches inside
+`GeventWorker.init_process()`, which runs in the worker after the fork. If your
+application calls `monkey.patch_all()` at import time under `--preload`, the
+master is patched and you are in the broken shape. Build the client in
+Gunicorn's `post_fork` hook instead.
+
+### uWSGI
+
+Pass `--enable-threads`. uWSGI disables the Python threading machinery by
+default, and the SDK's SSE stream, fallback poller and telemetry reporter are
+all background threads — without that flag none of them run. (`--lazy-apps`
+additionally sidesteps the fork by loading the app in each worker.)
+
+### macOS
+
+`requests` resolves proxy settings through `urllib.request.proxy_bypass` ->
+`_scproxy` -> SystemConfiguration, which enters the Objective-C runtime.
+libobjc deliberately kills a process that does that in a child forked from a
+multi-threaded parent, so **any** HTTP with `requests` in a forked child can
+crash on macOS, with or without this SDK — a plain `requests.get()` in a forked
+child reproduces it with Quonfig nowhere in the process.
+
+Because the rebuild is lazy, a forked child that never calls the SDK never goes
+near it. If your child *does* call the SDK on macOS, either:
+
+- set `NO_PROXY` to cover the API host (e.g. `NO_PROXY=quonfig.com`, or
+  whatever `QUONFIG_DOMAIN` points at) — `requests` then short-circuits before
+  proxy detection. The underlying `requests` knob is `Session.trust_env =
+  False`, which the SDK does not expose; `NO_PROXY` is the supported lever; or
+- build the client after the fork.
+
+**Linux is unaffected** — this is a macOS system-library issue, and macOS is a
+development platform for this SDK, not a deployment one.
 
 ## Configuration
 

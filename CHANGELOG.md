@@ -13,8 +13,21 @@ new dependencies, no API changes, nothing for callers to wire up.
   Gunicorn `--preload`, Celery's default `prefork` pool, uWSGI without
   `--lazy-apps`, and `multiprocessing` / `ProcessPoolExecutor` with the `fork`
   start method. Importing `quonfig` now installs a child-only
-  `os.register_at_fork` handler that rebuilds every live client in the child.
-  See the new "Forking servers" section in the README.
+  `os.register_at_fork` handler. See the new "Forking servers" section in the
+  README.
+- **After a fork, the child re-initializes on its first use of the client,
+  exactly like a newly constructed client: it fetches its own config and starts
+  its own threads. It does not evaluate from the parent's snapshot.** This is
+  Reforge sdk-python's design (`_reset_singleton_after_fork`, #26), where the
+  hook only drops the singleton and the next `get_sdk()` builds a fresh SDK.
+  The first call in a forked child therefore pays one config fetch, blocking
+  under the usual `init_timeout_ms` / `on_init_failure` rules.
+- **The at-fork handler does no network I/O, starts no threads and takes no
+  inherited lock.** At-fork handlers run on *every* fork in the process,
+  including `multiprocessing` workers that never touch the SDK and the pre-exec
+  child of any `subprocess` spawn that passes `preexec_fn`. A child that never
+  uses the SDK now costs nothing: a `Pool(8)` of non-SDK workers adds zero
+  config fetches and zero streams, where an eager rebuild added eight of each.
 - **The parent process is never touched**, before or after the fork. A process
   that forks and then keeps evaluating — a Celery worker that forks inside a
   task, a master that also serves — is unaffected.
@@ -23,18 +36,29 @@ new dependencies, no API changes, nothing for callers to wire up.
   closed**: those threads do not exist in the child, and the sockets still
   belong to the parent. Every lock and event the client owns is **replaced** —
   one held by a non-forking thread at fork time can never be released in the
-  child. The client then rebuilds a fresh transport, telemetry reporter, poller
-  and update channel, and logs one line naming its pid and the components it
-  rebuilt.
-- The config the client already held is carried into the child, so a worker
-  serves values immediately instead of waiting for its first fetch.
+  child.
 - **`connection_state()` no longer lies in a child.** It reports
   `initializing` until the child's own first refresh succeeds.
 - **Telemetry is no longer duplicated across a fork.** The child starts with
   empty collectors; the parent delivers the window it recorded.
+- **No phantom `guardRejected` from forked workers.** Because the child starts
+  from an empty store at generation zero, its first fetch is accepted by the
+  reject-older guard and stamps `resolved_from()`, instead of being counted as
+  a rejection against the failover signal.
 - A client closed before the fork stays closed in the child, and one that was
   constructed but never `init()`ed is not started behind the caller's back.
-- `spawn` and `forkserver` start methods, and platforms without `os.fork`, are
+- `spawn` start methods and platforms without `os.fork` are unaffected.
+  `forkserver` children are forks of the forkserver process, so the handler
+  runs there — a no-op unless a preloaded module built a client. Python 3.14
+  makes `forkserver` the default on Linux.
+- Platform notes now in the README: under **gevent** a monkey-patched parent's
+  SSE greenlet keeps running in the child on the shared socket and the parent
+  silently loses events, so build the client after the fork (`post_fork` /
+  worker init) or skip `--preload`; **uWSGI** needs `--enable-threads` for any
+  of the SDK's background threads to run; on **macOS** any `requests` HTTP in a
+  forked child can be killed by libobjc via `_scproxy` proxy detection (this is
+  the platform, not the SDK — a plain `requests.get()` reproduces it), so set
+  `NO_PROXY` to cover the API host or build the client after the fork. Linux is
   unaffected.
 
 ## 1.3.0 - 2026-08-25
