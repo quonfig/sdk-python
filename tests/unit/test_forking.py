@@ -841,15 +841,22 @@ def test_r3_child_rebuilds_once_on_first_use_and_serves_its_own_fetch() -> None:
             # nothing at all in this window — which is what makes the first
             # fetch below land on the NEW generation.
             time.sleep(0.6)
-            state_before = client.connection_state()
-            generation_before = client.held_generation()
+            # Read PRIVATE state first: unlike the public accessors these do not
+            # trigger the rebuild, so they observe the child exactly as the
+            # at-fork handler left it. (Going through the public API here would
+            # race the rebuild's own fetch, which can land before the accessor
+            # returns. `connection_state()`'s post-fork truthfulness is covered
+            # deterministically by T6.)
+            before = (
+                f"fresh_store={client._store.install_count() == 0 and client._store.get_generation() == 0} "
+                f"no_liveness={client._last_successful_refresh is None} "
+                f"uninitialized={not client._initialized.is_set()}"
+            )
             # First evaluation: blocks on the child's own init + fetch.
             value = client.get_string("no.such.key", default="fallback")
             client.get_string("no.such.key", default="fallback")
-            client.connection_state()
             send(
-                f"state_before={state_before} gen_before={generation_before} "
-                f"value={value} gen={client.held_generation()} "
+                f"{before} value={value} gen={client.held_generation()} "
                 f"installs={client.config_install_count()} rebuilds={len(rebuilds)} "
                 f"state={client.connection_state()}"
             )
@@ -864,11 +871,14 @@ def test_r3_child_rebuilds_once_on_first_use_and_serves_its_own_fetch() -> None:
             pipe.close()
 
         fields = dict(part.split("=", 1) for part in message.split(" "))
-        assert fields.get("state_before") != "connected", (
-            f"child claimed connected before any refresh of its own: {message!r}"
-        )
-        assert fields.get("gen_before") == "0", (
+        assert fields.get("fresh_store") == "True", (
             f"child must start from an EMPTY store, not the parent's snapshot: {message!r}"
+        )
+        assert fields.get("no_liveness") == "True", (
+            f"child inherited the parent's liveness stamp: {message!r}"
+        )
+        assert fields.get("uninitialized") == "True", (
+            f"child must come out of the fork uninitialized, like a fresh client: {message!r}"
         )
         assert fields.get("value") == "fallback", message
         assert fields.get("gen") == "2", (
