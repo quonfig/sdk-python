@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.4.0 - 2026-09-10
+
+Fork safety (qfg-lv4n.2, epic qfg-lv4n). Additive and backward-compatible; no
+new dependencies, no API changes, nothing for callers to wire up.
+
+- **Fix: the SDK now survives `os.fork()`.** Before this release a forked child
+  inherited SSE, poll, telemetry and datadir-watcher threads that did not exist
+  in it: the child stopped receiving config updates entirely and served
+  whatever snapshot it was forked with, while `connection_state()` kept
+  answering `connected` from state that belonged to the parent. This affected
+  Gunicorn `--preload`, Celery's default `prefork` pool, uWSGI without
+  `--lazy-apps`, and `multiprocessing` / `ProcessPoolExecutor` with the `fork`
+  start method. Importing `quonfig` now installs a child-only
+  `os.register_at_fork` handler that rebuilds every live client in the child.
+  See the new "Forking servers" section in the README.
+- **The parent process is never touched**, before or after the fork. A process
+  that forks and then keeps evaluating — a Celery worker that forks inside a
+  task, a master that also serves — is unaffected.
+- In the child, every inherited thread, transport, SSE client, poller,
+  telemetry reporter and datadir watcher is **dropped, never joined or
+  closed**: those threads do not exist in the child, and the sockets still
+  belong to the parent. Every lock and event the client owns is **replaced** —
+  one held by a non-forking thread at fork time can never be released in the
+  child. The client then rebuilds a fresh transport, telemetry reporter, poller
+  and update channel, and logs one line naming its pid and the components it
+  rebuilt.
+- The config the client already held is carried into the child, so a worker
+  serves values immediately instead of waiting for its first fetch.
+- **`connection_state()` no longer lies in a child.** It reports
+  `initializing` until the child's own first refresh succeeds.
+- **Telemetry is no longer duplicated across a fork.** The child starts with
+  empty collectors; the parent delivers the window it recorded.
+- A client closed before the fork stays closed in the child, and one that was
+  constructed but never `init()`ed is not started behind the caller's back.
+- `spawn` and `forkserver` start methods, and platforms without `os.fork`, are
+  unaffected.
+
 ## 1.3.0 - 2026-08-25
 
 Lambda-friendly client options (qfg-0xj3). All three are additive and
