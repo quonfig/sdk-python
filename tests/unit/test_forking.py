@@ -128,9 +128,13 @@ class _ConfigServer:
     by the parent at will; ``mode="error"`` answers 503 so no fetch can
     succeed (and therefore no liveness stamp can advance)."""
 
-    def __init__(self) -> None:
+    def __init__(self, configs: "Optional[list]" = None) -> None:
         self.generation = 1
         self.mode = "ok"
+        # Config documents to serve. Empty by default — most tests only care
+        # about the generation — but the fork tests that assert a child serves
+        # a real VALUE need at least one.
+        self.configs: list = configs or []
         # Config fetches that carried the SDK's own version header, i.e. ones
         # the SDK made. Lets a test tell SDK traffic apart from traffic a test
         # thread generates itself.
@@ -152,7 +156,7 @@ class _ConfigServer:
                     return
                 body = json.dumps(
                     {
-                        "configs": [],
+                        "configs": outer.configs,
                         "meta": {
                             "version": f"gen-{outer.generation}",
                             "environment": "Production",
@@ -178,6 +182,22 @@ class _ConfigServer:
     def close(self) -> None:
         self._server.shutdown()
         self._server.server_close()
+
+
+def _string_config(key: str, value: str) -> dict:
+    """A minimal always-matching string config document."""
+    return {
+        "id": key,
+        "key": key,
+        "configType": "config",
+        "valueType": "string",
+        "default": {"rules": [{"criteria": [], "value": {"type": "string", "value": value}}]},
+    }
+
+
+def _quonfig_threads() -> "list[str]":
+    """Names of the SDK's own live threads in this process."""
+    return sorted(t.name for t in threading.enumerate() if t.name.startswith("quonfig"))
 
 
 def _make_client(server: _ConfigServer, **overrides: Any) -> Quonfig:
@@ -1019,4 +1039,374 @@ def test_registry_holds_weak_references() -> None:
         gc.collect()
         assert len(_instances) < before, "registry leaked a dead client"
     finally:
+        server.close()
+
+
+# ----------------------------------------------------------------------
+# Second adversarial pass (qfg-lv4n.2). Each test below is one confirmed
+# defect from the reviewer's probes in the lazy post-fork rebuild.
+# ----------------------------------------------------------------------
+
+
+def _fields(message: str) -> "dict[str, str]":
+    """Parse a ``k=v k=v`` child message, failing loudly on ``<timeout>``."""
+    assert "=" in message, f"unusable child message: {message!r}"
+    return dict(part.split("=", 1) for part in message.split(" ") if "=" in part)
+
+
+# ----------------------------------------------------------------------
+# P1 — a grandchild forked from a child that has not used the SDK yet
+# ----------------------------------------------------------------------
+
+
+@requires_fork
+def test_p1_grandchild_forked_before_first_use_still_rebuilds() -> None:
+    """Gunicorn/Celery re-fork and ``multiprocessing`` pools fork again from a
+    worker that has not touched the client yet. That child carries
+    ``_started=False`` AND ``_needs_rebuild_after_fork=True``; the handler must
+    treat it as pending, not as "never started", or the grandchild is
+    permanently dead — every getter blocks the full ``init_timeout_ms`` and
+    then raises (or returns defaults), and an explicit ``init()`` latches an
+    empty, transport-less client.
+    """
+    server = _ConfigServer(configs=[_string_config("k", "v")])
+    client = _make_client(server, fallback_poll_interval_ms=30_000, init_timeout_ms=3000)
+    try:
+        client.init()
+        _await_ready(client)
+        _await_server_quiet(server)
+        # Published after the parent settled: only a fetch of the grandchild's
+        # own can serve generation 2.
+        server.generation = 2
+
+        def child(send: Callable[[str], None]) -> None:
+            # Deliberately does NOT use the SDK before forking again.
+            def grandchild(send_g: Callable[[str], None]) -> None:
+                started = time.monotonic()
+                value = client.get_string("k", default="MISSING")
+                send_g(
+                    f"value={value} gen={client.held_generation()} "
+                    f"elapsed={time.monotonic() - started:.2f}"
+                )
+
+            gpid, gpipe = _fork_child(grandchild)
+            try:
+                send(gpipe.read_line(timeout=25.0))
+            finally:
+                _reap(gpid, timeout=15.0)
+                gpipe.close()
+
+        pid, pipe = _fork_child(child)
+        try:
+            message = pipe.read_line(timeout=35.0)
+        finally:
+            _reap(pid, timeout=25.0)
+            pipe.close()
+
+        fields = _fields(message)
+        assert fields.get("value") == "v", (
+            f"grandchild forked before the child's first use never rebuilt: {message!r}"
+        )
+        assert fields.get("gen") == "2", (
+            f"grandchild did not serve its own fetch of the current config: {message!r}"
+        )
+        assert float(fields["elapsed"]) < 2.0, (
+            f"grandchild blocked on the init timeout instead of rebuilding: {message!r}"
+        )
+    finally:
+        client.close()
+        server.close()
+
+
+# ----------------------------------------------------------------------
+# P2 — a client constructed but not init()ed before the fork
+# ----------------------------------------------------------------------
+
+
+@requires_fork
+def test_p2_client_constructed_but_never_inited_can_be_started_in_the_child() -> None:
+    """Construct in the master, ``init()`` in ``post_fork`` — the pattern the
+    README's hook advice invites. The handler must not leave that client
+    unstartable: nulling its components before the never-started early return
+    sends the child's ``init()`` down the "no data source configured" path,
+    which silently latches an empty store forever.
+    """
+    server = _ConfigServer(configs=[_string_config("k", "v")])
+    # NOTE: no init() in the parent.
+    client = _make_client(server, fallback_poll_interval_ms=30_000, init_timeout_ms=3000)
+    try:
+
+        def child(send: Callable[[str], None]) -> None:
+            client.init()
+            value = client.get_string("k", default="MISSING")
+            send(
+                f"value={value} gen={client.held_generation()} "
+                f"threads={'|'.join(_quonfig_threads())}"
+            )
+
+        pid, pipe = _fork_child(child)
+        try:
+            message = pipe.read_line(timeout=25.0)
+        finally:
+            _reap(pid, timeout=20.0)
+            pipe.close()
+
+        fields = _fields(message)
+        assert fields.get("value") == "v", (
+            f"init() in the child latched an empty, transport-less client: {message!r}"
+        )
+        assert fields.get("gen") == "1", message
+        assert "quonfig-fallback-poll" in fields.get("threads", ""), (
+            f"the child's update channel was never started: {message!r}"
+        )
+    finally:
+        client.close()
+        server.close()
+
+
+# ----------------------------------------------------------------------
+# P3 — close() in a child before its first use
+# ----------------------------------------------------------------------
+
+
+@requires_fork
+def test_p3_close_before_first_use_answers_defaults_immediately() -> None:
+    """``close()`` clears the rebuild flag, so nothing will ever set the fresh
+    ``_initialized`` event the handler installed. Every later getter then
+    blocks the full ``init_timeout_ms`` and raises (``on_init_failure="raise"``)
+    — a closed client must answer instantly instead.
+    """
+    server = _ConfigServer(configs=[_string_config("k", "v")])
+    client = _make_client(
+        server,
+        fallback_poll_interval_ms=30_000,
+        init_timeout_ms=3000,
+        on_init_failure="raise",
+    )
+    try:
+        client.init()
+        _await_ready(client)
+        _await_server_quiet(server)
+
+        def child(send: Callable[[str], None]) -> None:
+            client.close()
+            started = time.monotonic()
+            try:
+                value = client.get_string("k", default="fallback")
+            except Exception as exc:  # noqa: BLE001 — reported, not raised
+                value = f"EXC:{type(exc).__name__}"
+            send(f"value={value} elapsed={time.monotonic() - started:.2f}")
+
+        pid, pipe = _fork_child(child)
+        try:
+            message = pipe.read_line(timeout=20.0)
+        finally:
+            _reap(pid, timeout=15.0)
+            pipe.close()
+
+        fields = _fields(message)
+        assert fields.get("value") == "fallback", (
+            f"a getter on a client closed before its first use must return the "
+            f"default, not raise: {message!r}"
+        )
+        assert float(fields["elapsed"]) < 1.0, (
+            f"the getter blocked on the init timeout after close(): {message!r}"
+        )
+    finally:
+        server.close()
+
+
+# ----------------------------------------------------------------------
+# P4 — close() racing the first-use rebuild
+# ----------------------------------------------------------------------
+
+
+@requires_fork
+def test_p4_close_racing_the_first_use_rebuild_leaves_no_live_threads() -> None:
+    """``close()`` did not take the rebuild lock, so a reporter built by a
+    rebuild already in flight was started AFTER the teardown had walked past it
+    — a live ``quonfig-telemetry`` thread on a closed client, POSTing the
+    child's telemetry for the rest of the process's life.
+
+    The 300ms window is injected by wrapping the rebuild; that is the race the
+    reviewer's ``probe_close_race.py`` (b) reproduces.
+    """
+    server = _ConfigServer(configs=[_string_config("k", "v")])
+    client = _make_client(
+        server,
+        collect_evaluation_summaries=True,
+        context_upload_mode="periodic_example",
+        telemetry_url="http://127.0.0.1:1",
+    )
+    try:
+        client.init()
+        _await_ready(client)
+        _await_server_quiet(server)
+
+        def child(send: Callable[[str], None]) -> None:
+            original_rebuild = client._rebuild_in_child
+            rebuild_started = threading.Event()
+
+            def slow_rebuild() -> None:
+                rebuild_started.set()
+                time.sleep(0.3)  # close() lands in this window
+                original_rebuild()
+
+            client._rebuild_in_child = slow_rebuild  # type: ignore[method-assign]
+            result: dict = {}
+
+            def first_use() -> None:
+                try:
+                    result["value"] = client.get_string("k", default="MISSING")
+                except Exception as exc:  # noqa: BLE001
+                    result["value"] = f"EXC:{type(exc).__name__}"
+
+            user = threading.Thread(target=first_use, name="first-use")
+            user.start()
+            rebuild_started.wait(timeout=10.0)
+            time.sleep(0.05)
+            client.close()
+            user.join(timeout=20.0)
+            time.sleep(0.8)  # let a leaked thread show itself
+            send(
+                f"value={result.get('value')} shutdown={client._shutdown.is_set()} "
+                f"threads={'|'.join(_quonfig_threads())}"
+            )
+
+        pid, pipe = _fork_child(child)
+        try:
+            message = pipe.read_line(timeout=30.0)
+        finally:
+            _reap(pid, timeout=20.0)
+            pipe.close()
+
+        fields = _fields(message)
+        assert fields.get("shutdown") == "True", message
+        assert "quonfig-telemetry" not in fields.get("threads", ""), (
+            f"close() left a live telemetry thread on a closed client: {message!r}"
+        )
+        assert fields.get("threads") == "", (
+            f"close() left SDK threads running in the child: {message!r}"
+        )
+    finally:
+        client.close()
+        server.close()
+
+
+# ----------------------------------------------------------------------
+# P6 — watchfiles imports `platform` on its watcher thread
+# ----------------------------------------------------------------------
+
+
+def test_p6_datadir_watcher_imports_platform_eagerly() -> None:
+    """``watchfiles/main.py`` does ``import platform`` INSIDE ``watch()``, i.e.
+    on the watcher thread. Fork while that import is in flight and the child
+    inherits a half-initialized ``platform`` module; its watcher dies with
+    ``AttributeError: partially initialized module 'platform'`` and the child
+    silently has no datadir watcher at all.
+
+    Importing ``platform`` at the top of our own module makes the PARENT
+    complete it on the main thread, at import time, before any fork can
+    interleave — after which ``watchfiles``'s function-level import is a
+    ``sys.modules`` hit and cannot be half-done.
+
+    The race itself is not deterministically reproducible in a test; this
+    asserts the property that closes it.
+    """
+    from quonfig import datadir_watcher
+
+    assert datadir_watcher.platform.system(), (
+        "quonfig.datadir_watcher must import `platform` at module import time"
+    )
+
+
+# ----------------------------------------------------------------------
+# P7 — diagnostics never trigger the rebuild (cross-SDK ruling, epic qfg-lv4n)
+# ----------------------------------------------------------------------
+
+
+@requires_fork
+def test_p7_diagnostics_do_not_trigger_the_rebuild() -> None:
+    """Health accessors are diagnostic-only. A liveness probe, a metrics
+    scrape or a log line must not start threads and fire a config fetch from a
+    forked child that has not evaluated anything yet. Until its first
+    evaluation the child answers the pre-start state: ``initializing``, not
+    ready, generation 0, no liveness stamp. Matches sdk-ruby.
+    """
+    server = _ConfigServer(configs=[_string_config("k", "v")])
+    client = _make_client(server, fallback_poll_interval_ms=30_000)
+    try:
+        client.init()
+        _await_ready(client)
+        baseline = _await_server_quiet(server)
+
+        def child(send: Callable[[str], None]) -> None:
+            state = client.connection_state()
+            is_ready = client.ready()
+            generation = client.held_generation()
+            no_stamp = client.last_successful_refresh() is None
+            time.sleep(0.7)  # a rebuild that should not have happened would show here
+            send(
+                f"state={state} ready={is_ready} gen={generation} no_stamp={no_stamp} "
+                f"threads={'|'.join(_quonfig_threads())}"
+            )
+
+        pid, pipe = _fork_child(child)
+        try:
+            message = pipe.read_line(timeout=20.0)
+        finally:
+            _reap(pid, timeout=15.0)
+            pipe.close()
+        time.sleep(0.5)  # let any in-flight child request land on the server
+
+        fields = _fields(message)
+        assert fields.get("state") == "initializing", (
+            f"a not-yet-rebuilt child must report the pre-start state: {message!r}"
+        )
+        assert fields.get("ready") == "False", message
+        assert fields.get("gen") == "0", message
+        assert fields.get("no_stamp") == "True", message
+        assert fields.get("threads") == "", (
+            f"diagnostics started SDK threads in the child: {message!r}"
+        )
+        assert server.sdk_requests == baseline, (
+            f"diagnostics fired {server.sdk_requests - baseline} config fetch(es) "
+            f"from a child that never evaluated anything"
+        )
+    finally:
+        client.close()
+        server.close()
+
+
+@requires_fork
+def test_p7_keys_in_a_pending_child_returns_its_own_fetched_content() -> None:
+    """``keys()`` and ``raw_config()`` are content readers, not diagnostics:
+    they DO trigger the rebuild, and they wait for the child's own fetch, so
+    they never hand back the empty pre-fetch store."""
+    server = _ConfigServer(configs=[_string_config("k", "v")])
+    client = _make_client(server, fallback_poll_interval_ms=30_000)
+    try:
+        client.init()
+        _await_ready(client)
+        _await_server_quiet(server)
+
+        def child(send: Callable[[str], None]) -> None:
+            keys = client.keys()
+            has_raw = client.raw_config("k") is not None
+            send(f"keys={'|'.join(keys)} raw={has_raw}")
+
+        pid, pipe = _fork_child(child)
+        try:
+            message = pipe.read_line(timeout=20.0)
+        finally:
+            _reap(pid, timeout=15.0)
+            pipe.close()
+
+        fields = _fields(message)
+        assert fields.get("keys") == "k", (
+            f"keys() returned the empty pre-fetch store in the child: {message!r}"
+        )
+        assert fields.get("raw") == "True", message
+    finally:
+        client.close()
         server.close()
