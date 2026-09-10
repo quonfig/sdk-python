@@ -29,8 +29,11 @@ import json
 import os
 import select
 import signal
+import socket
+import sys
 import threading
 import time
+import weakref
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional
 
@@ -42,23 +45,62 @@ requires_fork = pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.
 
 
 @pytest.fixture(autouse=True)
-def _no_proxy_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep ``requests`` away from macOS's ``_scproxy`` for the duration of
-    these tests.
+def _isolated_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fork with ONLY the client under test in the at-fork registry.
 
-    Unrelated to the SDK: on macOS ``requests`` resolves proxy settings through
-    ``urllib.request.proxy_bypass`` -> ``_scproxy`` -> SystemConfiguration,
-    which enters the Objective-C runtime. If a request thread is inside an ObjC
-    ``+initialize`` when ``fork()`` is called, libobjc deliberately aborts the
-    child ("objc[...]: +[NSNumber initialize] may have been in progress in
-    another thread when fork() was called ... Crashing instead"). Setting
-    ``NO_PROXY`` for the loopback host makes ``requests`` short-circuit before
-    it ever calls ``proxy_bypass``, so the fork under test is the only thing
-    being exercised. Linux (where the forking servers this bead is about
-    actually run, and where CI runs) is unaffected either way.
+    In a real forking server, rebuilding every live client in the child is
+    exactly right. In a full ``pytest`` run it drags in every client other test
+    modules constructed and left running — including ones pointed at real
+    hostnames — so the child would spend the test rebuilding those and firing
+    their fetches. Swap the module-level ``WeakSet`` for an empty one so each
+    test forks with a registry containing just its own client.
+
+    Looked up through ``sys.modules`` rather than imported at the top of the
+    file so this module still collects (and the behavioural assertions below
+    still run, and fail) against a build that has no fork handling at all.
+    """
+    fork_module = sys.modules.get("quonfig._fork")
+    if fork_module is not None:
+        monkeypatch.setattr(fork_module, "_instances", weakref.WeakSet())
+
+
+@pytest.fixture(autouse=True)
+def _isolate_from_macos_fork_hazards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the loopback HTTP path out of macOS's two fork-hostile system
+    libraries, so these tests exercise the SDK's fork behavior and nothing
+    else. Neither hazard involves the SDK, and neither exists on Linux — where
+    the forking servers this covers actually run, and where CI runs.
+
+    1. ``_scproxy``. On macOS ``requests`` resolves proxy settings through
+       ``urllib.request.proxy_bypass`` -> ``_scproxy`` -> SystemConfiguration,
+       which enters the Objective-C runtime. If a request thread is inside an
+       ObjC ``+initialize`` when ``fork()`` is called, libobjc deliberately
+       aborts the child ("objc[...]: +[NSNumber initialize] may have been in
+       progress in another thread when fork() was called ... Crashing
+       instead"). ``NO_PROXY`` covering the loopback host makes ``requests``
+       short-circuit before it ever calls ``proxy_bypass``.
+
+    2. ``getaddrinfo``. macOS resolves through libinfo/mDNSResponder, which is
+       not fork-safe: if any thread in the process holds the resolver's state
+       at fork time — and a full ``pytest`` run always has some SDK thread
+       resolving a hostname somewhere — the child segfaults the first time it
+       resolves anything, loopback included. Answering numeric loopback
+       addresses directly (which is what they are) keeps the child off that
+       code path entirely.
     """
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def loopback_direct(host: Any, port: Any, *args: Any, **kwargs: Any) -> Any:
+        if host in ("127.0.0.1", "localhost", b"127.0.0.1"):
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", port))
+            ]
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", loopback_direct)
 
 
 # ----------------------------------------------------------------------
