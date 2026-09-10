@@ -214,6 +214,27 @@ def _await_ready(client: Quonfig, within: float = 8.0) -> None:
         raise AssertionError("client did not become ready in time")
 
 
+def _await_server_quiet(
+    server: "_ConfigServer", quiet_for: float = 0.6, within: float = 10.0
+) -> int:
+    """Block until the server has seen no SDK request for ``quiet_for`` seconds,
+    and return the count. Init fires two fetches (the initial hedge and the
+    poller's engage-time tick) and a slow runner can land the second one late;
+    without this, that straggler would be attributed to the forked child."""
+    deadline = time.monotonic() + within
+    last = server.sdk_requests
+    quiet_since = time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+        current = server.sdk_requests
+        if current != last:
+            last = current
+            quiet_since = time.monotonic()
+        elif time.monotonic() - quiet_since >= quiet_for:
+            return current
+    return server.sdk_requests
+
+
 # ----------------------------------------------------------------------
 # fork / pipe plumbing (Reforge's os.fork + os.pipe + os._exit(0) shape,
 # with a timeout guard so a deadlocked child fails the test instead of
@@ -693,8 +714,7 @@ def test_r1_child_that_never_calls_the_sdk_does_nothing(
     try:
         client.init()
         _await_ready(client)
-        time.sleep(0.3)
-        before = server.sdk_requests
+        before = _await_server_quiet(server)
 
         def child(send: Callable[[str], None]) -> None:
             # Never calls the SDK. Just proves the child got this far.
@@ -753,8 +773,7 @@ def test_r2_subprocess_with_preexec_fn_is_cheap_and_safe(
     try:
         client.init()
         _await_ready(client)
-        time.sleep(0.3)
-        before = server.sdk_requests
+        before = _await_server_quiet(server)
 
         codes = set()
         for _ in range(50):
