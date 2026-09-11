@@ -275,6 +275,166 @@ recycled — and be lost. A no-op when telemetry is disabled, and it never raise
 a failing POST is logged. `close()` already flushes, so this is only needed when
 the process outlives the request.
 
+## Forking servers (Gunicorn `--preload`, Celery, uWSGI, `multiprocessing`)
+
+**No wiring required on POSIX.** Importing `quonfig` installs a child-only
+`os.register_at_fork` handler. After a fork, the child re-initializes on its
+first use of the client, exactly like a newly constructed client: it fetches
+its own config and starts its own threads. It does not evaluate from the
+parent's snapshot.
+
+```python
+# app.py, imported by `gunicorn --preload -w 8 app:app`
+from quonfig import Quonfig
+
+client = Quonfig(sdk_key="sdk-...").init()   # built once, in the master
+```
+
+Each forked worker gets its own transport, its own SSE stream or HTTP poll
+loop, its own telemetry buffers, and fresh locks.
+
+This covers every fork-based deployment:
+
+| Host | Fork point |
+|------|------------|
+| Gunicorn `--preload` (sync, gthread; see gevent below) | master forks each worker |
+| Celery, default `prefork` pool | worker forks each child process |
+| uWSGI (without `--lazy-apps`) | master forks each worker |
+| `multiprocessing` / `ProcessPoolExecutor` with the `fork` start method | pool forks each process |
+| a bare `os.fork()` in application code | wherever you call it |
+| `subprocess` with `preexec_fn=` | CPython runs at-fork handlers in the pre-exec child |
+
+### The rebuild is lazy
+
+The at-fork handler itself does no network I/O, starts no threads and takes no
+inherited lock. It only drops what the child inherited and marks the client for
+rebuild; the re-initialization runs on the child's first SDK call. Two
+consequences worth knowing:
+
+- A forked child that never uses the SDK costs nothing — no fetch, no stream,
+  no threads. That matters because at-fork handlers run on **every** fork in
+  the process, including `multiprocessing` workers doing unrelated work and the
+  pre-exec child of any `subprocess` spawn that passes `preexec_fn`.
+- The **first evaluation** in a forked child pays one config fetch and blocks
+  for it, under the usual `init_timeout_ms` / `on_init_failure` rules. What
+  triggers the rebuild is a content read: `get_*`, `is_feature_enabled`, the
+  `*_details` getters, `should_log`, `with_context` and the values you read
+  through it, `keys()`, `raw_config()`, `refresh()`, `update_if_staler_than()`
+  and `flush()`. If you would rather pay that before your first request, call
+  `init()` (or any getter) in the worker's post-fork hook.
+- **Diagnostics never trigger the rebuild.** `connection_state()`, `ready()`,
+  `held_generation()`, `last_successful_refresh()` and the other health
+  accessors answer the child's pre-start state — `initializing`, `False`, `0`,
+  `None` — without starting a thread or making a request, until that child's
+  first content read. A liveness probe, a metrics scrape or a log line in a
+  forked worker therefore costs nothing and cannot stand a client up behind
+  your back.
+
+Details, if you need them:
+
+- **The parent is never touched.** Nothing is torn down before the syscall and
+  nothing changes in the parent afterwards, so a process that forks and then
+  keeps evaluating (a Celery worker running a `fork` inside a task, a master
+  that also serves) is unaffected.
+- **The child never reuses inherited state.** Threads that did not survive the
+  fork are dropped rather than joined, inherited sockets are dropped rather
+  than closed (they still belong to the parent), and every lock is replaced —
+  a lock held by a non-forking thread at fork time can never be released in the
+  child.
+- **`connection_state()` tells the truth in a child.** It reports
+  `initializing` — before the rebuild and after it, until the child's own
+  first refresh actually succeeds — rather than inheriting the parent's
+  `connected`.
+- **Telemetry is not duplicated.** The child starts with empty buffers; the
+  parent delivers the window it recorded.
+- On its first use the child logs one line naming its pid and the components it
+  rebuilt.
+- A client you **closed** before forking stays closed in the child. Calling
+  `close()` in a child before its first use is instant, and getters after it
+  return their defaults immediately instead of blocking `init_timeout_ms`.
+- A client you **constructed but never `init()`ed** is not started behind your
+  back — but you can start it yourself. Construct it in the master and call
+  `init()` in the child (Gunicorn's `post_fork`, Celery's `worker_process_init`)
+  and you get a full client: its own transport, its own update channel, its own
+  telemetry.
+- **Re-forking before first use is safe.** A child that forks again before it
+  has touched the SDK hands the pending rebuild down; the grandchild rebuilds
+  on its own first use exactly as its parent would have.
+
+### Start methods
+
+The `spawn` start method (the default for `multiprocessing` on macOS and
+Windows) is unaffected: those children run a fresh interpreter and build their
+own client from scratch, so there is nothing inherited to rebuild. On platforms
+without `os.fork` the handler is never registered.
+
+`forkserver` children **are** forks — of the forkserver process, not of your
+main process — so the handler does run in them. It is a no-op unless a module
+you preloaded via `multiprocessing.set_forkserver_preload` built a client;
+normally the forkserver process holds none, so there is nothing to reset. Worth
+knowing because **Python 3.14 makes `forkserver` the default start method on
+Linux.**
+
+CPython 3.12+ emits a `DeprecationWarning` when `os.fork()` is called in a
+multi-threaded process, and the SDK's own background threads (SSE, fallback
+poll, telemetry) are enough to trigger it. The warning is about fork-plus-
+threads in general, not about this SDK — the child-only handler is what makes
+the fork survivable, not what causes the warning.
+
+### gevent
+
+**Build the client after the fork under gevent, or do not use `--preload`.**
+Greenlets are not threads, and `os.register_at_fork` cannot help with them: if
+the parent is monkey-patched, its SSE greenlet is still scheduled in the
+child's copy of the hub and still reading the socket the parent is reading, so
+the **parent** silently loses events (observed in 3 of 5 runs).
+
+Gunicorn's own `--preload -k gevent` shape is fine as long as the *master* is
+not monkey-patched — modern Gunicorn patches inside
+`GeventWorker.init_process()`, which runs in the worker after the fork. If your
+application calls `monkey.patch_all()` at import time under `--preload`, the
+master is patched and you are in the broken shape. Build the client in
+Gunicorn's `post_fork` hook instead.
+
+### uWSGI
+
+Pass `--enable-threads`. uWSGI disables the Python threading machinery by
+default, and the SDK's SSE stream, fallback poller and telemetry reporter are
+all background threads — without that flag none of them run. (`--lazy-apps`
+additionally sidesteps the fork by loading the app in each worker.)
+
+### macOS
+
+**Build the client after the fork on macOS.** A forked child that calls the
+SDK on macOS can be killed by the platform, with or without this SDK:
+
+- `requests` resolves proxy settings through `urllib.request.proxy_bypass` ->
+  `_scproxy` -> SystemConfiguration, which enters the Objective-C runtime, and
+  libobjc deliberately aborts a child that does that after a fork from a
+  multi-threaded parent.
+- Even with `NO_PROXY` covering the API host (which keeps `requests` off
+  `_scproxy`), a child whose parent holds a live HTTPS connection at fork time
+  — which an initialized client always does, that is its SSE stream — dies
+  with `SIGSEGV` on its first request. A plain `requests.get()` in a forked
+  child reproduces this with Quonfig nowhere in the process (verified
+  2026-09-10, macOS 15 / CPython 3.11: 5 of 5 children).
+
+So `NO_PROXY` is not a reliable workaround on macOS. Because the rebuild is
+lazy, a forked child that never calls the SDK never goes near any of this. If
+your child *does* need the SDK on macOS, construct and `init()` the client in
+the child (Gunicorn `post_fork`, Celery `worker_process_init`), not in the
+master.
+
+Datadir mode has the same shape of hazard: with `data_dir_auto_reload=True` the
+child aborts (`SIGABRT`) when the rebuild starts its filesystem watcher, because
+`watchfiles` reaches FSEvents through the same Objective-C runtime — build the
+client after the fork there too.
+
+**Linux is unaffected** — these are macOS system-library issues, and macOS is a
+development platform for this SDK, not a deployment one. The automatic rebuild
+is verified on Linux against a live api-delivery in the default SSE mode (parent
+and forked child both receive a value published after the fork).
+
 ## Configuration
 
 | Param | Env var | Default |

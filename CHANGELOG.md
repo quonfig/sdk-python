@@ -1,5 +1,101 @@
 # Changelog
 
+## 1.4.0 - 2026-09-11
+
+Fork safety (qfg-lv4n.2, epic qfg-lv4n). Additive and backward-compatible; no
+new dependencies, no API changes, nothing for callers to wire up.
+
+- **Fix: the SDK now survives `os.fork()`.** Before this release a forked child
+  inherited SSE, poll, telemetry and datadir-watcher threads that did not exist
+  in it: the child stopped receiving config updates entirely and served
+  whatever snapshot it was forked with, while `connection_state()` kept
+  answering `connected` from state that belonged to the parent. This affected
+  Gunicorn `--preload`, Celery's default `prefork` pool, uWSGI without
+  `--lazy-apps`, and `multiprocessing` / `ProcessPoolExecutor` with the `fork`
+  start method. Importing `quonfig` now installs a child-only
+  `os.register_at_fork` handler. See the new "Forking servers" section in the
+  README.
+- **After a fork, the child re-initializes on its first use of the client,
+  exactly like a newly constructed client: it fetches its own config and starts
+  its own threads. It does not evaluate from the parent's snapshot.** This is
+  Reforge sdk-python's design (`_reset_singleton_after_fork`, #26), where the
+  hook only drops the singleton and the next `get_sdk()` builds a fresh SDK.
+  The first *evaluation* in a forked child therefore pays one config fetch,
+  blocking under the usual `init_timeout_ms` / `on_init_failure` rules. Content
+  readers are what trigger it: `get_*`, `is_feature_enabled`, the `*_details`
+  getters, `should_log`, `with_context`, `keys()`, `raw_config()`, `refresh()`,
+  `update_if_staler_than()` and `flush()`.
+- **The at-fork handler does no network I/O, starts no threads and takes no
+  inherited lock.** At-fork handlers run on *every* fork in the process,
+  including `multiprocessing` workers that never touch the SDK and the pre-exec
+  child of any `subprocess` spawn that passes `preexec_fn`. A child that never
+  uses the SDK now costs nothing: a `Pool(8)` of non-SDK workers adds zero
+  config fetches and zero streams, where an eager rebuild added eight of each.
+- **The parent process is never touched**, before or after the fork. A process
+  that forks and then keeps evaluating — a Celery worker that forks inside a
+  task, a master that also serves — is unaffected.
+- In the child, every inherited thread, transport, SSE client, poller,
+  telemetry reporter and datadir watcher is **dropped, never joined or
+  closed**: those threads do not exist in the child, and the sockets still
+  belong to the parent. Every lock and event the client owns is **replaced** —
+  one held by a non-forking thread at fork time can never be released in the
+  child.
+- **`connection_state()` no longer lies in a child.** It reports
+  `initializing` until the child's own first refresh succeeds.
+- **Diagnostics never trigger the post-fork rebuild.** `connection_state()`,
+  `ready()`, `held_generation()`, `last_successful_refresh()`,
+  `resolved_from()`, `config_install_count()`, `fallback_poller_active()` and
+  `sse_failed_over_to_secondary()` are diagnostic-only: in a child that has not
+  read any content yet they answer the pre-start state (`initializing`,
+  `False`, `0`, `None`) without starting a thread or making a request. A
+  liveness probe or a metrics scrape in a forked worker cannot stand the client
+  up behind you. Matches sdk-ruby.
+- **`keys()` and `raw_config()` wait for the child's own fetch** rather than
+  answering from the empty pre-fetch store.
+- **Telemetry is no longer duplicated across a fork.** The child starts with
+  empty collectors; the parent delivers the window it recorded.
+- **No phantom `guardRejected` from forked workers.** Because the child starts
+  from an empty store at generation zero, its first fetch is accepted by the
+  reject-older guard and stamps `resolved_from()`, instead of being counted as
+  a rejection against the failover signal.
+- A client closed before the fork stays closed in the child; `close()` in a
+  child before its first use returns instantly and later getters answer with
+  their defaults rather than blocking `init_timeout_ms`. `close()` also
+  serializes against a first-use rebuild, so a rebuild racing a close cannot
+  leave a live telemetry thread on a closed client.
+- A client constructed but never `init()`ed is not started behind the caller's
+  back — but calling `init()` on it **in the child** now works, so the
+  construct-in-master / `init()`-in-`post_fork` shape stands up a full client
+  instead of latching an empty store.
+- **Re-forking before first use is safe.** A child that forks again before
+  touching the SDK hands the pending rebuild down to the grandchild, which
+  rebuilds on its own first use.
+- `spawn` start methods and platforms without `os.fork` are unaffected.
+  `forkserver` children are forks of the forkserver process, so the handler
+  runs there — a no-op unless a preloaded module built a client. Python 3.14
+  makes `forkserver` the default on Linux.
+- Platform notes now in the README: under **gevent** a monkey-patched parent's
+  SSE greenlet keeps running in the child on the shared socket and the parent
+  silently loses events, so build the client after the fork (`post_fork` /
+  worker init) or skip `--preload`; **uWSGI** needs `--enable-threads` for any
+  of the SDK's background threads to run; on **macOS** a forked child that
+  calls the SDK can be killed by the platform (`_scproxy` via libobjc, and
+  `SIGSEGV` on the first request whenever the parent held a live HTTPS
+  connection at fork time — a plain `requests.get()` reproduces both with
+  Quonfig absent), and `NO_PROXY` is not a reliable workaround, so build the
+  client after the fork on macOS; with `data_dir_auto_reload=True` a forked
+  child aborts on macOS when its watcher starts (`watchfiles` reaches FSEvents
+  through the same runtime). Linux is unaffected, and the automatic rebuild is
+  verified there against a live api-delivery in the default SSE mode.
+- `tests/unit/test_forking.py` covers the default SSE mode: a forked child
+  rebuilds on exactly one new stream of its own, a publish after the fork
+  reaches both parent and child, and the parent's stream object and thread
+  survive the fork untouched.
+- `quonfig.datadir_watcher` imports `platform` at module scope. `watchfiles`
+  imports it inside `watch()`, i.e. on the watcher thread, and a fork during
+  that import left the child with a partially initialized module and no
+  watcher at all.
+
 ## 1.3.0 - 2026-08-25
 
 Lambda-friendly client options (qfg-0xj3). All three are additive and

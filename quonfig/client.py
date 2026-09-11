@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .bound_client import BoundQuonfig
     from .types import ConfigEnvelope, ConfigResponse
 
+from ._fork import register_instance
 from .context import (
     clear_thread_context,
     get_thread_context,
@@ -341,6 +342,11 @@ class Quonfig:
         self._shutdown = threading.Event()
         self._initialized = threading.Event()
         self._init_error: Optional[Exception] = None
+        # ``init()`` has been called at least once. Read by the at-fork hook:
+        # a client that was constructed but never started has no background
+        # components to rebuild, and must not be started behind the caller's
+        # back in the child (qfg-lv4n.2).
+        self._started = False
 
         # Will be set after init
         self._evaluator: Optional[Evaluator] = None
@@ -358,19 +364,12 @@ class Quonfig:
         # no-account path: a datadir-only client has no SDK key, so the gate
         # keys off the key rather than off the mode (qfg-j001). sdk-node's
         # `isTelemetryEnabled` is the reference implementation.
-        self._telemetry = None
-        if self._sdk_key and (collect_evaluation_summaries or context_upload_mode != "none"):
-            try:
-                from .telemetry import TelemetryReporter
-
-                self._telemetry = TelemetryReporter(
-                    telemetry_url=self._telemetry_url,
-                    sdk_key=self._sdk_key,
-                    collect_evaluation_summaries=collect_evaluation_summaries,
-                    context_upload_mode=context_upload_mode,
-                )
-            except Exception:
-                pass  # Telemetry is optional
+        #
+        # Kept on `self` so the at-fork hook can build an identical reporter
+        # with EMPTY buffers in a forked child (qfg-lv4n.2).
+        self._collect_evaluation_summaries = collect_evaluation_summaries
+        self._context_upload_mode = context_upload_mode
+        self._telemetry = self._build_telemetry()
 
         # Transport: stand it up whenever the caller wired an HTTP source.
         # Explicit `api_urls=` without an sdk_key is the integration-suite
@@ -400,13 +399,7 @@ class Quonfig:
             )
         self._transport: Optional[Transport] = None
         if (not self._datadir and self._sdk_key) or (explicit_api_urls and not self._datadir):
-            self._transport = Transport(
-                api_urls=self._api_urls,
-                sdk_key=self._sdk_key,
-                timeout=config_fetch_timeout_ms / 1000.0,
-                hedge_delay=hedge_delay_ms / 1000.0,
-                hedge_abort=config_fetch_hedge_abort_ms / 1000.0,
-            )
+            self._transport = self._build_transport()
 
             # A single explicit `api_urls` entry disables automatic failover:
             # the default (and every QUONFIG_DOMAIN-derived) list carries both a
@@ -483,18 +476,78 @@ class Quonfig:
         self._staleness_lock = threading.Lock()
         self._staleness_refresh_in_flight = False
         if self._transport is not None and self._fallback_poll_enabled:
-            self._fallback_poller = FallbackPoller(
-                transport=self._transport,
-                store=self._store,
-                interval_seconds=self._fallback_poll_interval_ms / 1000.0,
-                shutdown_event=self._shutdown,
-                on_config_update=self._fire_on_config_update,
-                install=lambda env: self._install_network_envelope(env, from_http=True),
-                # Hedged refresh (qfg-7h5d.1.14): each poll tick drives a full
-                # parallel-failover hedge so an established client heals forward
-                # to a newer leg on the poll loop too, not just at init.
-                refresh=lambda: self._fetch_and_install_hedged(initial=False),
+            self._fallback_poller = self._build_fallback_poller()
+
+        # Fork safety (qfg-lv4n.2). The child-only ``os.register_at_fork``
+        # handler in ``quonfig._fork`` only DROPS inherited state and sets
+        # ``_needs_rebuild_after_fork``; the re-initialization itself happens
+        # lazily, on the child's first use of the client, through
+        # ``_ensure_rebuilt_after_fork``. ``_fork_lock`` serializes that
+        # one-shot rebuild; the other two are set by the drop handler and read
+        # by the rebuild.
+        self._needs_rebuild_after_fork = False
+        self._fork_lock = threading.RLock()
+        self._fork_had_transport = self._transport is not None
+        self._fork_stream_url_override: Optional[str] = None
+
+        # Track this instance so the at-fork hook can find it. Registered LAST
+        # so a construction that raised is never handed to the hook. Weakly
+        # held — this does not keep the client alive.
+        register_instance(self)
+
+    # ------------------------------------------------------------------
+    # Component factories
+    #
+    # Shared by ``__init__`` and the at-fork child rebuild so the two can't
+    # drift: a forked child must get exactly what a fresh instance gets.
+    # ------------------------------------------------------------------
+
+    def _build_telemetry(self) -> Optional[Any]:
+        """Build the telemetry reporter, or ``None`` when telemetry is off.
+
+        Buffers start empty by construction, which is what makes this safe to
+        call in a forked child: the parent's buffered window is the parent's
+        to flush.
+        """
+        if not self._sdk_key:
+            return None
+        if not (self._collect_evaluation_summaries or self._context_upload_mode != "none"):
+            return None
+        try:
+            from .telemetry import TelemetryReporter
+
+            return TelemetryReporter(
+                telemetry_url=self._telemetry_url,
+                sdk_key=self._sdk_key,
+                collect_evaluation_summaries=self._collect_evaluation_summaries,
+                context_upload_mode=self._context_upload_mode,
             )
+        except Exception:  # noqa: BLE001 — telemetry is optional
+            return None
+
+    def _build_fallback_poller(self) -> FallbackPoller:
+        assert self._transport is not None
+        return FallbackPoller(
+            transport=self._transport,
+            store=self._store,
+            interval_seconds=self._fallback_poll_interval_ms / 1000.0,
+            shutdown_event=self._shutdown,
+            on_config_update=self._fire_on_config_update,
+            install=lambda env: self._install_network_envelope(env, from_http=True),
+            # Hedged refresh (qfg-7h5d.1.14): each poll tick drives a full
+            # parallel-failover hedge so an established client heals forward
+            # to a newer leg on the poll loop too, not just at init.
+            refresh=lambda: self._fetch_and_install_hedged(initial=False),
+        )
+
+    def _build_transport(self) -> Transport:
+        return Transport(
+            api_urls=self._api_urls,
+            sdk_key=self._sdk_key,
+            timeout=self._config_fetch_timeout_ms / 1000.0,
+            hedge_delay=self._hedge_delay_ms / 1000.0,
+            hedge_abort=self._config_fetch_hedge_abort_ms / 1000.0,
+        )
 
     # ------------------------------------------------------------------
     # Initialization
@@ -511,6 +564,29 @@ class Quonfig:
         raising ``QuonfigInitTimeoutError`` when ``on_init_failure``
         is ``"raise"``.
         """
+        # In a forked child the at-fork handler dropped the transport, poller
+        # and telemetry reporter, so a bare ``init()`` here would stand up an
+        # empty client. Route through the rebuild path, which rebuilds those
+        # components and calls back into ``init()`` with the flag cleared.
+        if self._needs_rebuild_after_fork:
+            self._ensure_rebuilt_after_fork()
+            return self
+
+        # A client that was constructed but never ``init()``ed before a fork is
+        # deliberately NOT flagged for rebuild — the child must not start it
+        # behind the caller's back. But the at-fork handler still dropped its
+        # transport, telemetry reporter and poller (they may hold the parent's
+        # pooled sockets), so a bare ``init()`` here would fall through to the
+        # "no data source configured" branch below and latch an empty store
+        # forever. Rebuild them first: this is the construct-in-master /
+        # ``init()``-in-``post_fork`` pattern (qfg-lv4n.2). A client that was
+        # CLOSED before the fork is excluded: closed clients stay closed in the
+        # child, and standing a transport back up here would start a fetch and
+        # a poll thread on one.
+        if self._transport is None and self._fork_had_transport and not self._shutdown.is_set():
+            self._build_components_after_fork()
+
+        self._started = True
         if self._datadir:
             self._load_from_datadir()
         elif self._transport:
@@ -520,6 +596,241 @@ class Quonfig:
             self._finish_init()
 
         return self
+
+    # ------------------------------------------------------------------
+    # Fork safety (qfg-lv4n.2)
+    # ------------------------------------------------------------------
+
+    def _drop_inherited_state_after_fork_in_child(self) -> None:
+        """Drop inherited state — IN THE CHILD ONLY, and cheaply.
+
+        Called once per live instance from the ``after_in_child`` handler in
+        ``quonfig._fork``. **The parent is never touched**, before or after the
+        syscall. This ports Reforge sdk-python 1.2.2's singleton reset (#26) to
+        Quonfig's instance-based API; see that module's docstring for the
+        survey and the accepted differences.
+
+        This handler does NOTHING that can block, allocate a thread, take an
+        inherited lock, or touch the network. That is the whole design: an
+        ``after_in_child`` handler runs on EVERY fork in the process, including
+        ``multiprocessing`` workers that never use the SDK and the pre-exec
+        child of a ``subprocess`` spawn that passes ``preexec_fn``. Rebuilding
+        eagerly here charged all of them a full fetch plus a set of threads,
+        and on macOS killed them outright: ``requests`` resolves proxy settings
+        through ``_scproxy``, which enters the Objective-C runtime, and libobjc
+        deliberately aborts a child that does that after a fork from a
+        multi-threaded parent. Reforge is lazy for the same reason — its hook
+        only drops the singleton, and the next ``get_sdk()`` builds a new one.
+
+        Three rules, in order:
+
+        1. **Nothing inherited is joined or closed.** The parent's threads do
+           not exist in this process (``threading``'s own after-fork reinit has
+           already marked them stopped), so joining one would be a join on a
+           thread that never runs. Its sockets still belong to the parent —
+           closing an inherited TLS connection would write ``close_notify``
+           onto the parent's live connection. Every inherited handle is simply
+           dropped, including the pending ``threading.Timer`` (``cancel()``
+           would touch the timer's inherited ``Event``).
+        2. **Every lock and event the client owns is replaced.** A
+           ``threading.Lock`` / ``RLock`` / ``Event`` held by a non-forking
+           thread at fork time can never be released here, so the first caller
+           to touch it would wedge forever. That is exactly why Reforge's
+           ``_reset_singleton_after_fork`` swaps its module ``_ReadWriteLock``
+           for a fresh one. Only ``is_set()`` is read off the inherited events
+           — it takes no lock; ``set()`` would.
+        3. **The client is left looking newly constructed**, with an EMPTY
+           store, and flagged for rebuild. The child does not evaluate from the
+           parent's snapshot: on its first use it runs the normal ``init()``
+           path and fetches its own config (Jeff's call, 2026-09-10 — Reforge
+           parity, where the child's next ``get_sdk()`` is a brand-new SDK).
+           Starting at generation zero also means the child's first fetch is
+           accepted by the reject-older guard rather than counted as a
+           ``guardRejected``, so a forked worker adds no phantom rejections to
+           the ``sdk_failover`` signal.
+
+        A client that was closed before the fork stays closed, and one that was
+        constructed but never ``init()``ed is not started behind the caller's
+        back; neither is flagged for rebuild, and neither has its store touched.
+        The caller can still start the never-started one itself by calling
+        ``init()`` in the child — see ``init()``, which rebuilds the components
+        this dropped (the construct-in-master / ``init()``-in-``post_fork``
+        shape). A client that is already PENDING from an earlier fork is NOT
+        one of those two cases: it stays pending across a re-fork, or the
+        grandchild would never rebuild at all (qfg-lv4n.2).
+        """
+        was_closed = self._shutdown.is_set()
+        was_initialized = self._initialized.is_set()
+        was_started = self._started
+        # Already flagged by an EARLIER fork and not used since: this process is
+        # itself a forked child that has not rebuilt yet. It looks exactly like
+        # a never-started client (``_started`` is False, no components) but it
+        # is a PENDING one, and re-forking it must keep it pending (qfg-lv4n.2).
+        pending = self._needs_rebuild_after_fork
+        old_transport = self._transport
+
+        # (2) Fresh locks and events. Never call .set() on an inherited event.
+        self._fork_lock = threading.RLock()
+        self._fallback_lock = threading.Lock()
+        self._health_lock = threading.Lock()
+        self._staleness_lock = threading.Lock()
+        self._staleness_refresh_in_flight = False
+        self._shutdown = threading.Event()
+        if was_closed:
+            self._shutdown.set()
+
+        # (1) Drop every inherited background component — no join, no close.
+        self._sse = None
+        self._fallback_poller = None
+        self._fallback_engage_timer = None
+        self._datadir_watcher = None
+        self._telemetry = None
+        self._transport = None
+
+        # Inherited health state belongs to the parent's connection. Keeping it
+        # is the Cheddar Up failure mode: a worker answering "connected" from
+        # state it inherited while receiving nothing (epic qfg-lv4n).
+        self._last_successful_refresh = None
+        self._last_sse_state = None
+        self._sse_ever_connected = False
+        self._sse_stream_index = 0
+        self._resolved_from_index = -1
+
+        if was_closed or not (was_started or pending):
+            # Nothing will be rebuilt, so the store is left exactly as it was
+            # (a closed client still answers from what it holds; a client that
+            # was never started holds nothing anyway). Its lock is replaced
+            # like every other, and so is the initialized event — an inherited
+            # ``Event``'s internal lock is not reinitialized by ``threading``'s
+            # own after-fork hook, so ``wait()`` on one could wedge the child.
+            self._store._lock = threading.RLock()
+            self._initialized = threading.Event()
+            if was_initialized:
+                self._initialized.set()
+            self._needs_rebuild_after_fork = False
+            return
+
+        # (3) Empty store, uninitialized, flagged for rebuild.
+        self._store = ConfigStore()
+        self._resolver = Resolver(self._store)
+        self._evaluator = None
+        self._initialized = threading.Event()
+        self._init_error = None
+        self._started = False
+        if not pending:
+            # Captured from the transport this fork is dropping. On a re-fork of
+            # a still-pending child there is no transport left to read them off
+            # — they were captured at the FIRST fork and must survive, or the
+            # grandchild rebuilds without a transport and goes dark.
+            self._fork_had_transport = old_transport is not None
+            # Private SSE stream-URL test seam: configuration the chaos rig sets
+            # after construction, not inherited runtime state.
+            self._fork_stream_url_override = getattr(
+                old_transport, "_Transport__test_stream_url_override", None
+            )
+        self._needs_rebuild_after_fork = True
+
+    def _build_components_after_fork(self) -> None:
+        """Re-create the background components the at-fork handler dropped.
+
+        Shared by the lazy rebuild (``_rebuild_in_child``) and by an explicit
+        ``init()`` in a child on a client that was never started in the parent,
+        so the two cannot drift. Everything is built FRESH — in particular a
+        fresh ``requests.Session`` per component, so a child never writes on a
+        socket the parent pooled, and a telemetry reporter with EMPTY buffers,
+        because the parent's buffered window is the parent's to flush.
+        """
+        if self._fork_had_transport:
+            self._transport = self._build_transport()
+            if self._fork_stream_url_override:
+                setattr(
+                    self._transport,
+                    "_Transport__test_stream_url_override",
+                    self._fork_stream_url_override,
+                )
+
+        self._telemetry = self._build_telemetry()
+
+        if self._transport is not None and self._fallback_poll_enabled:
+            self._fallback_poller = self._build_fallback_poller()
+
+    def _ensure_rebuilt_after_fork(self) -> None:
+        """Re-initialize this client if it came out of a fork — the LAZY half
+        of the fork handling, and a no-op (one boolean read) otherwise.
+
+        Called from every public entry point that uses the client. The flag is
+        the only trigger: a pid comparison would also fire for clients that
+        were constructed after the fork, and deciding whether the SDK should
+        carry a pid-mismatch safety net at all is a separate open question
+        (qfg-lv4n.3).
+        """
+        if not self._needs_rebuild_after_fork:
+            return
+        with self._fork_lock:
+            if not self._needs_rebuild_after_fork:
+                return
+            # Cleared BEFORE the rebuild so a re-entrant call from inside
+            # ``init()`` cannot recurse, and a rebuild that raises is not
+            # retried on every subsequent call.
+            self._needs_rebuild_after_fork = False
+            self._rebuild_in_child()
+
+    def _rebuild_in_child(self) -> None:
+        """Stand the client back up in a forked child: fresh transport (fresh
+        ``requests.Session``, so a child never reuses a parent's pooled
+        socket), fresh telemetry reporter with EMPTY buffers (the parent
+        flushes its own window — dd-trace-rb discards inherited buffers in the
+        child for the same reason), fresh fallback poller, and a fresh update
+        channel, by running the normal ``init()`` path.
+
+        Datadir mode re-reads from disk here, exactly as a fresh client would.
+        """
+        self._build_components_after_fork()
+
+        try:
+            self.init()
+        except Exception as e:  # noqa: BLE001 — a lazy rebuild must not break the caller
+            logger.error(
+                "[quonfig] re-initializing the SDK client after fork failed in pid %d: %s: %s",
+                os.getpid(),
+                type(e).__name__,
+                e,
+            )
+
+        if self._shutdown.is_set():
+            # ``close()`` landed while this rebuild was in flight. It takes
+            # ``_fork_lock`` too, so it cannot interleave with the body above —
+            # but a teardown that ran BEFORE we got the lock walked past
+            # components that did not exist yet, and starting them now would
+            # leave live threads on a closed client (a ``quonfig-telemetry``
+            # reporter POSTing for the rest of the process's life). Tear the
+            # new ones down again. ``_fork_lock`` is an RLock, so re-entering
+            # ``close()`` on this thread is safe.
+            logger.debug(
+                "[quonfig] client closed during the post-fork rebuild in pid %d; "
+                "tearing the rebuilt components down again",
+                os.getpid(),
+            )
+            self.close()
+            return
+
+        components = []
+        if self._transport is not None:
+            components.append("transport")
+        if self._sse is not None:
+            components.append("SSE stream")
+        if self._fallback_poller is not None:
+            components.append("fallback poller")
+        if self._telemetry is not None:
+            components.append("telemetry")
+        if self._datadir_watcher is not None:
+            components.append("datadir watcher")
+        logger.info(
+            "[quonfig] fork detected: re-initialized the SDK client on first use in child "
+            "pid %d (%s); the parent process is untouched",
+            os.getpid(),
+            ", ".join(components) if components else "no background components",
+        )
 
     def _record_successful_refresh(self) -> None:
         """Stamp 'now' as the most recent successful refresh — the last moment
@@ -855,6 +1166,7 @@ class Quonfig:
         self._initialized.set()
 
     def _wait_initialized(self) -> None:
+        self._ensure_rebuilt_after_fork()
         if not self._initialized.is_set():
             # threading.Event.wait takes seconds; init timeout is stored in ms.
             ok = self._initialized.wait(timeout=self._init_timeout_ms / 1000.0)
@@ -1403,6 +1715,7 @@ class Quonfig:
     # ------------------------------------------------------------------
 
     def with_context(self, contexts: Contexts) -> "BoundQuonfig":
+        self._ensure_rebuilt_after_fork()
         from .bound_client import BoundQuonfig
 
         return BoundQuonfig(self, contexts)
@@ -1425,6 +1738,13 @@ class Quonfig:
     # ------------------------------------------------------------------
 
     def keys(self) -> List[str]:
+        """Keys of every config currently loaded.
+
+        A content reader, not a diagnostic: in a forked child it triggers the
+        rebuild AND waits for that child's own first fetch, so it never hands
+        back the empty pre-fetch store (qfg-lv4n.2).
+        """
+        self._wait_initialized()
         return self._store.keys()
 
     def raw_config(self, key: str) -> "Optional[ConfigResponse]":
@@ -1435,7 +1755,12 @@ class Quonfig:
         no config with that key is loaded. Mirrors sdk-node's ``rawConfig``;
         intended for advanced usage / tooling that needs the on-the-wire
         shape rather than a resolved value.
+
+        Like ``keys()``, a content reader: in a forked child it waits for that
+        child's own first fetch rather than answering from the empty pre-fetch
+        store (qfg-lv4n.2).
         """
+        self._wait_initialized()
         return self._store.get(key)
 
     # ------------------------------------------------------------------
@@ -1525,6 +1850,7 @@ class Quonfig:
         ETag isolation + the reject-older guard keep an equal/older payload a
         no-op and the install count from doubling.
         """
+        self._ensure_rebuilt_after_fork()
         if self._transport is None:
             return False
 
@@ -1617,6 +1943,7 @@ class Quonfig:
         thread; they are never raised into the caller, which has typically
         already returned its response.
         """
+        self._ensure_rebuilt_after_fork()
         if self._transport is None:
             return False
         if self._shutdown.is_set():
@@ -1656,7 +1983,10 @@ class Quonfig:
         """``True`` when the Layer 2 HTTP fallback poller is currently
         scheduled. Mirrors sdk-node's ``fallbackPollerActive()`` — used by
         the chaos harness; the documented public ``connection_state()``
-        accessor below is the customer-facing surface."""
+        accessor below is the customer-facing surface.
+
+        Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
+        """
         return self._fallback_poller is not None and self._fallback_poller.is_active()
 
     # ------------------------------------------------------------------
@@ -1668,7 +1998,10 @@ class Quonfig:
 
     def ready(self) -> bool:
         """``True`` once the client has initialized AND installed at least one
-        config envelope — i.e. it can actually serve resolved values."""
+        config envelope — i.e. it can actually serve resolved values.
+
+        Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
+        """
         return self._initialized.is_set() and self._store.install_count() > 0
 
     def resolved_from(self) -> str:
@@ -1676,7 +2009,10 @@ class Quonfig:
         currently holding: ``"primary"`` (the first API URL), ``"secondary"``
         (any later URL reached via failover), or ``""`` before the first
         successful HTTP install. Reflects the HTTP config-fetch path only — SSE
-        installs do not change it."""
+        installs do not change it.
+
+        Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
+        """
         if self._resolved_from_index < 0:
             return ""
         if self._resolved_from_index == 0:
@@ -1685,13 +2021,19 @@ class Quonfig:
 
     def held_generation(self) -> int:
         """``Meta.generation`` of the currently-installed envelope (0 before the
-        first install or in datadir mode)."""
+        first install or in datadir mode).
+
+        Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
+        """
         return self._store.get_generation()
 
     def config_install_count(self) -> int:
         """Number of envelopes installed over the client's lifetime (every
         install path). The reject-older guard keeps this from advancing on a
-        same-or-older payload."""
+        same-or-older payload.
+
+        Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
+        """
         return self._store.install_count()
 
     def sse_failed_over_to_secondary(self) -> bool:
@@ -1699,7 +2041,10 @@ class Quonfig:
         Always ``False`` by design — SSE is pinned to the primary stream and
         failover is an HTTP-only property — exposed so the chaos suite can
         assert that invariant (f05) and catch a regression that silently
-        repoints the stream."""
+        repoints the stream.
+
+        Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
+        """
         return self._sse_stream_index > 0
 
     # ------------------------------------------------------------------
@@ -1709,6 +2054,13 @@ class Quonfig:
     # probe. They are diagnostic, not pass/fail. A liveness probe based on
     # SDK freshness amplifies transient network blips into restart
     # cascades. See README.
+    #
+    # Diagnostics never trigger the post-fork rebuild (cross-SDK ruling on
+    # epic qfg-lv4n; sdk-ruby behaves the same). A health probe, a metrics
+    # scrape or a log line must not start threads and fire a config fetch
+    # from a forked child that has not evaluated anything yet. Until its
+    # first content read such a child answers the pre-start state:
+    # ``initializing`` / not ready / generation 0 / no liveness stamp.
     # ------------------------------------------------------------------
 
     def last_successful_refresh(self) -> Optional[datetime.datetime]:
@@ -1724,6 +2076,8 @@ class Quonfig:
         as equal-or-older — and by a received-and-processed SSE message that was
         a guard no-op. Transport errors never advance it. Returns ``None``
         before the first successful refresh.
+
+        Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
         """
         with self._health_lock:
             return self._last_successful_refresh
@@ -1751,6 +2105,8 @@ class Quonfig:
         means "degraded — SSE died and Layer 2 caught the client", whereas
         poll-as-primary is the configured design and is not degraded
         (qfg-0xj3.1).
+
+        Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
         """
         if not self._enable_sse:
             with self._health_lock:
@@ -1791,6 +2147,7 @@ class Quonfig:
         ``flush()``. ``close()`` already flushes, so this is only needed when
         the process outlives the request.
         """
+        self._ensure_rebuilt_after_fork()
         if self._telemetry is None:
             return
         try:
@@ -1799,34 +2156,57 @@ class Quonfig:
             logger.warning("Quonfig: telemetry flush failed: %s: %s", type(e).__name__, e)
 
     def close(self) -> None:
-        self._shutdown.set()
-        # Cancel any pending fallback engage timer so the daemon doesn't fire
-        # after close().
-        with self._fallback_lock:
-            if self._fallback_engage_timer is not None:
-                self._fallback_engage_timer.cancel()
-                self._fallback_engage_timer = None
-        if self._fallback_poller is not None:
-            try:
-                self._fallback_poller.disengage("client-close")
-            except Exception:
-                pass
-        if self._datadir_watcher is not None:
-            try:
-                self._datadir_watcher.close()
-            except Exception:
-                pass
-            self._datadir_watcher = None
-        if self._telemetry is not None:
-            try:
-                self._telemetry.stop()
-            except Exception:
-                pass
-        if self._transport is not None:
-            try:
-                self._transport.close()
-            except Exception:
-                pass
+        # Deliberately does NOT call ``_ensure_rebuilt_after_fork``: closing a
+        # client in a forked child that never used the SDK must return promptly
+        # and must not stand a client up just to tear it down. Clearing the
+        # flag also keeps a later read from resurrecting a closed client.
+        #
+        # It DOES take ``_fork_lock``, though, so it cannot interleave with a
+        # first-use rebuild running on another thread: without it, a reporter
+        # or poller the rebuild created a moment after the teardown walked past
+        # it is started and never stopped — a live thread on a closed client
+        # (qfg-lv4n.2). ``_rebuild_in_child`` re-checks ``_shutdown`` at the end
+        # for the other ordering.
+        with self._fork_lock:
+            self._needs_rebuild_after_fork = False
+            if not self._initialized.is_set():
+                # Closed before it was ever initialized — in a forked child,
+                # before its first use, that is the fresh ``Event`` the at-fork
+                # handler installed, and clearing the rebuild flag above means
+                # nothing will ever set it. Latch it now so later getters answer
+                # immediately from what the client holds (defaults, for an empty
+                # store) instead of blocking the whole ``init_timeout_ms`` and
+                # then raising ``QuonfigInitTimeoutError``. A closed client
+                # returning defaults instantly is the only sane semantic.
+                self._finish_init()
+            self._shutdown.set()
+            # Cancel any pending fallback engage timer so the daemon doesn't fire
+            # after close().
+            with self._fallback_lock:
+                if self._fallback_engage_timer is not None:
+                    self._fallback_engage_timer.cancel()
+                    self._fallback_engage_timer = None
+            if self._fallback_poller is not None:
+                try:
+                    self._fallback_poller.disengage("client-close")
+                except Exception:
+                    pass
+            if self._datadir_watcher is not None:
+                try:
+                    self._datadir_watcher.close()
+                except Exception:
+                    pass
+                self._datadir_watcher = None
+            if self._telemetry is not None:
+                try:
+                    self._telemetry.stop()
+                except Exception:
+                    pass
+            if self._transport is not None:
+                try:
+                    self._transport.close()
+                except Exception:
+                    pass
 
     def __enter__(self) -> "Quonfig":
         return self
