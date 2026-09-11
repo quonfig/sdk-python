@@ -405,29 +405,35 @@ additionally sidesteps the fork by loading the app in each worker.)
 
 ### macOS
 
-`requests` resolves proxy settings through `urllib.request.proxy_bypass` ->
-`_scproxy` -> SystemConfiguration, which enters the Objective-C runtime.
-libobjc deliberately kills a process that does that in a child forked from a
-multi-threaded parent, so **any** HTTP with `requests` in a forked child can
-crash on macOS, with or without this SDK — a plain `requests.get()` in a forked
-child reproduces it with Quonfig nowhere in the process.
+**Build the client after the fork on macOS.** A forked child that calls the
+SDK on macOS can be killed by the platform, with or without this SDK:
 
-Because the rebuild is lazy, a forked child that never calls the SDK never goes
-near it. If your child *does* call the SDK on macOS, either:
+- `requests` resolves proxy settings through `urllib.request.proxy_bypass` ->
+  `_scproxy` -> SystemConfiguration, which enters the Objective-C runtime, and
+  libobjc deliberately aborts a child that does that after a fork from a
+  multi-threaded parent.
+- Even with `NO_PROXY` covering the API host (which keeps `requests` off
+  `_scproxy`), a child whose parent holds a live HTTPS connection at fork time
+  — which an initialized client always does, that is its SSE stream — dies
+  with `SIGSEGV` on its first request. A plain `requests.get()` in a forked
+  child reproduces this with Quonfig nowhere in the process (verified
+  2026-09-10, macOS 15 / CPython 3.11: 5 of 5 children).
 
-- set `NO_PROXY` to cover the API host (e.g. `NO_PROXY=quonfig.com`, or
-  whatever `QUONFIG_DOMAIN` points at) — `requests` then short-circuits before
-  proxy detection. The underlying `requests` knob is `Session.trust_env =
-  False`, which the SDK does not expose; `NO_PROXY` is the supported lever; or
-- build the client after the fork.
+So `NO_PROXY` is not a reliable workaround on macOS. Because the rebuild is
+lazy, a forked child that never calls the SDK never goes near any of this. If
+your child *does* need the SDK on macOS, construct and `init()` the client in
+the child (Gunicorn `post_fork`, Celery `worker_process_init`), not in the
+master.
 
-Datadir mode has a second macOS-only hazard: with `data_dir_auto_reload=True`
-the child aborts (`SIGABRT`) when the rebuild starts its filesystem watcher,
-because `watchfiles` reaches FSEvents through the same Objective-C runtime —
-build the client after the fork if you need auto-reload on macOS.
+Datadir mode has the same shape of hazard: with `data_dir_auto_reload=True` the
+child aborts (`SIGABRT`) when the rebuild starts its filesystem watcher, because
+`watchfiles` reaches FSEvents through the same Objective-C runtime — build the
+client after the fork there too.
 
 **Linux is unaffected** — these are macOS system-library issues, and macOS is a
-development platform for this SDK, not a deployment one.
+development platform for this SDK, not a deployment one. The automatic rebuild
+is verified on Linux against a live api-delivery in the default SSE mode (parent
+and forked child both receive a value published after the fork).
 
 ## Configuration
 

@@ -16,17 +16,20 @@ The one forced difference from Reforge is the registry: Quonfig has no module
 singleton to reset, so live ``Quonfig`` instances are tracked in a
 ``weakref.WeakSet`` and rebuilt in place.
 
-Update delivery is exercised over a real in-process HTTP server with
-``enable_sse=False``, so the Layer 2 fallback poller is the primary update
-channel and no SSE fixture is needed. The server lives in the PARENT, so a
-generation bump published after the fork is visible to the child only if the
-child's own poller is alive.
+Update delivery is exercised over a real in-process HTTP server. Most tests
+run with ``enable_sse=False``, so the Layer 2 fallback poller is the primary
+update channel; ``test_sse_child_rebuilds_on_its_own_stream_and_both_receive_post_fork_publish``
+covers the DEFAULT SSE mode against the same server's ``/api/v2/sse/config``
+stream. The server lives in the PARENT, so a generation bump published after
+the fork is visible to the child only if the child's own poller or stream is
+alive.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import select
 import shutil
 import signal
@@ -139,6 +142,10 @@ class _ConfigServer:
         # the SDK made. Lets a test tell SDK traffic apart from traffic a test
         # thread generates itself.
         self.sdk_requests = 0
+        # SSE streams opened against ``/api/v2/sse/config`` over the server's
+        # lifetime, and the queue feeding each one that is still open.
+        self.sse_streams = 0
+        self._streams: "list[queue.Queue]" = []
         self._count_lock = threading.Lock()
         outer = self
 
@@ -149,26 +156,55 @@ class _ConfigServer:
                 if self.headers.get("X-Quonfig-SDK-Version"):
                     with outer._count_lock:
                         outer.sdk_requests += 1
+                if self.path.startswith("/api/v2/sse"):
+                    self._serve_sse()
+                    return
                 if outer.mode == "error":
                     self.send_response(503)
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                body = json.dumps(
-                    {
-                        "configs": outer.configs,
-                        "meta": {
-                            "version": f"gen-{outer.generation}",
-                            "environment": "Production",
-                            "generation": outer.generation,
-                        },
-                    }
-                ).encode()
+                body = json.dumps(outer._envelope()).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _serve_sse(self) -> None:
+                """``text/event-stream``: the current envelope on connect (what
+                api-delivery's ``sendInitialConfig`` does), then whatever
+                ``publish()`` pushes, with a comment ping every second so a
+                dead peer is noticed. HTTP/1.0 close-delimited — no chunking
+                needed for ``requests`` to stream it."""
+                stream: "queue.Queue" = queue.Queue()
+                with outer._count_lock:
+                    outer.sse_streams += 1
+                    outer._streams.append(stream)
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    self.wfile.write(f"data: {json.dumps(outer._envelope())}\n\n".encode())
+                    self.wfile.flush()
+                    while True:
+                        try:
+                            item = stream.get(timeout=1.0)
+                        except queue.Empty:
+                            self.wfile.write(b": ping\n\n")
+                            self.wfile.flush()
+                            continue
+                        if item is None:
+                            return
+                        self.wfile.write(f"data: {json.dumps(item)}\n\n".encode())
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                finally:
+                    with outer._count_lock:
+                        if stream in outer._streams:
+                            outer._streams.remove(stream)
 
             def log_message(self, *args: object) -> None:  # silence the test server
                 pass
@@ -179,7 +215,30 @@ class _ConfigServer:
         _host, port = self._server.server_address
         self.url = f"http://127.0.0.1:{port}"
 
+    def _envelope(self) -> dict:
+        return {
+            "configs": self.configs,
+            "meta": {
+                "version": f"gen-{self.generation}",
+                "environment": "Production",
+                "generation": self.generation,
+            },
+        }
+
+    def publish(self, generation: int) -> None:
+        """Bump the served generation and push the new envelope down every open
+        SSE stream — a publish, as api-delivery's fan-out would deliver it."""
+        self.generation = generation
+        with self._count_lock:
+            streams = list(self._streams)
+        for stream in streams:
+            stream.put(self._envelope())
+
     def close(self) -> None:
+        with self._count_lock:
+            streams = list(self._streams)
+        for stream in streams:
+            stream.put(None)
         self._server.shutdown()
         self._server.server_close()
 
@@ -217,7 +276,16 @@ def _make_client(server: _ConfigServer, **overrides: Any) -> Quonfig:
         config_fetch_hedge_abort_ms=2000,
     )
     kwargs.update(overrides)
-    return Quonfig(**kwargs)
+    client = Quonfig(**kwargs)
+    if kwargs["enable_sse"] and client._transport is not None:
+        # ``derive_stream_url`` would prepend ``stream.`` to 127.0.0.1; point
+        # the stream at the in-process server through the same private seam
+        # the chaos harness uses. The at-fork handler carries it into the
+        # child's rebuilt transport.
+        client._transport._Transport__test_stream_url_override = (  # type: ignore[attr-defined]
+            f"{server.url}/api/v2/sse/config"
+        )
+    return client
 
 
 def _await(predicate: Callable[[], bool], within: float = 6.0) -> bool:
@@ -477,6 +545,86 @@ def test_t2_parent_is_untouched_by_the_fork() -> None:
         finally:
             _reap(pid)
             pipe.close()
+    finally:
+        client.close()
+        server.close()
+
+
+# ----------------------------------------------------------------------
+# SSE mode (the default) — the child rebuilds on its OWN stream, and a
+# publish after the fork reaches BOTH parent and child
+# ----------------------------------------------------------------------
+
+
+@requires_fork
+def test_sse_child_rebuilds_on_its_own_stream_and_both_receive_post_fork_publish() -> None:
+    """The customer-facing scenario in the mode customers actually run: SSE
+    on, fallback poll far away. Gunicorn ``--preload`` forks a worker off a
+    connected master; the worker's first evaluation must stand up its own
+    stream (exactly one new stream at the server), a value published after
+    the fork must reach the worker AND the master, and the master's stream
+    object and thread must be the very same ones it had before the fork.
+
+    Mirrors the live staging probe from the 1.4.0 go/no-go review
+    (parent + child both saw a ``qfg set-default`` published after the fork)."""
+    server = _ConfigServer(configs=[_string_config("k", "v")])
+    client = _make_client(server, enable_sse=True, fallback_poll_interval_ms=30_000)
+    try:
+        client.init()
+        _await_ready(client)
+        assert _await(lambda: client.connection_state() == "connected", within=8.0), (
+            client.connection_state()
+        )
+        _await_server_quiet(server)
+        sse_before = client._sse
+        assert sse_before is not None
+        sse_thread_before = sse_before._thread
+        assert sse_thread_before is not None and sse_thread_before.is_alive()
+        streams_before = server.sse_streams
+        assert streams_before == 1, f"parent should hold exactly one stream, saw {streams_before}"
+
+        def child(send: Callable[[str], None]) -> None:
+            # Before first use: pre-start state, no SDK threads, no stream.
+            pre = f"pre state={client.connection_state()} threads={_quonfig_threads()}"
+            value = client.get_string("k", default="MISSING")
+            connected = _await(lambda: client.connection_state() == "connected", within=8.0)
+            send(
+                f"{pre} | value={value} gen={client.held_generation()} "
+                f"connected={connected} sse_is_new={client._sse is not sse_before} "
+                f"poller_active={client.fallback_poller_active()}"
+            )
+            saw = _await(lambda: client.held_generation() == 2, within=12.0)
+            send(f"gen={client.held_generation()} saw_update={saw}")
+
+        pid, pipe = _fork_child(child)
+        try:
+            handshake = pipe.read_line(timeout=20.0)
+            # Published only once the child is connected on its own stream, so
+            # nothing but that stream can deliver it there.
+            server.publish(2)
+            parent_saw = _await(lambda: client.held_generation() == 2, within=12.0)
+            message = pipe.read_line(timeout=20.0)
+        finally:
+            _reap(pid)
+            pipe.close()
+
+        assert handshake == (
+            "pre state=initializing threads=[] | value=v gen=1 "
+            "connected=True sse_is_new=True poller_active=False"
+        ), f"child did not rebuild on its own SSE stream: {handshake!r}"
+        assert message == "gen=2 saw_update=True", (
+            f"child did not receive the post-fork publish on its own stream: {message!r}"
+        )
+        assert parent_saw, (
+            f"parent did not receive the post-fork publish: {client.held_generation()}"
+        )
+        assert client._sse is sse_before, "parent's SSE client was replaced by the fork"
+        assert sse_before._thread is sse_thread_before and sse_thread_before.is_alive(), (
+            "parent's SSE thread was replaced or died across the fork"
+        )
+        assert server.sse_streams == streams_before + 1, (
+            f"expected exactly one new stream (the child's), saw {server.sse_streams - streams_before}"
+        )
     finally:
         client.close()
         server.close()

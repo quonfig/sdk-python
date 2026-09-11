@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.4.0 - 2026-09-10
+## 1.4.0 - 2026-09-11
 
 Fork safety (qfg-lv4n.2, epic qfg-lv4n). Additive and backward-compatible; no
 new dependencies, no API changes, nothing for callers to wire up.
@@ -78,13 +78,19 @@ new dependencies, no API changes, nothing for callers to wire up.
   SSE greenlet keeps running in the child on the shared socket and the parent
   silently loses events, so build the client after the fork (`post_fork` /
   worker init) or skip `--preload`; **uWSGI** needs `--enable-threads` for any
-  of the SDK's background threads to run; on **macOS** any `requests` HTTP in a
-  forked child can be killed by libobjc via `_scproxy` proxy detection (this is
-  the platform, not the SDK — a plain `requests.get()` reproduces it), so set
-  `NO_PROXY` to cover the API host or build the client after the fork, and with
-  `data_dir_auto_reload=True` a forked child aborts on macOS when its watcher
-  starts (`watchfiles` reaches FSEvents through the same runtime) — build the
-  client after the fork there. Linux is unaffected.
+  of the SDK's background threads to run; on **macOS** a forked child that
+  calls the SDK can be killed by the platform (`_scproxy` via libobjc, and
+  `SIGSEGV` on the first request whenever the parent held a live HTTPS
+  connection at fork time — a plain `requests.get()` reproduces both with
+  Quonfig absent), and `NO_PROXY` is not a reliable workaround, so build the
+  client after the fork on macOS; with `data_dir_auto_reload=True` a forked
+  child aborts on macOS when its watcher starts (`watchfiles` reaches FSEvents
+  through the same runtime). Linux is unaffected, and the automatic rebuild is
+  verified there against a live api-delivery in the default SSE mode.
+- `tests/unit/test_forking.py` covers the default SSE mode: a forked child
+  rebuilds on exactly one new stream of its own, a publish after the fork
+  reaches both parent and child, and the parent's stream object and thread
+  survive the fork untouched.
 - `quonfig.datadir_watcher` imports `platform` at module scope. `watchfiles`
   imports it inside `watch()`, i.e. on the watcher thread, and a fork during
   that import left the child with a partially initialized module and no
