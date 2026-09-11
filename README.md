@@ -178,6 +178,20 @@ Default is `False`; datadir mode is silent until you opt in.
   daemon thread (≤2s). There is no separate handle to manage — the watcher
   lifecycle is tied to the client. The thread is a daemon, so a stuck join
   will not block process exit.
+- **macOS reload latency is best-effort.** The watcher is backed by
+  [watchfiles](https://pypi.org/project/watchfiles/), which uses FSEvents on
+  macOS. Measured on macOS 26.2 with watchfiles 1.2.0 (the current release), a
+  single write to a watched datadir is reported after several seconds — and in
+  some sandboxed processes not at all, with no error: the watch registers
+  successfully and events simply never arrive. Forcing polling
+  (`WATCHFILES_FORCE_POLLING=1`) is **not** a workaround: it trades the latency
+  for silent loss, permanently dropping a write that lands shortly after a
+  previously reported one. Production Linux is unaffected — inotify delivers
+  reliably, within the debounce window. If you are developing on a Mac and need
+  a change picked up immediately, restart the process (or construct and
+  `init()` a fresh client, which re-reads the datadir synchronously) rather
+  than waiting on the watcher — `refresh()` drives the HTTP config-fetch path
+  and does not re-read the datadir.
 
 ### Tuning the debounce window
 
