@@ -27,7 +27,9 @@ API changes, nothing for callers to wire up.
   per-leg ETag slot is empty (fresh transport, reconnect, new process) — so a
   healthy steady-state client reported `guardRejected` climbing from init
   onward. Nothing on the wire changed; the field simply became accurate.
-  Applied across all six backend SDKs.
+  This is the Python half of a change being applied across all six backend
+  SDKs (sdk-ruby ships it in 1.4.1; Go, Java, .NET and Node follow in their
+  next releases), so counts may differ across languages until then.
 - **Fix: `close()` no longer swallows an init timeout on a live client**
   (qfg-b8kw). 1.4.0 made `close()` latch initialization so a forked child
   closed before its first use answers defaults instantly. That ran on every
@@ -35,7 +37,10 @@ API changes, nothing for callers to wire up.
   whose initial fetch was still in flight, a getter parked on another thread
   unblocked and returned its default instead of waiting out `init_timeout_ms`
   and raising `QuonfigInitTimeoutError`. The latch is now scoped to the
-  forked-child path; the forked-child behavior is unchanged.
+  forked-child path: a child closed before its first use still answers
+  defaults instantly; a child closed while its first-use rebuild is in flight
+  now behaves like a fresh client (waits out `init_timeout_ms`, then honors
+  `on_init_failure`).
 - **Docs: macOS `data_dir_auto_reload` caveat** (qfg-uszg). On macOS the
   FSEvents-backed watcher (watchfiles) can report a datadir change after
   several seconds, and in some sandboxed processes not at all. Forced polling
