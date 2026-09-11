@@ -2180,16 +2180,29 @@ class Quonfig:
         # (qfg-lv4n.2). ``_rebuild_in_child`` re-checks ``_shutdown`` at the end
         # for the other ordering.
         with self._fork_lock:
+            # Captured BEFORE the flag is cleared: it is the only thing that
+            # distinguishes "closed in a forked child before its first use"
+            # from "closed on a live client whose init is still running".
+            was_pending_rebuild = self._needs_rebuild_after_fork
             self._needs_rebuild_after_fork = False
-            if not self._initialized.is_set():
-                # Closed before it was ever initialized — in a forked child,
-                # before its first use, that is the fresh ``Event`` the at-fork
-                # handler installed, and clearing the rebuild flag above means
-                # nothing will ever set it. Latch it now so later getters answer
-                # immediately from what the client holds (defaults, for an empty
-                # store) instead of blocking the whole ``init_timeout_ms`` and
-                # then raising ``QuonfigInitTimeoutError``. A closed client
-                # returning defaults instantly is the only sane semantic.
+            if was_pending_rebuild and not self._initialized.is_set():
+                # FORKED-CHILD PATH ONLY (qfg-b8kw). Closed before it was ever
+                # initialized in a child, the uninitialized ``Event`` is the
+                # fresh one the at-fork handler installed, and clearing the
+                # rebuild flag above means nothing will ever set it. Latch it
+                # now so later getters answer immediately from what the client
+                # holds (defaults, for an empty store) instead of blocking the
+                # whole ``init_timeout_ms`` and then raising
+                # ``QuonfigInitTimeoutError``. A closed client returning
+                # defaults instantly is the only sane semantic there.
+                #
+                # A never-forked client is deliberately left alone: its
+                # uninitialized event means an initial fetch is genuinely in
+                # flight, and latching it would silently convert the
+                # documented ``on_init_failure="raise"`` timeout into a default
+                # for any getter parked in ``_wait_initialized`` on another
+                # thread. That getter keeps its pre-1.4.0 semantics — wait out
+                # ``init_timeout_ms``, then raise.
                 self._finish_init()
             self._shutdown.set()
             # Cancel any pending fallback engage timer so the daemon doesn't fire
