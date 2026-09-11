@@ -5,6 +5,7 @@ import datetime
 import logging
 import os
 import threading
+import uuid
 import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -508,6 +509,16 @@ class Quonfig:
         Buffers start empty by construction, which is what makes this safe to
         call in a forked child: the parent's buffered window is the parent's
         to flush.
+
+        The SDK instance hash is minted HERE, not once in ``__init__``
+        (qfg-58bo). It identifies one live SDK instance in app-quonfig's
+        last-seen / Debugger view, which groups by
+        ``(sdk_key_id, sdk_instance_hash)`` — an empty hash collapsed every
+        Python process on one SDK key into a single row. Minting it at
+        reporter-build time means the lazy post-fork rebuild gives each forked
+        child its OWN hash (Jeff's decision 2026-09-11 via qfg-xcym, matching
+        Reforge and sdk-node/sdk-ruby's one-per-client behavior), so a Gunicorn
+        cluster shows one row per worker.
         """
         if not self._sdk_key:
             return None
@@ -519,6 +530,7 @@ class Quonfig:
             return TelemetryReporter(
                 telemetry_url=self._telemetry_url,
                 sdk_key=self._sdk_key,
+                instance_hash=str(uuid.uuid4()),
                 collect_evaluation_summaries=self._collect_evaluation_summaries,
                 context_upload_mode=self._context_upload_mode,
             )
