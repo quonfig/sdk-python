@@ -38,6 +38,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import weakref
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional
@@ -688,10 +689,8 @@ def test_t4_child_telemetry_buffers_are_fresh() -> None:
     client = _make_client(
         server,
         # The poller is off so the child's own window is unambiguous: its init
-        # fetch stamps resolved_from_primary and nothing else. With the poller
-        # on, init's fetch and the engage-time tick race at the same generation
-        # and one is guard-rejected — in the parent too — which would look like
-        # an inherited counter.
+        # fetch stamps resolved_from_primary and nothing else, with no extra
+        # poll ticks in flight when the window is drained.
         fallback_poll_enabled=False,
         collect_evaluation_summaries=True,
         context_upload_mode="periodic_example",
@@ -743,6 +742,65 @@ def test_t4_child_telemetry_buffers_are_fresh() -> None:
         # The parent still owns its own buffered window.
         assert client._telemetry._failover_collector.drain() is not None, (
             "the child's rebuild must not drain the parent's telemetry"
+        )
+    finally:
+        client.close()
+        server.close()
+
+
+@requires_fork
+def test_t4b_child_mints_its_own_instance_hash() -> None:
+    """The SDK instance hash identifies one process in the Debugger / SDK
+    last-seen view, so a forked worker must NOT report under the parent's
+    (qfg-58bo; Jeff's decision 2026-09-11 via qfg-xcym — a forked child mints a
+    FRESH hash, matching Reforge).
+
+    It falls out of generating the uuid at reporter-build time: the 1.4.0 lazy
+    rebuild builds the child a brand-new reporter on its first use, so the
+    child's hash differs and the parent's is untouched.
+    """
+    server = _ConfigServer()
+    client = _make_client(
+        server,
+        fallback_poll_enabled=False,
+        collect_evaluation_summaries=True,
+        context_upload_mode="periodic_example",
+        telemetry_url="http://127.0.0.1:1",
+    )
+    try:
+        client.init()
+        _await_ready(client)
+        assert client._telemetry is not None, "test needs telemetry enabled"
+        parent_hash = str(client._telemetry.instance_hash)
+        assert parent_hash, "the parent must have a non-empty instance hash"
+
+        def child(send: Callable[[str], None]) -> None:
+            # The rebuild is lazy: force a real content read so the child's own
+            # reporter exists before it is inspected.
+            client.get_string("no.such.key", default="fallback")
+            telemetry = client._telemetry
+            if telemetry is None:
+                send("child_hash=None")
+                return
+            send(f"child_hash={telemetry.instance_hash}")
+
+        pid, pipe = _fork_child(child)
+        try:
+            message = pipe.read_line(timeout=20.0)
+        finally:
+            _reap(pid)
+            pipe.close()
+
+        child_hash = _fields(message).get("child_hash", "")
+        assert child_hash and child_hash != "None", (
+            f"the child built no telemetry reporter: {message!r}"
+        )
+        assert child_hash != parent_hash, (
+            f"the forked child reported under the parent's instance hash: {message!r}"
+        )
+        assert uuid.UUID(child_hash), f"child instance hash is not a UUID: {child_hash!r}"
+        assert str(client._telemetry.instance_hash) == parent_hash, (
+            "the child's rebuild must not change the parent's instance hash"
         )
     finally:
         client.close()
@@ -1122,11 +1180,11 @@ def test_child_first_fetch_is_not_counted_as_a_guard_rejection() -> None:
     fetch — the same window the parent's own init produces.
 
     The fallback poller is off so the only fetch in play is the init fetch.
-    With it on, init's fetch and the poller's engage-time fetch race at the
-    same generation and one of them is guard-rejected — in the parent too.
-    That is a real (pre-existing, non-fork) wart in how equal-generation
-    re-delivery is counted, filed separately; it is not what this test is
-    about.
+    (Until qfg-rr5b, leaving it on made init's fetch and the poller's
+    engage-time fetch race at the same generation and counted one of them as a
+    guard rejection — in the parent too. Equal-generation re-delivery is no
+    longer counted, but keeping the poller off still makes this test's window
+    unambiguous.)
     """
     server = _ConfigServer()
     client = _make_client(

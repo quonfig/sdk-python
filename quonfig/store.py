@@ -35,6 +35,7 @@ class ConfigStore:
         *,
         guard: bool = False,
         on_installed: Optional[Callable[[], None]] = None,
+        on_rejected: Optional[Callable[[int], None]] = None,
     ) -> bool:
         """Atomically replace all configs from a ConfigEnvelope.
 
@@ -47,6 +48,14 @@ class ConfigStore:
         index — atomically with the install, so a reader can never observe a
         new generation paired with stale metadata (qfg-41nh.10). Keep it cheap
         and non-blocking: it holds up every store reader.
+
+        ``on_rejected`` is its mirror: it runs UNDER the lock on a guard
+        rejection, receiving the generation the store HELD at the moment of
+        the drop. That is what lets the caller tell a strictly-older payload
+        (worth alerting on) from an equal-generation re-delivery (a harmless
+        no-op) without a second, racy read of ``get_generation()``
+        (qfg-rr5b). Same cheapness rule applies — capture the value and do the
+        work outside the lock.
 
         When ``guard`` is ``True`` (every network install path: initial fetch,
         failover/poll fetch, SSE snapshot/update) the canonical-ordering rule
@@ -71,6 +80,8 @@ class ConfigStore:
                 and envelope.meta.generation > 0
                 and envelope.meta.generation <= self._generation
             ):
+                if on_rejected is not None:
+                    on_rejected(self._generation)
                 return False
             self._configs = {c.key: c for c in envelope.configs}
             self._etag = envelope.meta.version

@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.4.1 - 2026-09-11
+
+Patch release. Four fixes, all backward-compatible: no new dependencies, no
+API changes, nothing for callers to wire up.
+
+- **Fix: telemetry now carries a real `instanceHash`** (qfg-58bo). The SDK
+  never generated one, so every payload went out with `instanceHash: ""`.
+  app-quonfig's SDK last-seen / Debugger view groups by
+  `(sdk_key_id, sdk_instance_hash)`, so every Python process sharing an SDK key
+  collapsed into a **single Debugger row** — a service running 8 Gunicorn
+  workers showed one, where sdk-node and sdk-ruby show one per process. Each
+  client now mints a UUID, so a Gunicorn (or Celery, or uWSGI) cluster shows
+  one Debugger row per worker. The hash is minted when the telemetry reporter
+  is built, which means a forked child re-initializing under the 1.4.0 lazy
+  rebuild gets its **own** hash rather than reporting under its parent's.
+- **Fix: `guardRejected` no longer counts same-generation re-delivery**
+  (qfg-rr5b). This is a deliberate narrowing of what the counter means. Only a
+  **strictly older** payload — a leg that tried to move the client backwards,
+  which is what the `sdk_failover` signal is for — is now counted. An
+  **equal-generation** re-delivery is a silent no-op: still dropped by the
+  reject-older guard, still advancing the liveness stamp exactly where it did
+  before, but no longer counted. Two normal server behaviors produce those
+  re-deliveries — the SSE stream resends the current envelope on every connect,
+  and a config poll at the same generation returns a full 200 whenever the
+  per-leg ETag slot is empty (fresh transport, reconnect, new process) — so a
+  healthy steady-state client reported `guardRejected` climbing from init
+  onward. Nothing on the wire changed; the field simply became accurate.
+  This is the Python half of a change being applied across all six backend
+  SDKs (sdk-ruby ships it in 1.4.1; Go, Java, .NET and Node follow in their
+  next releases), so counts may differ across languages until then.
+- **Fix: `close()` no longer swallows an init timeout on a live client**
+  (qfg-b8kw). 1.4.0 made `close()` latch initialization so a forked child
+  closed before its first use answers defaults instantly. That ran on every
+  `close()`, so on a **never-forked** client with `on_init_failure="raise"`
+  whose initial fetch was still in flight, a getter parked on another thread
+  unblocked and returned its default instead of waiting out `init_timeout_ms`
+  and raising `QuonfigInitTimeoutError`. The latch is now scoped to the
+  forked-child path: a child closed before its first use still answers
+  defaults instantly; a child closed while its first-use rebuild is in flight
+  now behaves like a fresh client (waits out `init_timeout_ms`, then honors
+  `on_init_failure`).
+- **Docs: macOS `data_dir_auto_reload` caveat** (qfg-uszg). On macOS the
+  FSEvents-backed watcher (watchfiles) can report a datadir change after
+  several seconds, and in some sandboxed processes not at all. Forced polling
+  is not a workaround — it drops changes. Production Linux (inotify) is
+  unaffected. Documented in the README's auto-reload behavior contract.
+
 ## 1.4.0 - 2026-09-11
 
 Fork safety (qfg-lv4n.2, epic qfg-lv4n). Additive and backward-compatible; no

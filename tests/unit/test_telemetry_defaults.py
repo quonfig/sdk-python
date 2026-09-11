@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -199,3 +200,62 @@ def test_datadir_mode_starts_telemetry_reporter(tmp_path: Path) -> None:
     assert thread.is_alive(), "telemetry thread should be running after init"
 
     client.close()
+
+
+def test_telemetry_payload_carries_a_uuid_instance_hash(tmp_path: Path, monkeypatch: Any) -> None:
+    """Every telemetry payload must carry a non-empty, UUID-shaped
+    ``instanceHash`` (qfg-58bo).
+
+    app-quonfig's SDK last-seen / Debugger query groups by
+    ``(sdk_key_id, sdk_instance_hash)``. sdk-python used to leave the field at
+    its ``""`` default, so every Python process on one SDK key collapsed into a
+    single Debugger row — a customer running 8 Gunicorn workers saw one.
+    sdk-node (``randomUUID()``) and sdk-ruby (``SecureRandom.uuid``) both mint
+    one per client.
+    """
+    monkeypatch.delenv("QUONFIG_BACKEND_SDK_KEY", raising=False)
+    monkeypatch.delenv("QUONFIG_DOMAIN", raising=False)
+    capture = _TelemetryCapture()
+    datadir = _make_minimal_datadir(tmp_path)
+
+    client = Quonfig(
+        sdk_key="qf_sk_development_0000_dead",
+        datadir=datadir,
+        environment="Production",
+        telemetry_url=capture.url,
+    )
+    try:
+        client.init()
+        assert client.get("noop") == "ok"
+        client.close()  # flushes telemetry
+
+        assert capture.posts, "no telemetry POST to inspect"
+        hashes = {json.loads(body).get("instanceHash") for body in capture.posts}
+        assert len(hashes) == 1, f"one client must use ONE instance hash: {hashes}"
+        instance_hash = hashes.pop()
+        assert uuid.UUID(str(instance_hash)), f"instanceHash is not a UUID: {instance_hash!r}"
+    finally:
+        capture.close()
+
+
+def test_two_clients_get_distinct_instance_hashes(tmp_path: Path, monkeypatch: Any) -> None:
+    """The point of the hash is telling processes apart, so two clients on the
+    same SDK key must not share one (qfg-58bo)."""
+    monkeypatch.delenv("QUONFIG_BACKEND_SDK_KEY", raising=False)
+    monkeypatch.delenv("QUONFIG_DOMAIN", raising=False)
+    datadir = _make_minimal_datadir(tmp_path)
+
+    def _hash_of() -> str:
+        client = Quonfig(
+            sdk_key="qf_sk_development_0000_dead",
+            datadir=datadir,
+            environment="Production",
+            telemetry_url="http://127.0.0.1:1",
+        )
+        try:
+            assert client._telemetry is not None
+            return str(client._telemetry.instance_hash)
+        finally:
+            client.close()
+
+    assert _hash_of() != _hash_of()

@@ -5,6 +5,7 @@ import datetime
 import logging
 import os
 import threading
+import uuid
 import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -508,6 +509,16 @@ class Quonfig:
         Buffers start empty by construction, which is what makes this safe to
         call in a forked child: the parent's buffered window is the parent's
         to flush.
+
+        The SDK instance hash is minted HERE, not once in ``__init__``
+        (qfg-58bo). It identifies one live SDK instance in app-quonfig's
+        last-seen / Debugger view, which groups by
+        ``(sdk_key_id, sdk_instance_hash)`` — an empty hash collapsed every
+        Python process on one SDK key into a single row. Minting it at
+        reporter-build time means the lazy post-fork rebuild gives each forked
+        child its OWN hash (Jeff's decision 2026-09-11 via qfg-xcym, matching
+        Reforge and sdk-node/sdk-ruby's one-per-client behavior), so a Gunicorn
+        cluster shows one row per worker.
         """
         if not self._sdk_key:
             return None
@@ -519,6 +530,7 @@ class Quonfig:
             return TelemetryReporter(
                 telemetry_url=self._telemetry_url,
                 sdk_key=self._sdk_key,
+                instance_hash=str(uuid.uuid4()),
                 collect_evaluation_summaries=self._collect_evaluation_summaries,
                 context_upload_mode=self._context_upload_mode,
             )
@@ -910,15 +922,42 @@ class Quonfig:
             else:
                 self._resolved_from_index = self._transport.last_fetch_index
 
-        accepted = self._store.update(envelope, guard=True, on_installed=_stamp_resolved_from)
+        held_at_rejection: Optional[int] = None
 
-        # Failover observability (qfg-41nh.18). Recorded OUTSIDE the store lock —
-        # the on_installed hook holds up every store reader and must stay cheap.
-        # On an ACCEPTED HTTP install, record which leg (primary/secondary)
-        # served the config now held; an equal-or-older payload dropped by the
-        # reject-older guard on ANY network path (HTTP config-fetch OR SSE
-        # message) counts as a guard rejection. SSE/datadir installs don't move
-        # resolved_from, so they're not counted there.
+        def _note_rejection(held_generation: int) -> None:
+            # Runs UNDER the store lock, only on a guard rejection. Captures
+            # the generation the store held at the instant of the drop and does
+            # nothing else; the telemetry call happens outside the lock below.
+            nonlocal held_at_rejection
+            held_at_rejection = held_generation
+
+        accepted = self._store.update(
+            envelope,
+            guard=True,
+            on_installed=_stamp_resolved_from,
+            on_rejected=_note_rejection,
+        )
+
+        # Failover observability (qfg-41nh.18, narrowed by qfg-rr5b). Recorded
+        # OUTSIDE the store lock — the hooks hold up every store reader and must
+        # stay cheap. On an ACCEPTED HTTP install, record which leg
+        # (primary/secondary) served the config now held; SSE/datadir installs
+        # don't move resolved_from, so they're not recorded there.
+        #
+        # ``guardRejected`` counts ONLY a STRICTLY OLDER payload — a leg that
+        # tried to move this client backwards, which is what the ``sdk_failover``
+        # alerting signal is for. An EQUAL-generation drop is a re-delivery of
+        # what we already hold, not a regression: api-delivery's SSE
+        # ``sendInitialConfig`` resends the current envelope on every connect,
+        # and a config poll at the same generation returns a full 200 whenever
+        # the per-leg ETag slot is empty (fresh transport, reconnect, new
+        # process, the fallback poller's engage-time fetch). Counting those made
+        # a healthy steady-state client report ``guardRejected: 1`` from init
+        # alone, plus one per SSE reconnect. It stays not-installed and still
+        # advances liveness exactly where it does today — it is simply not
+        # counted. The gen<=0 unversioned carve-out never reaches here at all
+        # (the guard accepts those), so a rejection always has a positive
+        # incoming generation.
         if self._telemetry is not None:
             if accepted:
                 if from_http and self._transport is not None:
@@ -928,7 +967,7 @@ class Quonfig:
                         else self._transport.last_fetch_index
                     )
                     self._telemetry.record_resolved_from(idx)
-            else:
+            elif held_at_rejection is not None and envelope.meta.generation < held_at_rejection:
                 self._telemetry.record_guard_rejected()
 
         return accepted
@@ -2168,16 +2207,29 @@ class Quonfig:
         # (qfg-lv4n.2). ``_rebuild_in_child`` re-checks ``_shutdown`` at the end
         # for the other ordering.
         with self._fork_lock:
+            # Captured BEFORE the flag is cleared: it is the only thing that
+            # distinguishes "closed in a forked child before its first use"
+            # from "closed on a live client whose init is still running".
+            was_pending_rebuild = self._needs_rebuild_after_fork
             self._needs_rebuild_after_fork = False
-            if not self._initialized.is_set():
-                # Closed before it was ever initialized — in a forked child,
-                # before its first use, that is the fresh ``Event`` the at-fork
-                # handler installed, and clearing the rebuild flag above means
-                # nothing will ever set it. Latch it now so later getters answer
-                # immediately from what the client holds (defaults, for an empty
-                # store) instead of blocking the whole ``init_timeout_ms`` and
-                # then raising ``QuonfigInitTimeoutError``. A closed client
-                # returning defaults instantly is the only sane semantic.
+            if was_pending_rebuild and not self._initialized.is_set():
+                # FORKED-CHILD PATH ONLY (qfg-b8kw). Closed before it was ever
+                # initialized in a child, the uninitialized ``Event`` is the
+                # fresh one the at-fork handler installed, and clearing the
+                # rebuild flag above means nothing will ever set it. Latch it
+                # now so later getters answer immediately from what the client
+                # holds (defaults, for an empty store) instead of blocking the
+                # whole ``init_timeout_ms`` and then raising
+                # ``QuonfigInitTimeoutError``. A closed client returning
+                # defaults instantly is the only sane semantic there.
+                #
+                # A never-forked client is deliberately left alone: its
+                # uninitialized event means an initial fetch is genuinely in
+                # flight, and latching it would silently convert the
+                # documented ``on_init_failure="raise"`` timeout into a default
+                # for any getter parked in ``_wait_initialized`` on another
+                # thread. That getter keeps its pre-1.4.0 semantics — wait out
+                # ``init_timeout_ms``, then raise.
                 self._finish_init()
             self._shutdown.set()
             # Cancel any pending fallback engage timer so the daemon doesn't fire

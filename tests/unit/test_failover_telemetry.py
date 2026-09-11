@@ -154,9 +154,15 @@ def _envelope(generation: int) -> ConfigEnvelope:
 
 def test_client_install_records_resolved_from_and_guard_rejected() -> None:
     """The single network-install funnel (_install_network_envelope) must record
-    resolved-from on an accepted HTTP install and guard-rejected on an
-    equal-or-older payload dropped by the reject-older guard — on BOTH the HTTP
-    and SSE paths."""
+    resolved-from on an accepted HTTP install and guard-rejected on a STRICTLY
+    OLDER payload dropped by the reject-older guard — on BOTH the HTTP and SSE
+    paths.
+
+    Updated for qfg-rr5b: this test used to assert ``guard_rejected == 2``,
+    counting the equal-generation SSE re-delivery below as a rejection too.
+    Equal-generation re-delivery is now a silent no-op (still dropped, still
+    not counted), so only the strictly-older HTTP payload counts.
+    """
     # Reporter exists (context telemetry on) but we never evaluate, so only
     # failover events are produced. Full opt-out (both streams off) would leave
     # _telemetry None and emit nothing — the intended behavior, tested elsewhere.
@@ -175,10 +181,11 @@ def test_client_install_records_resolved_from_and_guard_rejected() -> None:
         assert client._install_network_envelope(_envelope(1), from_http=True, source_index=0)
         # A newer gen from the SECONDARY leg (index 1) heals forward.
         assert client._install_network_envelope(_envelope(2), from_http=True, source_index=1)
-        # A late equal-or-older HTTP payload is dropped by the guard.
+        # A late STRICTLY OLDER HTTP payload is dropped by the guard and counted.
         assert not client._install_network_envelope(_envelope(1), from_http=True, source_index=1)
-        # An SSE message (from_http=False) that's equal-or-older is dropped too —
-        # counts as a guard rejection but must NOT move resolved_from.
+        # An SSE message (from_http=False) at the SAME generation is dropped too,
+        # but it is a re-delivery, not a backwards move: not counted, and it must
+        # not move resolved_from either (qfg-rr5b).
         assert not client._install_network_envelope(_envelope(2), from_http=False)
 
         event = reporter._failover_collector.drain()
@@ -186,7 +193,7 @@ def test_client_install_records_resolved_from_and_guard_rejected() -> None:
         fo = event.failover
         assert fo.resolved_from_primary == 1
         assert fo.resolved_from_secondary == 1
-        assert fo.guard_rejected == 2
+        assert fo.guard_rejected == 1
         assert fo.hedge_fired == 0
         assert fo.resolved_from_lkg == 0
     finally:
@@ -284,3 +291,126 @@ def test_client_records_hedge_fired_when_secondary_leg_fires() -> None:
         client.close()
         primary.close()
         secondary.close()
+
+
+def test_equal_generation_redelivery_is_not_counted_as_guard_rejected() -> None:
+    """Only a STRICTLY older payload is a guard rejection (qfg-rr5b).
+
+    Two server behaviors re-deliver an envelope the client already holds at the
+    SAME generation: api-delivery's SSE ``sendInitialConfig`` resends the
+    current envelope on every connect, and a config poll at the same generation
+    returns a full 200 whenever the per-leg ETag slot is empty (a fresh
+    transport, a reconnect, a new process). Both were counted as
+    ``guardRejected``, which feeds the ``sdk_failover`` alerting signal where it
+    is supposed to mean "a leg tried to move us backwards" — a steady-state
+    client showed ``guardRejected: 1`` from init alone, plus one per SSE
+    reconnect.
+
+    Equal generation stays not-installed; it is simply not counted.
+    """
+    client = Quonfig(
+        sdk_key="test-backend-key",
+        api_urls=["http://127.0.0.1:1", "http://127.0.0.1:2"],
+        collect_evaluation_summaries=False,
+        context_upload_mode="shapes_only",
+        fallback_poll_enabled=False,
+    )
+    try:
+        reporter = client._telemetry
+        assert reporter is not None
+
+        # Seed an established client at generation 7.
+        assert client._install_network_envelope(_envelope(7), from_http=True, source_index=0)
+
+        # (1) Same-generation HTTP re-delivery (cold-ETag poll / fallback-poller
+        # engage fetch) — dropped, NOT counted.
+        assert not client._install_network_envelope(_envelope(7), from_http=True, source_index=0)
+        # (2) Same-generation SSE message (sendInitialConfig on reconnect) —
+        # dropped, NOT counted.
+        assert not client._install_network_envelope(_envelope(7), from_http=False)
+
+        event = reporter._failover_collector.drain()
+        same_gen_rejections = 0 if event is None else event.failover.guard_rejected
+        assert same_gen_rejections == 0, (
+            f"equal-generation re-delivery was counted as guardRejected: {same_gen_rejections}"
+        )
+        assert client.held_generation() == 7, "equal generation must not re-install"
+
+        # (3) A STRICTLY older payload IS the thing worth alerting on.
+        assert not client._install_network_envelope(_envelope(6), from_http=True, source_index=1)
+        event = reporter._failover_collector.drain()
+        assert event is not None and event.failover is not None
+        assert event.failover.guard_rejected == 1, (
+            "a strictly older payload must still count as guardRejected"
+        )
+        assert client.held_generation() == 7
+    finally:
+        client.close()
+
+
+def test_unversioned_carve_out_is_installed_not_counted() -> None:
+    """An UNVERSIONED snapshot (generation <= 0) carries no ordering info, so
+    the guard never rejects it — it is installed, and there is nothing to
+    count. Guards the gen<=0 carve-out against the qfg-rr5b change."""
+    client = Quonfig(
+        sdk_key="test-backend-key",
+        api_urls=["http://127.0.0.1:1", "http://127.0.0.1:2"],
+        collect_evaluation_summaries=False,
+        context_upload_mode="shapes_only",
+        fallback_poll_enabled=False,
+    )
+    try:
+        reporter = client._telemetry
+        assert reporter is not None
+        assert client._install_network_envelope(_envelope(7), from_http=True, source_index=0)
+        # generation 0 == unversioned: installed despite being "older".
+        assert client._install_network_envelope(_envelope(0), from_http=True, source_index=0)
+        event = reporter._failover_collector.drain()
+        rejected = 0 if event is None else event.failover.guard_rejected
+        assert rejected == 0, f"the unversioned carve-out counted a rejection: {rejected}"
+    finally:
+        client.close()
+
+
+def test_steady_state_client_reports_zero_guard_rejected() -> None:
+    """End-to-end: a healthy client talking to a server that never changes
+    generation must report NO failover event at all (qfg-rr5b).
+
+    This is the shape the bead measured. ``_load_from_api`` fires the initial
+    hedged fetch AND engages the fallback poller, whose engage-time fetch (and
+    every tick after it, the per-leg ETag slot being irrelevant here because the
+    upstream always answers a full 200) returns the SAME generation. Each of
+    those was counted, so a steady-state sdk-python client showed
+    ``guardRejected: 1`` from init alone and climbing — a permanent false
+    positive in the ``sdk_failover`` alerting signal.
+    """
+    upstream = _HedgeUpstream(generation=42)
+    client = Quonfig(
+        sdk_key="test-backend-key",
+        api_urls=[upstream.url],
+        collect_evaluation_summaries=False,
+        context_upload_mode="shapes_only",
+        enable_sse=False,
+        fallback_poll_enabled=True,
+        fallback_poll_interval_ms=100,
+        init_timeout_ms=8000,
+        on_init_failure="return_zero_value",
+    )
+    try:
+        client.init()
+        reporter = client._telemetry
+        assert reporter is not None
+        # Let init's fetch, the poller's engage-time fetch and several ticks
+        # land — every one of them a full 200 at generation 42.
+        time.sleep(1.0)
+        assert client.held_generation() == 42
+
+        event = reporter._failover_collector.drain()
+        rejected = 0 if event is None else event.failover.guard_rejected
+        assert rejected == 0, (
+            f"a steady-state client counted {rejected} guardRejected from "
+            "same-generation re-delivery"
+        )
+    finally:
+        client.close()
+        upstream.close()
