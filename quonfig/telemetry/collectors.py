@@ -237,9 +237,11 @@ class FailoverCollector:
     """Accumulates failover-behavior counters over a flush window (qfg-41nh.18).
 
     Tracks how many config-fetch cycles fired the parallel hedge's secondary leg
-    (``hedge_fired``), how many installs the reject-older ordering guard dropped
-    (``guard_rejected``), and which upstream leg served each successful HTTP
-    install (``resolved_from_primary`` / ``resolved_from_secondary``). Every
+    (``hedge_fired``), how many STRICTLY OLDER payloads the reject-older
+    ordering guard dropped (``guard_rejected`` — an equal-generation
+    re-delivery is a silent no-op and is NOT counted, qfg-rr5b), and which
+    upstream leg served each successful HTTP install
+    (``resolved_from_primary`` / ``resolved_from_secondary``). Every
     counter is additive and carries no user data. The collector is independently
     thread-safe (its own lock) and is written directly from the failover call
     sites rather than through a queue — the call rate is per-config-refresh, not

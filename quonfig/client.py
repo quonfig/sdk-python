@@ -922,15 +922,42 @@ class Quonfig:
             else:
                 self._resolved_from_index = self._transport.last_fetch_index
 
-        accepted = self._store.update(envelope, guard=True, on_installed=_stamp_resolved_from)
+        held_at_rejection: Optional[int] = None
 
-        # Failover observability (qfg-41nh.18). Recorded OUTSIDE the store lock —
-        # the on_installed hook holds up every store reader and must stay cheap.
-        # On an ACCEPTED HTTP install, record which leg (primary/secondary)
-        # served the config now held; an equal-or-older payload dropped by the
-        # reject-older guard on ANY network path (HTTP config-fetch OR SSE
-        # message) counts as a guard rejection. SSE/datadir installs don't move
-        # resolved_from, so they're not counted there.
+        def _note_rejection(held_generation: int) -> None:
+            # Runs UNDER the store lock, only on a guard rejection. Captures
+            # the generation the store held at the instant of the drop and does
+            # nothing else; the telemetry call happens outside the lock below.
+            nonlocal held_at_rejection
+            held_at_rejection = held_generation
+
+        accepted = self._store.update(
+            envelope,
+            guard=True,
+            on_installed=_stamp_resolved_from,
+            on_rejected=_note_rejection,
+        )
+
+        # Failover observability (qfg-41nh.18, narrowed by qfg-rr5b). Recorded
+        # OUTSIDE the store lock — the hooks hold up every store reader and must
+        # stay cheap. On an ACCEPTED HTTP install, record which leg
+        # (primary/secondary) served the config now held; SSE/datadir installs
+        # don't move resolved_from, so they're not recorded there.
+        #
+        # ``guardRejected`` counts ONLY a STRICTLY OLDER payload — a leg that
+        # tried to move this client backwards, which is what the ``sdk_failover``
+        # alerting signal is for. An EQUAL-generation drop is a re-delivery of
+        # what we already hold, not a regression: api-delivery's SSE
+        # ``sendInitialConfig`` resends the current envelope on every connect,
+        # and a config poll at the same generation returns a full 200 whenever
+        # the per-leg ETag slot is empty (fresh transport, reconnect, new
+        # process, the fallback poller's engage-time fetch). Counting those made
+        # a healthy steady-state client report ``guardRejected: 1`` from init
+        # alone, plus one per SSE reconnect. It stays not-installed and still
+        # advances liveness exactly where it does today — it is simply not
+        # counted. The gen<=0 unversioned carve-out never reaches here at all
+        # (the guard accepts those), so a rejection always has a positive
+        # incoming generation.
         if self._telemetry is not None:
             if accepted:
                 if from_http and self._transport is not None:
@@ -940,7 +967,7 @@ class Quonfig:
                         else self._transport.last_fetch_index
                     )
                     self._telemetry.record_resolved_from(idx)
-            else:
+            elif held_at_rejection is not None and envelope.meta.generation < held_at_rejection:
                 self._telemetry.record_guard_rejected()
 
         return accepted

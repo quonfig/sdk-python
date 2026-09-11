@@ -689,10 +689,8 @@ def test_t4_child_telemetry_buffers_are_fresh() -> None:
     client = _make_client(
         server,
         # The poller is off so the child's own window is unambiguous: its init
-        # fetch stamps resolved_from_primary and nothing else. With the poller
-        # on, init's fetch and the engage-time tick race at the same generation
-        # and one is guard-rejected — in the parent too — which would look like
-        # an inherited counter.
+        # fetch stamps resolved_from_primary and nothing else, with no extra
+        # poll ticks in flight when the window is drained.
         fallback_poll_enabled=False,
         collect_evaluation_summaries=True,
         context_upload_mode="periodic_example",
@@ -1182,11 +1180,11 @@ def test_child_first_fetch_is_not_counted_as_a_guard_rejection() -> None:
     fetch — the same window the parent's own init produces.
 
     The fallback poller is off so the only fetch in play is the init fetch.
-    With it on, init's fetch and the poller's engage-time fetch race at the
-    same generation and one of them is guard-rejected — in the parent too.
-    That is a real (pre-existing, non-fork) wart in how equal-generation
-    re-delivery is counted, filed separately; it is not what this test is
-    about.
+    (Until qfg-rr5b, leaving it on made init's fetch and the poller's
+    engage-time fetch race at the same generation and counted one of them as a
+    guard rejection — in the parent too. Equal-generation re-delivery is no
+    longer counted, but keeping the poller off still makes this test's window
+    unambiguous.)
     """
     server = _ConfigServer()
     client = _make_client(

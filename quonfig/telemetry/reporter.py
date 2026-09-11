@@ -81,7 +81,9 @@ class TelemetryReporter:
         self._failover_collector.record_hedge_fired()
 
     def record_guard_rejected(self) -> None:
-        """Record one install dropped by the reject-older ordering guard."""
+        """Record one STRICTLY OLDER payload dropped by the reject-older
+        ordering guard. Equal-generation re-delivery is dropped too but is not
+        a backwards move, so it is not recorded here (qfg-rr5b)."""
         self._failover_collector.record_guard_rejected()
 
     def record_resolved_from(self, source_index: int) -> None:
