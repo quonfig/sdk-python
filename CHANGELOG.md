@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+Telemetry transport policy (qfg-y8je.7, epic qfg-y8je). Additive and
+backward-compatible: no wire change, no removed API, no new dependencies.
+
+- **Failed telemetry is kept and resent instead of retried in place.** Before,
+  a failed POST was retried 3 times with 1s/2s sleeps on the reporter thread,
+  4xx included, and the window was then dropped with a WARNING. Now a batch that
+  fails with a timeout, network error, 408, 429 or 5xx is kept byte-for-byte and
+  resent unchanged on a later tick (never merged with newer data, so the server
+  dedups a resend of a batch that did land). Resends happen no sooner than 30s
+  after a failure and honor `Retry-After` up to 10 min. The retained queue is
+  capped at 5 batches / 2MB / 5 min (oldest dropped; a batch larger than the
+  byte cap is never kept). At most one POST is in flight.
+- **401/403/404 disable telemetry for the process** with one ERROR (wrong SDK
+  key or `telemetry_url`); any other 4xx drops that batch with one ERROR and
+  telemetry continues.
+- **Timeouts:** 5s connect/TLS (`telemetry_connect_timeout_ms`), 15s per read
+  (`telemetry_timeout_ms`; was 10s).
+- **Logging:** a failed POST logs at DEBUG; one WARNING when data is actually
+  dropped (then a summary at most every 10 min); one INFO on recovery. Before,
+  every dropped window logged a WARNING.
+- **Flush interval 30s -> 60s** (`telemetry_flush_interval_ms`). Telemetry
+  reaches the dashboard up to a minute after an evaluation instead of 30s.
+  `flush()` still sends immediately when healthy; after a failure it respects
+  the 30s floor and `Retry-After`.
+- **`close()`** sends the live window once with a 5s deadline and no longer
+  retries; it never blocks longer than that.
+- **New: final flush at interpreter exit.** A client that is never closed now
+  sends its live window from an `atexit` hook (all clients in parallel, 5s at
+  most in total). Before, that window was lost. A hung telemetry endpoint can
+  delay interpreter exit by up to 5s. A forked child never re-sends its
+  parent's window.
+- **Memory caps:** context-shape fields are now capped (10,000 per window; they
+  were unbounded), and the example-context rate-limit map at 100,000 entries.
+  Evaluation summaries and example contexts keep their 10,000 caps; keys
+  already recorded keep counting at the cap.
+- **New options** on `Quonfig(...)`: `telemetry_flush_interval_ms`,
+  `telemetry_timeout_ms`, `telemetry_connect_timeout_ms`,
+  `telemetry_max_retained_batches`, `telemetry_max_retained_bytes`,
+  `telemetry_max_retained_age_ms`, `telemetry_max_evaluation_summaries`,
+  `telemetry_max_context_shape_fields`, `telemetry_max_example_contexts`.
+  `None` or a non-positive value means the default.
+- `quonfig.telemetry.TelemetryReporter` gains `tick()`, `close()`,
+  `debug_state()` and the keyword options above; `stop()` is a deprecated alias
+  of `close()`, and `interval` (seconds) is read as the flush interval when
+  `flush_interval_ms` is not given.
+- `context_upload_mode` default is unchanged (`"periodic_example"`).
+
 ## 1.4.1 - 2026-09-11
 
 Patch release. Four fixes, all backward-compatible: no new dependencies, no

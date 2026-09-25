@@ -282,12 +282,14 @@ holds.
 
 ### `flush()`
 
-Synchronously drains and POSTs all pending telemetry. The periodic timer that
+Synchronously sends the pending telemetry window. The periodic timer that
 normally delivers it doesn't fire while the environment is frozen, so anything
 recorded during a request would sit in the collectors until the container is
-recycled — and be lost. A no-op when telemetry is disabled, and it never raises:
-a failing POST is logged. `close()` already flushes, so this is only needed when
-the process outlives the request.
+recycled — and be lost. A no-op when telemetry is disabled, and it never raises.
+If a POST is already in flight it waits for it first; after a failed POST it
+respects the 30s resend floor and `Retry-After` (see [Telemetry](#telemetry)),
+so it can return without sending. `close()` already sends the live window, so
+this is only needed when the process outlives the request.
 
 ## Forking servers (Gunicorn `--preload`, Celery, uWSGI, `multiprocessing`)
 
@@ -449,6 +451,75 @@ development platform for this SDK, not a deployment one. The automatic rebuild
 is verified on Linux against a live api-delivery in the default SSE mode (parent
 and forked child both receive a value published after the fork).
 
+## Telemetry
+
+The SDK sends usage telemetry to `telemetry_url` so the Quonfig dashboard can
+show which flags and configs are evaluated and with what contexts. Telemetry
+never affects flag evaluation: every failure below is contained in the
+background reporter.
+
+**What is sent.** Evaluation summaries (per flag/config: counts per rule and
+value), context shapes (context field names and types), example contexts (up
+to one per context key per hour) and failover counters. Opt out with
+`collect_evaluation_summaries=False` and `context_upload_mode="shapes_only"`
+(no example contexts) or `"none"` (no context data). With both off, no reporter
+runs. The default `context_upload_mode` is `"periodic_example"`.
+
+**How it is sent.**
+
+- One POST every `telemetry_flush_interval_ms` (60s), with at most one POST in
+  flight. A tick that fires while a POST is still out is skipped and its data
+  rolls into the next window.
+- Connect and TLS are bounded by `telemetry_connect_timeout_ms` (5s); each read
+  of the response by `telemetry_timeout_ms` (15s), so a server that never
+  answers is abandoned after 15s. (`requests` has no whole-request deadline, so
+  a server trickling bytes slower than that could hold a POST longer.)
+- When a POST fails (timeout, network error, 408, 429 or 5xx), the serialized
+  batch is kept byte-for-byte and resent unchanged, never merged with newer
+  data, so the server can recognize a resend of a batch that did land. Up to 5
+  batches / 2MB are kept for up to 5 minutes; beyond that the oldest is
+  dropped, and a single batch larger than the byte cap is sent once and never
+  kept. Resends happen no sooner than 30s after a failure and after any
+  `Retry-After` (honored up to 10 minutes), oldest first, then the current
+  window. There is no immediate retry.
+- A 401, 403 or 404 means the SDK key or `telemetry_url` is wrong: the SDK logs
+  one error and disables telemetry for the rest of the process. Any other 4xx
+  drops that one batch with an error (the server rejected the payload) and
+  telemetry continues.
+
+**Logging** (logger `quonfig.telemetry`). A failed POST logs at `DEBUG` only.
+The first batch actually dropped logs one `WARNING` with the last POST result
+and queue depth; further drops log at `DEBUG` with a summary `WARNING` at most
+every 10 minutes; the first success after failures logs one `INFO` line.
+
+**`flush()`, `close()` and interpreter exit.** `flush()` sends the current
+window now (see [`flush()`](#flush)). `close()` sends the current window once
+with a 5s deadline, does not resend kept batches, and never waits longer than
+that. A client that is never closed gets the same final send from an `atexit`
+hook: all live clients in parallel, 5s at most in total, so a hung telemetry
+endpoint delays interpreter exit by at most 5s and never blocks it. The hook
+only sends from the process that created the client: a forked child never
+re-sends its parent's window.
+
+**Memory.** Everything is bounded: at most 10,000 evaluation-summary keys,
+10,000 context-shape fields and 10,000 example contexts per window (keys
+already recorded keep counting at the cap), a 100,000-entry example-context
+rate-limit map, and the 2MB retained queue.
+
+| Option | Default |
+|--------|---------|
+| `telemetry_flush_interval_ms` | `60_000` |
+| `telemetry_timeout_ms` | `15_000` |
+| `telemetry_connect_timeout_ms` | `5_000` |
+| `telemetry_max_retained_batches` | `5` |
+| `telemetry_max_retained_bytes` | `2_097_152` |
+| `telemetry_max_retained_age_ms` | `300_000` |
+| `telemetry_max_evaluation_summaries` | `10_000` |
+| `telemetry_max_context_shape_fields` | `10_000` |
+| `telemetry_max_example_contexts` | `10_000` |
+
+`None` or a non-positive value means the default.
+
 ## Configuration
 
 | Param | Env var | Default |
@@ -466,6 +537,9 @@ and forked child both receive a value published after the fork).
 | `fallback_poll_enabled` | -- | `True` |
 | `data_dir_auto_reload` | -- | `False` |
 | `data_dir_auto_reload_debounce_ms` | -- | `200` |
+| `collect_evaluation_summaries` | -- | `True` |
+| `context_upload_mode` | -- | `"periodic_example"` |
+| `telemetry_*` transport options | -- | see [Telemetry](#telemetry) |
 
 ### `QUONFIG_DOMAIN`
 
