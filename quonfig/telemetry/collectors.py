@@ -38,6 +38,12 @@ class EvaluationSummaryCollector:
     def is_enabled(self) -> bool:
         return self._enabled
 
+    def disable(self) -> None:
+        """Stop aggregating and discard the window (telemetry disabled on 401/403/404)."""
+        with self._lock:
+            self._enabled = False
+            self._data.clear()
+
     def record(self, result: EvalResult) -> None:
         if not self._enabled:
             return
@@ -117,18 +123,31 @@ class EvaluationSummaryCollector:
 
 
 class ContextShapeCollector:
-    """Tracks field names and their type codes per context namespace."""
+    """Tracks field names and their type codes per context namespace.
+
+    ``max_data_size`` caps the distinct ``(namespace, field)`` pairs per window
+    (P6, qfg-y8je.7): a new pair beyond the cap is not recorded, pairs already
+    present are untouched.
+    """
 
     def __init__(
-        self, context_upload_mode: str = "shapes_only", max_data_size: int = 10_000
+        self, context_upload_mode: str = "periodic_example", max_data_size: int = 10_000
     ) -> None:
         self._enabled = context_upload_mode != "none"
         self._max_data_size = max_data_size
         self._lock = threading.Lock()
         self._shapes: Dict[str, Dict[str, int]] = defaultdict(dict)
+        self._field_count = 0
 
     def is_enabled(self) -> bool:
         return self._enabled
+
+    def disable(self) -> None:
+        """Stop aggregating and discard the window (telemetry disabled on 401/403/404)."""
+        with self._lock:
+            self._enabled = False
+            self._shapes.clear()
+            self._field_count = 0
 
     def record(self, contexts: Contexts) -> None:
         if not self._enabled:
@@ -137,10 +156,16 @@ class ContextShapeCollector:
             for namespace, values in contexts.items():
                 if not isinstance(values, dict):
                     continue
-                shape = self._shapes[namespace]
+                shape = self._shapes.get(namespace)
                 for field_name, value in values.items():
-                    if field_name not in shape:
-                        shape[field_name] = field_type_for_value(value)
+                    if shape is not None and field_name in shape:
+                        continue
+                    if self._field_count >= self._max_data_size:
+                        break
+                    if shape is None:
+                        shape = self._shapes[namespace]
+                    shape[field_name] = field_type_for_value(value)
+                    self._field_count += 1
 
     def drain(self) -> Optional[TelemetryEvent]:
         with self._lock:
@@ -148,6 +173,7 @@ class ContextShapeCollector:
                 return None
             shapes = {ns: dict(ft) for ns, ft in self._shapes.items()}
             self._shapes.clear()
+            self._field_count = 0
 
         if not shapes:
             return None
@@ -167,16 +193,27 @@ class ExampleContextCollector:
         context_upload_mode: str = "periodic_example",
         max_data_size: int = 10_000,
         rate_limit_ms: int = 3_600_000,
+        max_seen: int = 100_000,
     ) -> None:
         self._enabled = context_upload_mode == "periodic_example"
         self._max_data_size = max_data_size
         self._rate_limit_ms = rate_limit_ms
+        # Bound on the rate-limit map (P6, qfg-y8je.7): it outlives the window,
+        # so without a cap it grows with distinct context keys per hour.
+        self._max_seen = max_seen
         self._lock = threading.Lock()
         self._examples: List[Tuple[int, Contexts]] = []
         self._seen: Dict[str, int] = {}
 
     def is_enabled(self) -> bool:
         return self._enabled
+
+    def disable(self) -> None:
+        """Stop aggregating and discard the window (telemetry disabled on 401/403/404)."""
+        with self._lock:
+            self._enabled = False
+            self._examples.clear()
+            self._seen.clear()
 
     def record(self, contexts: Contexts) -> None:
         if not self._enabled:
@@ -191,6 +228,10 @@ class ExampleContextCollector:
             last_seen = self._seen.get(key)
             if last_seen is not None and now - last_seen < self._rate_limit_ms:
                 return
+            if last_seen is None and len(self._seen) >= self._max_seen:
+                self._prune_cache()
+                if len(self._seen) >= self._max_seen:
+                    return  # drop newest
             self._examples.append((now, contexts))
             self._seen[key] = now
 
@@ -254,12 +295,18 @@ class FailoverCollector:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._enabled = True
         self._start = 0  # unix millis; set on the first record of a window
         self._hedge_fired = 0
         self._guard_rejected = 0
         self._resolved_from_primary = 0
         self._resolved_from_secondary = 0
         self._resolved_from_lkg = 0
+
+    def disable(self) -> None:
+        """Stop counting (telemetry disabled on 401/403/404)."""
+        with self._lock:
+            self._enabled = False
 
     def _ensure_start(self) -> None:
         """Stamp the window start on the first record. Caller holds the lock."""
@@ -270,6 +317,8 @@ class FailoverCollector:
         """Count one config-fetch cycle whose hedge fired the secondary leg
         (the primary was slow or errored)."""
         with self._lock:
+            if not self._enabled:
+                return
             self._ensure_start()
             self._hedge_fired += 1
 
@@ -277,6 +326,8 @@ class FailoverCollector:
         """Count one install dropped by the reject-older ordering guard (an
         equal-or-older snapshot on any install path, HTTP or SSE)."""
         with self._lock:
+            if not self._enabled:
+                return
             self._ensure_start()
             self._guard_rejected += 1
 
@@ -288,6 +339,8 @@ class FailoverCollector:
         if source_index < 0:
             return
         with self._lock:
+            if not self._enabled:
+                return
             self._ensure_start()
             if source_index == 0:
                 self._resolved_from_primary += 1
