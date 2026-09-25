@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 - 2026-09-25
 
-Telemetry transport policy (qfg-y8je.7, epic qfg-y8je). Additive and
-backward-compatible: no wire change, no removed API, no new dependencies.
+Minor release: telemetry transport policy (qfg-y8je.7, epic qfg-y8je). Additive
+and backward-compatible: no wire change, no removed API, no new dependencies.
 
 - **Failed telemetry is kept and resent instead of retried in place.** Before,
   a failed POST was retried 3 times with 1s/2s sleeps on the reporter thread,
