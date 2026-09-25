@@ -127,6 +127,10 @@ class Quonfig:
         enabled = client.is_feature_enabled("my.flag")
     """
 
+    # Private test seam (qfg-y8je.7): the telemetry transport contract tests
+    # swap in a manual clock here; ``None`` means the wall clock.
+    _telemetry_clock: Optional[Any] = None
+
     def __init__(
         self,
         sdk_key: Optional[str] = None,
@@ -257,6 +261,31 @@ class Quonfig:
         # (``"true"``/``"false"``), else ``True``. Pass ``False`` (or
         # ``QUONFIG_DEV_CONTEXT=false``) to opt out.
         enable_quonfig_user_context: Optional[bool] = None,
+        # Telemetry transport (qfg-y8je.7; policy P1-P10 in
+        # project/plans/2026-09-24-sdk-telemetry-transport-policy.md). All
+        # optional; ``None`` (or a non-positive value) means the default.
+        #
+        #   * ``telemetry_flush_interval_ms`` (60000): one POST per interval.
+        #   * ``telemetry_timeout_ms`` (15000): read timeout per POST; a server
+        #     that never answers is abandoned after this long.
+        #   * ``telemetry_connect_timeout_ms`` (5000): TCP connect + TLS.
+        #   * ``telemetry_max_retained_batches`` (5) /
+        #     ``telemetry_max_retained_bytes`` (2097152) /
+        #     ``telemetry_max_retained_age_ms`` (300000): failed batches kept
+        #     byte-for-byte for resend; oldest dropped past the caps.
+        #   * ``telemetry_max_evaluation_summaries`` /
+        #     ``telemetry_max_context_shape_fields`` /
+        #     ``telemetry_max_example_contexts`` (10000 each): per-window
+        #     aggregator caps; keys already recorded keep counting at the cap.
+        telemetry_flush_interval_ms: Optional[int] = None,
+        telemetry_timeout_ms: Optional[int] = None,
+        telemetry_connect_timeout_ms: Optional[int] = None,
+        telemetry_max_retained_batches: Optional[int] = None,
+        telemetry_max_retained_bytes: Optional[int] = None,
+        telemetry_max_retained_age_ms: Optional[int] = None,
+        telemetry_max_evaluation_summaries: Optional[int] = None,
+        telemetry_max_context_shape_fields: Optional[int] = None,
+        telemetry_max_example_contexts: Optional[int] = None,
     ) -> None:
         # Resolve configuration from params or env vars
         # `QUONFIG_BACKEND_SDK_KEY` is the canonical auto-load var shared by
@@ -370,6 +399,17 @@ class Quonfig:
         # with EMPTY buffers in a forked child (qfg-lv4n.2).
         self._collect_evaluation_summaries = collect_evaluation_summaries
         self._context_upload_mode = context_upload_mode
+        self._telemetry_options: Dict[str, Optional[int]] = {
+            "flush_interval_ms": telemetry_flush_interval_ms,
+            "timeout_ms": telemetry_timeout_ms,
+            "connect_timeout_ms": telemetry_connect_timeout_ms,
+            "max_retained_batches": telemetry_max_retained_batches,
+            "max_retained_bytes": telemetry_max_retained_bytes,
+            "max_retained_age_ms": telemetry_max_retained_age_ms,
+            "max_evaluation_summaries": telemetry_max_evaluation_summaries,
+            "max_context_shape_fields": telemetry_max_context_shape_fields,
+            "max_example_contexts": telemetry_max_example_contexts,
+        }
         self._telemetry = self._build_telemetry()
 
         # Transport: stand it up whenever the caller wired an HTTP source.
@@ -533,6 +573,8 @@ class Quonfig:
                 instance_hash=str(uuid.uuid4()),
                 collect_evaluation_summaries=self._collect_evaluation_summaries,
                 context_upload_mode=self._context_upload_mode,
+                clock=self._telemetry_clock,
+                **self._telemetry_options,
             )
         except Exception:  # noqa: BLE001 — telemetry is optional
             return None
@@ -2181,10 +2223,13 @@ class Quonfig:
             return value
 
         A no-op when telemetry is disabled (no SDK key, or all collectors off).
-        Never raises — a failing POST is logged, because a telemetry outage
-        must not break the caller's request path. Mirrors sdk-node's
-        ``flush()``. ``close()`` already flushes, so this is only needed when
-        the process outlives the request.
+        Never raises, because a telemetry outage must not break the caller's
+        request path: a failed POST is kept and resent by a later tick
+        (qfg-y8je.7). If a POST is in flight it waits for it first (bounded by
+        the request timeout); after a failure it respects the 30s resend floor
+        and ``Retry-After``, so it may send nothing. Mirrors sdk-node's
+        ``flush()``. ``close()`` already sends the live window, so this is only
+        needed when the process outlives the request.
         """
         self._ensure_rebuilt_after_fork()
         if self._telemetry is None:
@@ -2251,7 +2296,9 @@ class Quonfig:
                 self._datadir_watcher = None
             if self._telemetry is not None:
                 try:
-                    self._telemetry.stop()
+                    # One final POST of the live window, 5s deadline; the
+                    # retained queue is not drained (P8, qfg-y8je.7).
+                    self._telemetry.close()
                 except Exception:
                     pass
             if self._transport is not None:

@@ -109,26 +109,36 @@ def test_reporter_flush_appends_failover_event() -> None:
 
     captured: dict = {}
 
+    class _FakeRaw:
+        def read(self, *_a, **_k) -> bytes:
+            return b""
+
     class _FakeResp:
-        def raise_for_status(self) -> None:
+        status_code = 200
+        headers: dict = {}
+        raw = _FakeRaw()
+
+        def close(self) -> None:
             return None
 
-    def _fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+    def _fake_post(url, data=None, headers=None, timeout=None, stream=None):
+        import json
+
         captured["url"] = url
-        captured["body"] = json
+        captured["body"] = json.loads(data)
         return _FakeResp()
 
     reporter._session.post = _fake_post  # type: ignore[assignment]
 
     # No activity yet -> nothing posted.
-    reporter._flush()
+    reporter.tick()
     assert "body" not in captured
 
     reporter.record_hedge_fired()
     reporter.record_guard_rejected()
     reporter.record_resolved_from(0)
     reporter.record_resolved_from(1)
-    reporter._flush()
+    reporter.tick()
 
     assert captured["url"].endswith("/api/v1/telemetry/")
     events = captured["body"]["events"]

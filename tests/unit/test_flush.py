@@ -107,10 +107,17 @@ def _eval_result(key: str = "k1") -> EvalResult:
     )
 
 
+class _FakeRaw:
+    def read(self, *_a: Any, **_k: Any) -> bytes:
+        return b""
+
+
 class _FakeResponse:
     status_code = 200
+    headers: dict = {}
+    raw = _FakeRaw()
 
-    def raise_for_status(self) -> None:
+    def close(self) -> None:
         return None
 
 
@@ -168,7 +175,6 @@ def test_flush_is_a_noop_when_telemetry_disabled(tmp_path: Path, monkeypatch: An
 
 def test_flush_returns_none_and_never_raises_on_post_failure(monkeypatch: Any) -> None:
     """A telemetry endpoint that is down must not break the request path."""
-    monkeypatch.setattr("quonfig.telemetry.reporter.time.sleep", lambda *_a, **_k: None)
     client = Quonfig(
         sdk_key="qf_sk_development_0000_dead",
         api_urls=["http://127.0.0.1:1"],
@@ -198,7 +204,7 @@ def test_reporter_flush_posts_recorded_evaluations(monkeypatch: Any) -> None:
     posts: List[dict] = []
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
-        posts.append(kwargs["json"])
+        posts.append(json.loads(kwargs["data"]))
         return _FakeResponse()
 
     monkeypatch.setattr(reporter._session, "post", fake_post)
@@ -216,7 +222,7 @@ def test_reporter_flush_with_nothing_pending_does_not_post(monkeypatch: Any) -> 
     monkeypatch.setattr(
         reporter._session,
         "post",
-        lambda url, **kwargs: (posts.append(kwargs["json"]), _FakeResponse())[1],
+        lambda url, **kwargs: (posts.append(json.loads(kwargs["data"])), _FakeResponse())[1],
     )
     reporter.flush()
     assert posts == []
@@ -225,7 +231,8 @@ def test_reporter_flush_with_nothing_pending_does_not_post(monkeypatch: Any) -> 
 def test_concurrent_flush_and_timer_flush_do_not_double_send(monkeypatch: Any) -> None:
     """A caller's flush() racing the 60s timer's flush must not deliver the
     same drained events twice — collectors are drained exactly once, so the
-    losing racer finds nothing to send."""
+    losing racer finds nothing to send (a timer tick that finds a POST in
+    flight is skipped outright, qfg-y8je.7 P2)."""
     reporter = TelemetryReporter(telemetry_url="http://127.0.0.1:1", sdk_key="k", interval=3600.0)
     posts: List[dict] = []
     posts_lock = threading.Lock()
@@ -233,7 +240,7 @@ def test_concurrent_flush_and_timer_flush_do_not_double_send(monkeypatch: Any) -
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
         with posts_lock:
-            posts.append(kwargs["json"])
+            posts.append(json.loads(kwargs["data"]))
         return _FakeResponse()
 
     monkeypatch.setattr(reporter._session, "post", fake_post)
@@ -253,7 +260,7 @@ def test_concurrent_flush_and_timer_flush_do_not_double_send(monkeypatch: Any) -
     def timer_flush() -> None:
         gate.wait(5.0)
         try:
-            reporter._flush()  # exactly what the 60s daemon loop calls
+            reporter.tick()  # exactly what the 60s daemon loop calls
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
@@ -276,7 +283,6 @@ def test_concurrent_flush_and_timer_flush_do_not_double_send(monkeypatch: Any) -
 
 
 def test_reporter_flush_swallows_post_failure(monkeypatch: Any) -> None:
-    monkeypatch.setattr("quonfig.telemetry.reporter.time.sleep", lambda *_a, **_k: None)
     reporter = TelemetryReporter(telemetry_url="http://127.0.0.1:1", sdk_key="k", interval=3600.0)
 
     def boom(*_a: Any, **_k: Any) -> None:
