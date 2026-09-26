@@ -212,6 +212,41 @@ class ConfigEnvelope:
         meta = Meta.from_dict(meta_data) if meta_data else Meta(version="", environment="")
         return cls(configs=configs, meta=meta)
 
+    @classmethod
+    def from_wire(cls, data: Any) -> "ConfigEnvelope":
+        """Decode a config envelope received over the network (HTTP or SSE).
+
+        Unlike :meth:`from_dict`, this rejects anything that is not a config
+        envelope: the payload must carry a ``meta`` object with a non-empty
+        ``version`` (api-delivery always sends ``version`` + ``environment``;
+        ``qfg serve`` sends those without a ``generation``). A ``{}`` or
+        ``{"error": ...}`` body from a misbehaving proxy/WAF would otherwise
+        decode as an empty envelope and wipe every key (qfg-9dxb.3).
+
+        Raises :class:`InvalidEnvelopeError` (a ``ValueError``) on any payload
+        that fails the check or cannot be decoded.
+        """
+        if not isinstance(data, dict):
+            raise InvalidEnvelopeError(
+                f"config payload is not a JSON object (got {type(data).__name__})"
+            )
+        meta_data = data.get("meta")
+        if not isinstance(meta_data, dict):
+            raise InvalidEnvelopeError("config payload has no meta object")
+        version = meta_data.get("version")
+        if not isinstance(version, str) or version == "":
+            raise InvalidEnvelopeError("config payload meta has no version")
+        try:
+            return cls.from_dict(data)
+        except Exception as e:  # noqa: BLE001 — any shape error is a bad payload
+            raise InvalidEnvelopeError(
+                f"config payload could not be decoded: {type(e).__name__}: {e}"
+            ) from e
+
+
+class InvalidEnvelopeError(ValueError):
+    """A network payload that is not a valid config envelope (qfg-9dxb.3)."""
+
 
 @dataclass
 class EvalResult:

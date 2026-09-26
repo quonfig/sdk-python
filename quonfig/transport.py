@@ -14,7 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests  # type: ignore[import-untyped]
 
-from .types import ConfigEnvelope
+from .types import ConfigEnvelope, InvalidEnvelopeError
 
 _LOG = logging.getLogger(__name__)
 
@@ -121,6 +121,17 @@ def _read_body_within_deadline(response: "requests.Response", deadline: float) -
             raise requests.Timeout("per-leg wall-clock deadline exceeded reading body")
         buf += piece
     return bytes(buf)
+
+
+def _decode_envelope(body: bytes) -> ConfigEnvelope:
+    """Decode + validate an HTTP config body. Malformed JSON and non-envelope
+    payloads both raise :class:`InvalidEnvelopeError` so callers treat them as a
+    leg error (qfg-9dxb.3)."""
+    try:
+        data = json.loads(body)
+    except ValueError as e:
+        raise InvalidEnvelopeError(f"config payload is not valid JSON: {e}") from e
+    return ConfigEnvelope.from_wire(data)
 
 
 @dataclass
@@ -247,10 +258,17 @@ class Transport:
                     body = _read_body_within_deadline(response, deadline)
                 finally:
                     response.close()
-                envelope = ConfigEnvelope.from_dict(json.loads(body))
+                # A non-envelope 200 (proxy/WAF junk) is a leg error, so the
+                # loop fails over instead of installing it (qfg-9dxb.3).
+                envelope = _decode_envelope(body)
                 self.last_fetch_index = idx
                 return envelope
-            except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as e:
+            except (
+                requests.ConnectionError,
+                requests.Timeout,
+                requests.HTTPError,
+                InvalidEnvelopeError,
+            ) as e:
                 last_error = e
                 continue
         raise RuntimeError(f"All API URLs failed: {last_error}")
@@ -295,16 +313,25 @@ class Transport:
                 body = _read_body_within_deadline(response, deadline)
             finally:
                 response.close()
-            envelope = ConfigEnvelope.from_dict(json.loads(body))
+            # Validate BEFORE recording the ETag: a non-envelope 200 is a leg
+            # error (so the hedge fires the other leg) and its ETag must never be
+            # stored — otherwise later 304s would pin the client to a payload it
+            # never installed (qfg-9dxb.3).
+            envelope = _decode_envelope(body)
             # Store the leg's ETag only AFTER the body fully arrived and
-            # decoded — recording it earlier would make the next conditional
+            # validated — recording it earlier would make the next conditional
             # request 304 against a payload this client never installed.
             if new_etag:
                 with self._etag_lock:
                     self._etags[base_url] = new_etag
             self.last_fetch_index = idx
             return LegResult(source_index=idx, envelope=envelope)
-        except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as e:
+        except (
+            requests.ConnectionError,
+            requests.Timeout,
+            requests.HTTPError,
+            InvalidEnvelopeError,
+        ) as e:
             return LegResult(source_index=idx, error=e)
 
     def fetch_hedged(

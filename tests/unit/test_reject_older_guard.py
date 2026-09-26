@@ -51,7 +51,10 @@ def test_established_client_installs_unversioned_carve_out() -> None:
     # NOT reject it as "older"; freezing the client on stale config would be
     # worse. Mirrors sdk-node's long-standing carve-out (qfg-7h5d.1.18).
     assert store.update(_envelope(0, version="unversioned"), guard=True) is True
-    assert store.get_generation() == 0
+    # ...but it must never LOWER the held watermark: it keeps the prior max so
+    # a stale lower positive snapshot can't move the client backward next
+    # (qfg-9dxb.3).
+    assert store.get_generation() == 42
     assert store.install_count() == 2
 
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+Patch-level fixes (qfg-9dxb.3). No wire change, no removed API, no new dependencies.
+
+- **Non-envelope payloads are rejected.** A network payload must now carry a
+  `meta` object with a non-empty `version` (api-delivery and `qfg serve` always
+  send one). Before, a `200` of `{}` or `{"error": ...}` from a misbehaving
+  proxy/WAF decoded as an empty envelope and wiped every key on an established
+  client. On HTTP such a body is now a leg error, so hedging and failover move on
+  to the other URL, and its `ETag` is never recorded (so later `304`s cannot pin
+  the client to a payload it never installed). Malformed JSON on HTTP is also a
+  leg error now. On SSE the event is dropped, like malformed JSON.
+- **`held_generation()` no longer drops to 0 after an unversioned install.** A
+  payload without a `meta.generation` (a pre-watermark server, `qfg serve`, or a
+  server whose rev-count failed) still installs, but the held generation now
+  keeps its prior maximum instead of resetting to 0, so a stale lower snapshot
+  arriving next can no longer move an established client backward.
+  `held_generation()` reports that kept value. Datadir mode is unchanged.
+
 ## 1.5.0 - 2026-09-25
 
 Minor release: telemetry transport policy (qfg-y8je.7, epic qfg-y8je). Additive

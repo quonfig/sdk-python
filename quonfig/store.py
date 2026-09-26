@@ -89,7 +89,14 @@ class ConfigStore:
             # active environment and reports its id here. The evaluator uses this
             # as the env id when the consumer did NOT pin one (qfg-xpln.3).
             self._meta_environment = envelope.meta.environment
-            self._generation = envelope.meta.generation
+            # An UNVERSIONED install (generation <= 0) still installs (the
+            # carve-out above) but carries no ordering info, so it must never
+            # LOWER a positive held watermark — otherwise the next stale lower
+            # positive snapshot would be accepted and move the client backward
+            # (qfg-9dxb.3). An unguarded install (datadir load/reload) is the
+            # local source of truth and still sets the value as-is.
+            if not guard or envelope.meta.generation > 0:
+                self._generation = envelope.meta.generation
             self._installs += 1
             if on_installed is not None:
                 on_installed()

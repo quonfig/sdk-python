@@ -106,7 +106,9 @@ class SSEClient:
                         break
                     if event.data:
                         try:
-                            envelope = ConfigEnvelope.from_dict(json.loads(event.data))
+                            # from_wire rejects non-envelopes ({} / {"error": ..}),
+                            # dropped below like malformed JSON (qfg-9dxb.3).
+                            envelope = ConfigEnvelope.from_wire(json.loads(event.data))
                             if self._install is not None:
                                 installed = self._install(envelope)
                             else:
