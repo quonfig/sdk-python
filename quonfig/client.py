@@ -997,9 +997,9 @@ class Quonfig:
         # a healthy steady-state client report ``guardRejected: 1`` from init
         # alone, plus one per SSE reconnect. It stays not-installed and still
         # advances liveness exactly where it does today — it is simply not
-        # counted. The gen<=0 unversioned carve-out never reaches here at all
-        # (the guard accepts those), so a rejection always has a positive
-        # incoming generation.
+        # counted. A gen<=0 payload dropped while the client holds a real
+        # generation (qfg-9dxb.9 — gen 0 now only comes from a damaged-store
+        # server) is not provably older either, so it is a silent no-op too.
         if self._telemetry is not None:
             if accepted:
                 if from_http and self._transport is not None:
@@ -1009,7 +1009,7 @@ class Quonfig:
                         else self._transport.last_fetch_index
                     )
                     self._telemetry.record_resolved_from(idx)
-            elif held_at_rejection is not None and envelope.meta.generation < held_at_rejection:
+            elif held_at_rejection is not None and 0 < envelope.meta.generation < held_at_rejection:
                 self._telemetry.record_guard_rejected()
 
         return accepted

@@ -358,10 +358,11 @@ def test_equal_generation_redelivery_is_not_counted_as_guard_rejected() -> None:
         client.close()
 
 
-def test_unversioned_carve_out_is_installed_not_counted() -> None:
-    """An UNVERSIONED snapshot (generation <= 0) carries no ordering info, so
-    the guard never rejects it — it is installed, and there is nothing to
-    count. Guards the gen<=0 carve-out against the qfg-rr5b change."""
+def test_gen0_over_held_generation_is_dropped_silently_not_counted() -> None:
+    """A gen<=0 snapshot arriving while the client holds a real generation is
+    dropped (qfg-9dxb.9: gen 0 now only comes from a damaged-store server), but
+    it is NOT provably older, so it must be a silent no-op rather than a
+    guardRejected count."""
     client = Quonfig(
         sdk_key="test-backend-key",
         api_urls=["http://127.0.0.1:1", "http://127.0.0.1:2"],
@@ -373,11 +374,14 @@ def test_unversioned_carve_out_is_installed_not_counted() -> None:
         reporter = client._telemetry
         assert reporter is not None
         assert client._install_network_envelope(_envelope(7), from_http=True, source_index=0)
-        # generation 0 == unversioned: installed despite being "older".
-        assert client._install_network_envelope(_envelope(0), from_http=True, source_index=0)
+        # generation 0 over held 7: dropped on both HTTP and SSE paths...
+        assert not client._install_network_envelope(_envelope(0), from_http=True, source_index=1)
+        assert not client._install_network_envelope(_envelope(0), from_http=False)
+        assert client.held_generation() == 7
+        # ...and never counted as a rejection.
         event = reporter._failover_collector.drain()
         rejected = 0 if event is None else event.failover.guard_rejected
-        assert rejected == 0, f"the unversioned carve-out counted a rejection: {rejected}"
+        assert rejected == 0, f"a gen-0 drop counted as guardRejected: {rejected}"
     finally:
         client.close()
 

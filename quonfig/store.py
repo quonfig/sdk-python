@@ -17,7 +17,8 @@ class ConfigStore:
         # counts every accepted install across the client's lifetime (initial
         # fetch, failover/poll fetch, SSE snapshot/update). The reject-older
         # guard reads both: a fresh store (``_installs == 0``) accepts anything,
-        # an established store accepts only a strictly-higher generation.
+        # a gen<=0 payload installs only while ``_generation`` is still 0, and
+        # otherwise only a strictly-higher generation installs (qfg-9dxb.9).
         self._generation: int = 0
         self._installs: int = 0
 
@@ -64,22 +65,31 @@ class ConfigStore:
         late failover to a stale secondary can never move the client backward
         and an equal second leg is a no-op. A fresh store (nothing installed)
         always seeds off the first snapshot it sees, even at generation 0. An
-        UNVERSIONED snapshot (generation <= 0 — a server that predates the
-        watermark, or one whose rev-count failed) carries no ordering info, so
-        it is never rejected as "older"; freezing the client on stale config
-        would be worse (mirrors sdk-node's carve-out).
+        UNVERSIONED snapshot (generation <= 0) installs ONLY while the held
+        generation is still 0 — i.e. the client has never held a real
+        generation (``qfg serve``, which never stamps one). Pre-watermark
+        servers that sent gen 0 on every payload are long gone; today gen 0
+        from api-delivery means the serving machine's git object store is
+        damaged (rev-count failed), and that payload must not override a held
+        real generation (qfg-9dxb.9, mirrors sdk-go ``shouldInstall``). Such a
+        drop is not provably older, so callers must not count it as
+        guardRejected (``on_rejected`` still fires; the caller filters on a
+        positive incoming generation).
 
         When ``guard`` is ``False`` (the default — datadir load/reload) the
         install is unconditional: a local data dir is the source of truth and
         always reports generation 0, so it must not be gated by the watermark.
         """
         with self._lock:
-            if (
-                guard
-                and self._installs > 0
-                and envelope.meta.generation > 0
-                and envelope.meta.generation <= self._generation
-            ):
+            if guard and self._installs > 0:
+                incoming = envelope.meta.generation
+                if incoming <= 0:
+                    accept = self._generation == 0
+                else:
+                    accept = incoming > self._generation
+            else:
+                accept = True
+            if not accept:
                 if on_rejected is not None:
                     on_rejected(self._generation)
                 return False
@@ -89,9 +99,10 @@ class ConfigStore:
             # active environment and reports its id here. The evaluator uses this
             # as the env id when the consumer did NOT pin one (qfg-xpln.3).
             self._meta_environment = envelope.meta.environment
-            # An UNVERSIONED install (generation <= 0) still installs (the
-            # carve-out above) but carries no ordering info, so it must never
-            # LOWER a positive held watermark — otherwise the next stale lower
+            # An UNVERSIONED install (generation <= 0) only happens on a
+            # guarded path while the held generation is 0 (or on a fresh
+            # store), but it carries no ordering info, so it must never LOWER
+            # a positive held watermark — otherwise the next stale lower
             # positive snapshot would be accepted and move the client backward
             # (qfg-9dxb.3). An unguarded install (datadir load/reload) is the
             # local source of truth and still sets the value as-is.

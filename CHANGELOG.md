@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Patch-level fixes (qfg-9dxb.3). No wire change, no removed API, no new dependencies.
+Patch-level fixes (qfg-9dxb.3, qfg-9dxb.9). No wire change, no removed API, no new dependencies.
 
 - **Non-envelope payloads are rejected.** A network payload must now carry a
   `meta` object with a non-empty `version` (api-delivery and `qfg serve` always
@@ -14,10 +14,18 @@ Patch-level fixes (qfg-9dxb.3). No wire change, no removed API, no new dependenc
   leg error now. On SSE the event is dropped, like malformed JSON.
 - **`held_generation()` no longer drops to 0 after an unversioned install.** A
   payload without a `meta.generation` (a pre-watermark server, `qfg serve`, or a
-  server whose rev-count failed) still installs, but the held generation now
-  keeps its prior maximum instead of resetting to 0, so a stale lower snapshot
+  server whose rev-count failed) no longer resets the held generation to 0
+  when it installs; the held generation keeps its prior maximum, so a stale lower snapshot
   arriving next can no longer move an established client backward.
   `held_generation()` reports that kept value. Datadir mode is unchanged.
+- **An unversioned payload no longer overrides a held generation.** A payload
+  with `meta.generation` <= 0 now installs only while the client has never held
+  a real generation (for example a client that only talks to `qfg serve`).
+  Servers that sent generation 0 on every payload are long retired; today
+  generation 0 from api-delivery means the serving machine's git store is
+  damaged, so its payload could move a client back to old config and leave it
+  stuck there until the next generation. Such a payload is now dropped silently:
+  it is not counted as `guardRejected`. Datadir mode is unchanged.
 
 ## 1.5.0 - 2026-09-25
 

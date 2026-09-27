@@ -2,8 +2,8 @@
 
 Two gaps the canonical-ordering spec never covered:
 
-* Fix A — an UNVERSIONED install (``meta.generation`` <= 0/absent) still
-  installs (the pre-watermark no-freeze carve-out), but it must never LOWER a
+* Fix A — an UNVERSIONED install (``meta.generation`` <= 0/absent) installs
+  only while the held generation is 0 (qfg-9dxb.9), and it must never LOWER a
   positive held generation. Otherwise the next lower positive snapshot (a stale
   secondary) would be accepted and move an established client backward.
 * Fix B — a payload that is not a config envelope (no ``meta`` object with a
@@ -11,7 +11,7 @@ Two gaps the canonical-ordering spec never covered:
   failover proceed and the leg's ETag is never recorded; on SSE the event is
   dropped the same way malformed JSON is. api-delivery always sends
   ``meta.version`` + ``meta.environment``; ``qfg serve`` sends those without a
-  generation and must keep installing via the carve-out.
+  generation and must keep installing while the client holds generation 0.
 """
 
 from __future__ import annotations
@@ -119,10 +119,14 @@ def _env(generation: int, version: str = "v") -> ConfigEnvelope:
 
 def test_unversioned_install_keeps_held_generation_so_older_is_still_rejected() -> None:
     store = ConfigStore()
-    assert store.update(_env(42), guard=True) is True
-    # Carve-out: the unversioned payload still installs...
+    # A client that has never held a real generation installs unversioned
+    # payloads (qfg-9dxb.9)...
     assert store.update(_env(0, version="unversioned"), guard=True) is True
-    # ...but the held watermark stays at the prior max,
+    assert store.get_generation() == 0
+    assert store.update(_env(42), guard=True) is True
+    # ...but once it holds a real generation, an unversioned payload is
+    # dropped and the held watermark stays at the prior max,
+    assert store.update(_env(0, version="unversioned"), guard=True) is False
     assert store.get_generation() == 42
     # so a stale lower positive snapshot can no longer move the client back.
     assert store.update(_env(41), guard=True) is False
@@ -234,7 +238,9 @@ def test_sequential_fetch_fails_over_past_non_envelope() -> None:
         secondary.close()
 
 
-def test_established_http_client_installs_qfg_serve_payload_via_carve_out() -> None:
+def test_established_http_client_ignores_unversioned_payload_over_held_generation() -> None:
+    # qfg-9dxb.9: once a client holds a real generation, an unversioned payload
+    # (gen 0 now only comes from a damaged-store server) must not override it.
     state = {"serve": False}
 
     def handler(req: BaseHTTPRequestHandler) -> None:
@@ -253,8 +259,33 @@ def test_established_http_client_installs_qfg_serve_payload_via_carve_out() -> N
         state["serve"] = True
         client.refresh()
 
-        assert client.keys() == ["served"], "qfg serve payload must install (carve-out)"
-        assert client.held_generation() == 42, "unversioned install keeps the prior max"
+        assert client.keys() == ["a"], "unversioned payload must not override gen 42"
+        assert client.held_generation() == 42
+    finally:
+        client.close()
+        server.close()
+
+
+def test_qfg_serve_only_client_keeps_installing_unversioned_payloads() -> None:
+    # A client that has only ever seen unversioned payloads (``qfg serve``)
+    # installs each one.
+    state = {"keys": ["first"]}
+
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        _write(req, _envelope_json(None, state["keys"], version="serve-sha"))
+
+    server = _Server(handler)
+    client = _make_client([server.url])
+    try:
+        client.init()
+        _await_ready(client)
+        assert client.keys() == ["first"]
+
+        state["keys"] = ["second"]
+        client.refresh()
+
+        assert client.keys() == ["second"], "qfg serve payload must install"
+        assert client.held_generation() == 0
     finally:
         client.close()
         server.close()

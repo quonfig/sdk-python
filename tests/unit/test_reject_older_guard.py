@@ -4,7 +4,9 @@ Mirrors sdk-go's ordering_guard_test.go. The whole rule is: an install on a
 network path advances the held config only if the incoming Meta.generation is
 strictly greater than the held generation. A fresh client (nothing installed)
 always seeds off whatever arrives first, even an older/gen-0 snapshot; an
-established client never regresses; a same-generation snapshot is a no-op.
+established client never regresses; a same-generation snapshot is a no-op. A
+gen<=0 snapshot installs only while the held generation is still 0 (the client
+has never held a real generation) -- qfg-9dxb.9.
 
 Datadir installs (``guard=False``, the default) bypass the rule — a local data
 dir is the source of truth and always reports generation 0.
@@ -13,7 +15,7 @@ dir is the source of truth and always reports generation 0.
 from __future__ import annotations
 
 from quonfig.store import ConfigStore
-from quonfig.types import ConfigEnvelope, Meta
+from quonfig.types import ConfigEnvelope, ConfigResponse, Meta, RuleSet
 
 
 def _envelope(generation: int, version: str = "v") -> ConfigEnvelope:
@@ -43,19 +45,50 @@ def test_established_client_never_regresses_to_older_generation() -> None:
     assert store.install_count() == 1
 
 
-def test_established_client_installs_unversioned_carve_out() -> None:
+def _keyed_envelope(generation: int, key: str) -> ConfigEnvelope:
+    return ConfigEnvelope(
+        configs=[
+            ConfigResponse(
+                id=key,
+                key=key,
+                type="config",
+                value_type="string",
+                send_to_client_sdk=False,
+                default=RuleSet(rules=[]),
+            )
+        ],
+        meta=Meta(version=f"{key}-{generation}", environment="production", generation=generation),
+    )
+
+
+def test_gen0_never_overrides_a_held_real_generation() -> None:
+    # qfg-9dxb.9: gen 0 now only comes from a server whose git object store is
+    # damaged (rev-count failed). It must not move a client that holds a real
+    # generation back to OLD content.
     store = ConfigStore()
-    assert store.update(_envelope(42), guard=True) is True
-    # An UNVERSIONED snapshot (generation 0 — a pre-watermark server, or one
-    # whose rev-count failed) carries no ordering information, so the guard must
-    # NOT reject it as "older"; freezing the client on stale config would be
-    # worse. Mirrors sdk-node's long-standing carve-out (qfg-7h5d.1.18).
-    assert store.update(_envelope(0, version="unversioned"), guard=True) is True
-    # ...but it must never LOWER the held watermark: it keeps the prior max so
-    # a stale lower positive snapshot can't move the client backward next
-    # (qfg-9dxb.3).
+    assert store.update(_keyed_envelope(42, "NEW"), guard=True) is True
+    assert store.update(_keyed_envelope(0, "OLD"), guard=True) is False
+    assert store.keys() == ["NEW"]
     assert store.get_generation() == 42
-    assert store.install_count() == 2
+    # The healthy gen-N re-delivery is an equal-generation no-op; the client
+    # still holds NEW (it never left it).
+    assert store.update(_keyed_envelope(42, "NEW"), guard=True) is False
+    assert store.keys() == ["NEW"]
+    assert store.get_generation() == 42
+    assert store.install_count() == 1
+
+
+def test_client_that_only_ever_saw_gen0_keeps_installing_gen0() -> None:
+    # A client that has never held a real generation (held == 0) has no
+    # ordering to protect, so every gen-0 payload installs (e.g. ``qfg serve``).
+    store = ConfigStore()
+    assert store.update(_keyed_envelope(0, "first"), guard=True) is True
+    assert store.update(_keyed_envelope(0, "second"), guard=True) is True
+    assert store.keys() == ["second"]
+    assert store.update(_keyed_envelope(0, "third"), guard=True) is True
+    assert store.keys() == ["third"]
+    assert store.get_generation() == 0
+    assert store.install_count() == 3
 
 
 def test_same_generation_is_a_noop() -> None:
