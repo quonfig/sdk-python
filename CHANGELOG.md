@@ -4,28 +4,25 @@
 
 Patch-level fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9). No wire change, no removed API, no new dependencies.
 
-- **Non-envelope payloads are rejected.** A network payload must now carry a
-  `meta` object with a non-empty `version` (api-delivery and `qfg serve` always
-  send one). Before, a `200` of `{}` or `{"error": ...}` from a misbehaving
-  proxy/WAF decoded as an empty envelope and wiped every key on an established
-  client. On HTTP such a body is now a leg error, so hedging and failover move on
-  to the other URL, and its `ETag` is never recorded (so later `304`s cannot pin
-  the client to a payload it never installed). Malformed JSON on HTTP is also a
-  leg error now. On SSE the event is dropped, like malformed JSON.
-- **`held_generation()` no longer drops to 0 after an unversioned install.** A
-  payload without a `meta.generation` (a pre-watermark server, `qfg serve`, or a
-  server whose rev-count failed) no longer resets the held generation to 0
-  when it installs; the held generation keeps its prior maximum, so a stale lower snapshot
-  arriving next can no longer move an established client backward.
-  `held_generation()` reports that kept value. Datadir mode is unchanged.
-- **An unversioned payload no longer overrides a held generation.** A payload
-  with `meta.generation` <= 0 now installs only while the client has never held
-  a real generation (for example a client that only talks to `qfg serve`).
-  Servers that sent generation 0 on every payload are long retired; today
-  generation 0 from api-delivery means the serving machine's git store is
-  damaged, so its payload could move a client back to old config and leave it
-  stuck there until the next generation. Such a payload is now dropped silently:
-  it is not counted as `guardRejected`. Datadir mode is unchanged.
+- **A bad `200` response no longer clears your config.** Before, a `200`
+  whose body was not a real config payload (for example `{}` or
+  `{"error": ...}` from a misbehaving proxy or firewall) was installed as an
+  empty config and every key disappeared. Now such a response, or one with
+  malformed JSON, is ignored over HTTP: the client keeps its current config
+  and tries your other delivery URL if one is configured. Over SSE the event
+  is dropped. A payload must now include `meta` with a non-empty `version`,
+  which api-delivery and `qfg serve` always send.
+- **A payload with no generation no longer replaces a newer config.** Before,
+  a payload whose `meta.generation` was missing or 0 always installed and
+  reset `held_generation()` to 0. Today api-delivery only sends generation 0
+  when the serving machine's git store is damaged, so that payload could move
+  the client back to old config. Now, once the client holds a real generation,
+  a generation-0 payload is ignored and `held_generation()` keeps its value.
+  Trade-off: while the client holds a real generation it will not take any
+  generation-0 payload, even one with newer config; it updates on the next
+  payload that carries a real generation. A client that has never held a real
+  generation (for example one that only talks to `qfg serve`) still installs
+  every payload. Datadir mode is unchanged.
 - **Segments that reference themselves now evaluate predictably.** A segment
   that is, directly or through a chain of other segments, `IN_SEG` /
   `NOT_IN_SEG` itself used to recurse until Python's recursion limit, and the

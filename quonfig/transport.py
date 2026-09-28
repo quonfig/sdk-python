@@ -221,6 +221,18 @@ class Transport:
         """Release the underlying ``requests.Session``'s connection pool."""
         self._session.close()
 
+    def forget_etag(self, idx: int) -> None:
+        """Drop leg ``idx``'s remembered ETag so its next request is a full GET.
+
+        Used when a 200 was fetched but deliberately not installed (a gen<=0
+        payload ignored over a held generation, qfg-9dxb.9): the server can
+        later repair the generation for the SAME sha, so keeping that ETag
+        would 304 the fix away until the next commit.
+        """
+        if 0 <= idx < len(self.api_urls):
+            with self._etag_lock:
+                self._etags.pop(self.api_urls[idx], None)
+
     def fetch(self, etag: Optional[str] = None) -> Optional[ConfigEnvelope]:
         """
         Fetch configs from API.

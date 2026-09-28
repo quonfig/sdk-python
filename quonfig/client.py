@@ -1012,6 +1012,18 @@ class Quonfig:
             elif held_at_rejection is not None and 0 < envelope.meta.generation < held_at_rejection:
                 self._telemetry.record_guard_rejected()
 
+        # An ignored gen<=0 200 must not leave its ETag on the leg: the server
+        # can repair the generation for the same sha (same ETag), and a kept
+        # ETag would 304 that repair away until the next commit.
+        if (
+            not accepted
+            and envelope.meta.generation <= 0
+            and from_http
+            and source_index is not None
+            and self._transport is not None
+        ):
+            self._transport.forget_etag(source_index)
+
         return accepted
 
     def _fetch_and_install_hedged(self, *, initial: bool) -> bool:

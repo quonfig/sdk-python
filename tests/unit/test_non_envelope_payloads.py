@@ -266,6 +266,46 @@ def test_established_http_client_ignores_unversioned_payload_over_held_generatio
         server.close()
 
 
+def test_ignored_gen0_200_does_not_pin_its_etag() -> None:
+    # Follow-up to qfg-9dxb.9: a gen-0 200 that the guard ignores must not leave
+    # its ETag behind. api-delivery can later repair the generation for the SAME
+    # sha (same ETag), so a remembered ETag would 304 forever and strand the
+    # client on the old config until the next commit.
+    state = {"phase": "A"}
+
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        if state["phase"] == "A":
+            _write(req, _envelope_json(5, ["a"], version="shaA"), etag='"shaA"')
+        elif state["phase"] == "B0":
+            _write(req, _envelope_json(0, ["b"], version="shaB"), etag='"shaB"')
+        elif req.headers.get("If-None-Match") == '"shaB"':
+            req.send_response(304)
+            req.end_headers()
+        else:
+            _write(req, _envelope_json(6, ["b"], version="shaB"), etag='"shaB"')
+
+    server = _Server(handler)
+    client = _make_client([server.url])
+    try:
+        client.init()
+        _await_ready(client)
+        assert client.keys() == ["a"]
+        assert client.held_generation() == 5
+
+        state["phase"] = "B0"
+        client.refresh()
+        assert client.keys() == ["a"], "gen-0 payload must be ignored"
+        assert client.held_generation() == 5
+
+        state["phase"] = "B6"
+        client.refresh()
+        assert client.keys() == ["b"], "repaired same-sha payload must install"
+        assert client.held_generation() == 6
+    finally:
+        client.close()
+        server.close()
+
+
 def test_qfg_serve_only_client_keeps_installing_unversioned_payloads() -> None:
     # A client that has only ever seen unversioned payloads (``qfg serve``)
     # installs each one.
