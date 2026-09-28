@@ -20,9 +20,10 @@ Patch-level fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9). No wire change, no remov
   a generation-0 payload is ignored and `held_generation()` keeps its value.
   Trade-off: while the client holds a real generation it will not take any
   generation-0 payload, even one with newer config; it updates on the next
-  payload that carries a real generation. A client that has never held a real
-  generation (for example one that only talks to `qfg serve`) still installs
-  every payload. Datadir mode is unchanged.
+  payload that carries a real generation higher than the one it holds. A
+  client that has never held a real generation (for example one that only
+  talks to `qfg serve`) still installs every payload. Datadir mode is
+  unchanged.
 - **Segments that reference themselves now evaluate predictably.** A segment
   that is, directly or through a chain of other segments, `IN_SEG` /
   `NOT_IN_SEG` itself used to recurse until Python's recursion limit, and the
