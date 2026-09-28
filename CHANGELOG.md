@@ -1,17 +1,20 @@
 # Changelog
 
-## Unreleased
+## 1.6.0 - 2026-09-28
 
 Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollout behavior change (qfg-9dxb.8). No wire change, no removed API, no new dependencies.
 
-- **A bad `200` response no longer clears your config.** Before, a `200`
-  whose body was not a real config payload (for example `{}` or
-  `{"error": ...}` from a misbehaving proxy or firewall) was installed as an
-  empty config and every key disappeared. Now such a response, or one with
-  malformed JSON, is ignored over HTTP: the client keeps its current config
-  and tries your other delivery URL if one is configured. Over SSE the event
-  is dropped. A payload must now include `meta` with a non-empty `version`,
-  which api-delivery and `qfg serve` always send.
+- **Behavior change: a weighted rollout that hashes on a missing property now
+  serves one stable variant.** Before, an evaluation whose context lacked the
+  rollout's hash property (no context, no such named context, the property not
+  set, or set to `None`) got a random variant on every call. Now the SDK
+  hashes an empty value instead, the same as a property set to `""`, so every
+  such caller gets the same variant for that flag. A variant with weight 0 is
+  not served. The `*_details` getters include `"hashPropertyMissing": True` in
+  `flag_metadata` when the property is missing, and the client logs one
+  warning per flag. Users whose context has the property land in the same
+  variant as before. A rollout with no hash property configured still picks a
+  random variant on every evaluation, unchanged.
 - **A payload with no generation no longer replaces a newer config.** Before,
   a payload whose `meta.generation` was missing or 0 always installed and
   reset `held_generation()` to 0. Today api-delivery only sends generation 0
@@ -24,6 +27,14 @@ Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollou
   client that has never held a real generation (for example one that only
   talks to `qfg serve`) still installs every payload. Datadir mode is
   unchanged.
+- **A bad `200` response no longer clears your config.** Before, a `200`
+  whose body was not a real config payload (for example `{}` or
+  `{"error": ...}` from a misbehaving proxy or firewall) was installed as an
+  empty config and every key disappeared. Now such a response, or one with
+  malformed JSON, is ignored over HTTP: the client keeps its current config
+  and tries your other delivery URL if one is configured. Over SSE the event
+  is dropped. A payload must now include `meta` with a non-empty `version`,
+  which api-delivery and `qfg serve` always send.
 - **Segments that reference themselves now evaluate predictably.** A segment
   that is, directly or through a chain of other segments, `IN_SEG` /
   `NOT_IN_SEG` itself used to recurse until Python's recursion limit, and the
@@ -31,17 +42,6 @@ Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollou
   cut at the first repeat and the repeated reference is treated like a missing
   segment (`IN_SEG` false, `NOT_IN_SEG` true), the same as sdk-go. Segments
   without a cycle, including two segments that share a third, are unchanged.
-- **A weighted rollout that hashes on a missing property now serves one
-  stable variant.** Before, an evaluation whose context lacked the rollout's
-  hash property (no context, no such named context, the property not set, or
-  set to `None`) got a random variant on every call. Now the SDK hashes an
-  empty value instead, the same as a property set to `""`, so every such
-  caller gets the same variant for that flag. A variant with weight 0 is not
-  served. The `*_details` getters include `"hashPropertyMissing": True` in
-  `flag_metadata` when the property is missing, and the client logs one
-  warning per flag. Users whose context has the property land in the same
-  variant as before. A rollout with no hash property configured still picks a
-  random variant on every evaluation, unchanged.
 
 ## 1.5.0 - 2026-09-25
 
