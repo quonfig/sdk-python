@@ -183,14 +183,16 @@ def test_no_hash_property_is_random_per_evaluation(hash_by, contexts, caplog):
 
 
 # Computed on the released v1.5.0 code (git archive v1.5.0). The same
-# (key, tracking_id) must land in the same bucket after this change.
+# (key, tracking_id) must land in the same bucket after this change. Bucket 0
+# (value 1) reported variant "static" in v1.5.0; that was the qfg-stbb bug and
+# it is now "split:0" -- the bucket itself is unchanged.
 PINNED = [
     ("user-0", 2, "split:2"),
     ("user-1", 2, "split:2"),
     ("user-17", 3, "split:1"),
     ("user-61", 3, "split:1"),
-    ("user-71", 1, "static"),
-    ("user-185", 1, "static"),
+    ("user-71", 1, "split:0"),
+    ("user-185", 1, "split:0"),
     ("", 2, "split:2"),
     (0, 2, "split:2"),
     (12345, 2, "split:2"),

@@ -27,7 +27,9 @@ def has_targeting_rules(config: "ConfigResponse") -> bool:
 def compute_telemetry_reason(
     rule_index: int, weighted_value_index: int, config: "ConfigResponse"
 ) -> int:
-    if weighted_value_index > 0:
+    # weighted_value_index is 0-based; -1 means "not a weighted value", so a
+    # rollout landing in bucket 0 is still a SPLIT (qfg-stbb).
+    if weighted_value_index >= 0:
         return REASON_SPLIT
     if rule_index == 0 and not has_targeting_rules(config):
         return REASON_STATIC

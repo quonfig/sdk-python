@@ -114,6 +114,33 @@ def test_reason_is_split_for_weighted_value_evaluation() -> None:
     ]
 
 
+# reason is SPLIT for weighted value landing in bucket 0
+def test_reason_is_split_for_weighted_value_landing_in_bucket_0() -> None:
+    agg = build_aggregator("evaluation_summary", {})
+    feed_aggregator(
+        agg,
+        "evaluation_summary",
+        {"keys": ["feature-flag.weighted"]},
+        contexts={"user": {"tracking_id": "3e9459d6"}},
+    )
+    assert aggregator_post(agg, "evaluation_summary", endpoint="/api/v1/telemetry") == [
+        {
+            "key": "feature-flag.weighted",
+            "type": "FEATURE_FLAG",
+            "value": 1,
+            "value_type": "int",
+            "count": 1,
+            "reason": 3,
+            "selected_value": {"int": 1},
+            "summary": {
+                "config_row_index": 0,
+                "conditional_value_index": 0,
+                "weighted_value_index": 0,
+            },
+        }
+    ]
+
+
 # reason is TARGETING_MATCH for feature flag fallthrough with targeting rules
 def test_reason_is_targeting_match_for_feature_flag_fallthrough_with_targeting_rules() -> None:
     agg = build_aggregator("evaluation_summary", {})

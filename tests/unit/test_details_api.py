@@ -169,6 +169,53 @@ class TestSuccessReasons:
         assert details.reason == "TARGETING_MATCH"
 
 
+class TestSplitReasonBucketZero:
+    """qfg-stbb: weighted_value_index is 0-based, so a weighted rollout that
+    serves bucket 0 is still a SPLIT, not STATIC."""
+
+    def _config(self):
+        return ConfigResponse(
+            id="cfg-split",
+            key="split.bucket0",
+            type="feature_flag",
+            value_type="string",
+            send_to_client_sdk=True,
+            default=RuleSet(
+                rules=[
+                    Rule(
+                        criteria=[_crit("ALWAYS_TRUE")],
+                        value=_v(
+                            "weighted_values",
+                            {
+                                "hashByPropertyName": "user.key",
+                                # All weight on bucket 0 -> always index 0.
+                                "weightedValues": [
+                                    {"weight": 100, "value": {"type": "string", "value": "a"}},
+                                    {"weight": 0, "value": {"type": "string", "value": "b"}},
+                                ],
+                            },
+                        ),
+                    )
+                ]
+            ),
+            environment=Environment(id="Production", rules=[]),
+        )
+
+    def test_evaluator_reports_split_for_bucket_zero(self):
+        c = _client_with_configs([self._config()])
+        result = c._evaluator.evaluate("split.bucket0", {"user": {"key": "u1"}})
+        assert result.weighted_value_index == 0
+        assert result.telemetry_reason == 3  # SPLIT
+
+    def test_details_report_split_variant_and_index_for_bucket_zero(self):
+        c = _client_with_configs([self._config()])
+        details = c.get_string_details("split.bucket0", contexts={"user": {"key": "u1"}})
+        assert details.value == "a"
+        assert details.reason == "SPLIT"
+        assert details.variant == "split:0"
+        assert details.flag_metadata.get("weighted_value_index") == 0
+
+
 class TestTypeMismatch:
     def test_bool_details_rejects_string_value(self):
         config = ConfigResponse(

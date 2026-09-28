@@ -9,6 +9,13 @@
   draws, so on a 50/50 split they disagreed about half the time. The SDK now
   draws once and serves that variant. This was already present in 1.5.0
   (qfg-3ibo).
+- **Fix: a weighted rollout that serves its first variant reports SPLIT.**
+  The weighted value index is 0-based, but the reason check treated index 0
+  as "not weighted". A user who landed in bucket 0 got telemetry reason
+  STATIC and, from the `*_details` getters, `reason="STATIC"`,
+  `variant="static"` and no `weighted_value_index` in `flag_metadata`. It is
+  now SPLIT, `variant="split:0"`, with `weighted_value_index: 0`. The variant
+  served is unchanged, and so is the telemetry wire format (qfg-stbb).
 
 ## 1.6.0 - 2026-09-28
 

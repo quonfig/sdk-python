@@ -71,13 +71,10 @@ def test_targeting_match_when_property_rule_misses(client):
 
 
 def test_split_reason_for_weighted_values(client):
-    """`of.weighted` is a weighted_values config — should report SPLIT
-    when the hash lands on a non-zero weighted index. STATIC fires for
-    the first variant since the config has no targeting rules; SPLIT
-    fires for any later variant. We sweep a handful of empirically
-    chosen ids so at least one produces a SPLIT outcome."""
-    saw_split = False
-    saw_static = False
+    """`of.weighted` is a weighted_values config -- every variant it serves,
+    including the first (weighted index 0), is a SPLIT (qfg-stbb). We sweep
+    a handful of ids so both variants are covered."""
+    seen = set()
     for uid in (
         "user-1",
         "user-2",
@@ -92,21 +89,15 @@ def test_split_reason_for_weighted_values(client):
     ):
         details = client.get_string_details("of.weighted", contexts={"user": {"id": uid}})
         assert details.value in ("variant-a", "variant-b")
-        # No targeting rules on this config, so the only valid reasons
-        # are STATIC (first weighted variant) or SPLIT (any later one).
-        assert details.reason in ("STATIC", "SPLIT")
-        if details.reason == "SPLIT":
-            saw_split = True
-        if details.reason == "STATIC":
-            saw_static = True
-    # `user-2` lands on variant-b (a non-zero weighted index) — pin the
-    # SPLIT case on a deterministic id so this assertion can't drift.
+        assert details.reason == "SPLIT"
+        expected_index = 0 if details.value == "variant-a" else 1
+        assert details.variant == f"split:{expected_index}"
+        seen.add(details.value)
+    # `user-2` lands on variant-b -- pin a deterministic id so this can't drift.
     deterministic = client.get_string_details("of.weighted", contexts={"user": {"id": "user-2"}})
     assert deterministic.reason == "SPLIT"
     assert deterministic.value == "variant-b"
-    assert saw_split and saw_static, (
-        "Expected the sweep to cover both STATIC (variant-a) and SPLIT (variant-b) outcomes"
-    )
+    assert seen == {"variant-a", "variant-b"}, "Expected the sweep to cover both variants"
 
 
 # ---------------------------------------------------------------------------
