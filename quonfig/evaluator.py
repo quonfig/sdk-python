@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 from typing import TYPE_CHECKING, Tuple
 
 import mmh3
@@ -142,7 +141,8 @@ class Evaluator:
                 fraction = 0.0
                 hash_missing = True
         else:
-            fraction = random.random()
+            # No hash property configured -> first variant (Jeff 2026-09-28).
+            fraction = 0.0
 
         total_weight = sum(wv.get("weight", 0) for wv in weighted_values)
         if total_weight == 0:

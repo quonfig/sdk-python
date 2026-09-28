@@ -38,7 +38,10 @@ Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollou
   first variant, the same as sdk-net and sdk-java. The `*_details` getters
   include `"hashPropertyMissing": True` in `flag_metadata` when this happens,
   and the client logs one warning per flag. Users whose context has the
-  property land in the same variant as before.
+  property land in the same variant as before. A weighted rollout with no
+  hash property configured also always serves the first variant now (before:
+  a random variant on every call); there is no metadata flag or warning in
+  that case.
 
 ## 1.5.0 - 2026-09-25
 
