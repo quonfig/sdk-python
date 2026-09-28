@@ -1,10 +1,14 @@
 """Weighted rollout whose hashByPropertyName is missing from the context
 (qfg-9dxb.8).
 
-Contract: fraction 0.0 -> the FIRST weighted variant (no random bucket),
-``hashPropertyMissing: True`` in flag metadata only when that fallback fires,
-and one WARNING per config key per client. When the hash property IS present
-the bucket must be unchanged from 1.5.0.
+Contract (revised 2026-09-28): a missing hash property hashes configKey + ""
+exactly like a present empty-string value, then walks the weights as normal,
+so missing and "" land in the same bucket and a zero-weight variant is never
+served. ``hashPropertyMissing: True`` in flag metadata and one WARNING per
+config key per client only when the property is missing (not for ""). With no
+hashByPropertyName configured, every evaluation still picks a random variant,
+as in 1.5.0. When the hash property IS present the bucket is unchanged from
+1.5.0.
 """
 
 from __future__ import annotations
@@ -67,7 +71,7 @@ def _config(key: str = KEY) -> ConfigResponse:
     return ConfigResponse.from_dict(raw)
 
 
-def _client(*keys: str) -> Quonfig:
+def _client(*keys: str, configs=None) -> Quonfig:
     c = Quonfig(
         sdk_key="",
         datadir=None,
@@ -78,7 +82,7 @@ def _client(*keys: str) -> Quonfig:
     )
     c._store.update(
         ConfigEnvelope(
-            configs=[_config(k) for k in (keys or (KEY,))],
+            configs=configs if configs is not None else [_config(k) for k in (keys or (KEY,))],
             meta=Meta(version="test", environment="Production"),
         )
     )
@@ -95,15 +99,87 @@ MISSING_CONTEXTS = [
 ]
 
 
+# What released v1.5.0 serves for a present empty-string tracking_id on this
+# fixture (computed on `git archive v1.5.0`): configKey + "" hashes to the
+# 97000-weight bucket, value 2.
+EMPTY_BUCKET_VALUE = 2
+
+
 @pytest.mark.parametrize("contexts", MISSING_CONTEXTS)
-def test_missing_hash_property_serves_first_variant(contexts):
+def test_missing_hash_property_hashes_empty_value(contexts):
     c = _client()
     for _ in range(50):
-        assert c.get_int(KEY, contexts=contexts) == 1
+        assert c.get_int(KEY, contexts=contexts) == EMPTY_BUCKET_VALUE
         d = c.get_int_details(KEY, contexts=contexts)
-        assert d.value == 1
+        assert d.value == EMPTY_BUCKET_VALUE
+        assert d.variant == "split:2"
         assert d.flag_metadata is not None
         assert d.flag_metadata.get("hashPropertyMissing") is True
+
+
+def test_missing_and_empty_land_in_same_bucket():
+    c = _client()
+    empty = c.get_int(KEY, contexts={"user": {"tracking_id": ""}})
+    assert empty == EMPTY_BUCKET_VALUE
+    for p in MISSING_CONTEXTS:
+        assert c.get_int(KEY, contexts=p.values[0]) == empty
+
+
+def test_present_empty_string_is_not_flagged_missing(caplog):
+    c = _client()
+    caplog.set_level(logging.WARNING)
+    d = c.get_int_details(KEY, contexts={"user": {"tracking_id": ""}})
+    assert d.flag_metadata is not None
+    assert "hashPropertyMissing" not in d.flag_metadata
+    assert _warnings(caplog) == []
+
+
+def _zero_first_config(key: str) -> ConfigResponse:
+    raw = copy.deepcopy(_WEIGHTED)
+    raw["key"] = key
+    raw["id"] = f"id-{key}"
+    wvs = raw["environments"][0]["rules"][0]["value"]["value"]["weightedValues"]
+    wvs[0]["weight"] = 0
+    return ConfigResponse.from_dict(raw)
+
+
+def test_zero_weight_first_variant_never_served_when_missing():
+    keys = [f"zero-first-{i}" for i in range(50)]
+    c = _client(configs=[_zero_first_config(k) for k in keys])
+    for k in keys:
+        for p in MISSING_CONTEXTS:
+            assert c.get_int(k, contexts=p.values[0]) != 1, k
+
+
+def _unhashed_config(hash_by) -> ConfigResponse:
+    raw = copy.deepcopy(_WEIGHTED)
+    value = raw["environments"][0]["rules"][0]["value"]["value"]
+    value["weightedValues"] = [
+        {"weight": 50, "value": {"type": "int", "value": "10"}},
+        {"weight": 50, "value": {"type": "int", "value": "20"}},
+    ]
+    if hash_by is None:
+        del value["hashByPropertyName"]
+    else:
+        value["hashByPropertyName"] = hash_by
+    return ConfigResponse.from_dict(raw)
+
+
+@pytest.mark.parametrize("hash_by", [None, ""], ids=["unset", "empty-string"])
+@pytest.mark.parametrize(
+    "contexts", [None, {"user": {"tracking_id": "user-0", "key": "u"}}], ids=["no-ctx", "ctx"]
+)
+def test_no_hash_property_is_random_per_evaluation(hash_by, contexts, caplog):
+    c = _client(configs=[_unhashed_config(hash_by)])
+    caplog.set_level(logging.WARNING)
+    seen = [c.get_int(KEY, contexts=contexts) for _ in range(1000)]
+    assert set(seen) == {10, 20}
+    # Roughly 50/50 (p of falling outside 350..650 on a fair coin is ~1e-21).
+    assert 350 < seen.count(10) < 650
+    d = c.get_int_details(KEY, contexts=contexts)
+    assert d.flag_metadata is not None
+    assert "hashPropertyMissing" not in d.flag_metadata
+    assert _warnings(caplog) == []
 
 
 # Computed on the released v1.5.0 code (git archive v1.5.0). The same
@@ -158,9 +234,9 @@ def test_warns_once_per_config_key(caplog):
     assert sorted(_warnings(caplog)) == sorted(
         [
             f'quonfig: weighted rollout for "{KEY}" hashes on "user.tracking_id" '
-            "which is missing from context; using first variant",
+            "which is missing from context; hashing an empty value instead",
             f'quonfig: weighted rollout for "{other}" hashes on "user.tracking_id" '
-            "which is missing from context; using first variant",
+            "which is missing from context; hashing an empty value instead",
         ]
     )
 

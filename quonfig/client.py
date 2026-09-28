@@ -1529,7 +1529,7 @@ class Quonfig:
 
     def _warn_hash_property_missing(self, key: str, result: EvalResult) -> None:
         """Log once per config key that a weighted rollout's hash property
-        was missing from context, so the first variant was served."""
+        was missing from context, so an empty value was hashed instead."""
         if key in self._hash_missing_warned:
             return
         self._hash_missing_warned.add(key)
@@ -1537,7 +1537,7 @@ class Quonfig:
         prop = raw.get("hashByPropertyName", "") if isinstance(raw, dict) else ""
         logger.warning(
             'quonfig: weighted rollout for "%s" hashes on "%s" which is missing '
-            "from context; using first variant",
+            "from context; hashing an empty value instead",
             key,
             prop,
         )

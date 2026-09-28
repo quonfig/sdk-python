@@ -270,5 +270,5 @@ class EvalResult:
     # value still flows through resolved_value for application use.
     reportable_value: Any = None
     # True only when a weighted rollout's hashByPropertyName was absent from
-    # the context, so the first weighted variant was served (qfg-9dxb.8).
+    # the context, so an empty value was hashed instead (qfg-9dxb.8).
     hash_property_missing: bool = False

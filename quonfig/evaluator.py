@@ -118,8 +118,8 @@ class Evaluator:
     def _weighted_index(self, rule: Rule, contexts: Contexts, config_key: str) -> Tuple[int, bool]:
         """Return ``(index, hash_property_missing)``: the selected weighted
         value index (-1 if not a weighted value), and whether the rollout's
-        hashByPropertyName was absent from the context, in which case the
-        first variant is used (qfg-9dxb.8)."""
+        hashByPropertyName was absent from the context, in which case an
+        empty value is hashed instead (qfg-9dxb.8)."""
         if rule.value is None or rule.value.type != "weighted_values":
             return -1, False
         raw = rule.value.value
@@ -133,14 +133,14 @@ class Evaluator:
         hash_missing = False
         if hash_by:
             hash_value, found = get_context_value(contexts, hash_by)
-            if found and hash_value is not None:
-                to_hash = f"{config_key}{hash_value}"
-                uint32_val = mmh3.hash(to_hash, signed=False)
-                fraction = uint32_val / _MAX_UINT32
-            else:
-                # Missing hash property -> bucket 0 -> first variant.
-                fraction = 0.0
+            if not (found and hash_value is not None):
+                # Missing hash property -> hash an empty value, exactly as a
+                # present "" would be hashed (qfg-9dxb.8).
+                hash_value = ""
                 hash_missing = True
+            to_hash = f"{config_key}{hash_value}"
+            uint32_val = mmh3.hash(to_hash, signed=False)
+            fraction = uint32_val / _MAX_UINT32
         else:
             fraction = random.random()
 

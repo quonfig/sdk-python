@@ -121,15 +121,14 @@ class Resolver:
         fraction: float
         if hash_by:
             hash_value, found = get_context_value(contexts, hash_by)
-            if found and hash_value is not None:
-                # Hash input: configKey + contextValue (matches Go/Node SDK)
-                to_hash = f"{config_key}{hash_value}"
-                uint32_val = mmh3.hash(to_hash, signed=False)
-                fraction = uint32_val / _MAX_UINT32
-            else:
-                # Missing hash property -> bucket 0 -> first variant
-                # (qfg-9dxb.8). Must agree with Evaluator._weighted_index.
-                fraction = 0.0
+            if not (found and hash_value is not None):
+                # Missing hash property -> hash an empty value (qfg-9dxb.8).
+                # Must agree with Evaluator._weighted_index.
+                hash_value = ""
+            # Hash input: configKey + contextValue (matches Go/Node SDK)
+            to_hash = f"{config_key}{hash_value}"
+            uint32_val = mmh3.hash(to_hash, signed=False)
+            fraction = uint32_val / _MAX_UINT32
         else:
             import random
 

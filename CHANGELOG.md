@@ -31,14 +31,17 @@ Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollou
   cut at the first repeat and the repeated reference is treated like a missing
   segment (`IN_SEG` false, `NOT_IN_SEG` true), the same as sdk-go. Segments
   without a cycle, including two segments that share a third, are unchanged.
-- **A weighted rollout that hashes on a missing property now always serves the
-  first variant.** Before, an evaluation whose context lacked the rollout's
+- **A weighted rollout that hashes on a missing property now serves one
+  stable variant.** Before, an evaluation whose context lacked the rollout's
   hash property (no context, no such named context, the property not set, or
-  set to `None`) got a random variant on every call. Now it always gets the
-  first variant, the same as sdk-net and sdk-java. The `*_details` getters
-  include `"hashPropertyMissing": True` in `flag_metadata` when this happens,
-  and the client logs one warning per flag. Users whose context has the
-  property land in the same variant as before.
+  set to `None`) got a random variant on every call. Now the SDK hashes an
+  empty value instead, the same as a property set to `""`, so every such
+  caller gets the same variant for that flag. A variant with weight 0 is not
+  served. The `*_details` getters include `"hashPropertyMissing": True` in
+  `flag_metadata` when the property is missing, and the client logs one
+  warning per flag. Users whose context has the property land in the same
+  variant as before. A rollout with no hash property configured still picks a
+  random variant on every evaluation, unchanged.
 
 ## 1.5.0 - 2026-09-25
 
