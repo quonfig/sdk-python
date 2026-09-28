@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: a weighted rollout with no hash property reports the variant it
+  served.** Such a rollout picks a random variant per evaluation, but the
+  variant served and the `weighted_value_index` reported in `*_details`
+  (`variant`, `flag_metadata`) and in telemetry came from two separate random
+  draws, so on a 50/50 split they disagreed about half the time. The SDK now
+  draws once and serves that variant. This was already present in 1.5.0
+  (qfg-3ibo).
+
 ## 1.6.0 - 2026-09-28
 
 Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollout behavior change (qfg-9dxb.8). No wire change, no removed API, no new dependencies.

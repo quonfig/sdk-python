@@ -59,8 +59,20 @@ class Resolver:
     def __init__(self, store: "ConfigStore") -> None:
         self.store = store
 
-    def resolve(self, value: Value, contexts: Contexts, config_key: str = "") -> Any:
-        """Resolve a Value object to a Python native type."""
+    def resolve(
+        self,
+        value: Value,
+        contexts: Contexts,
+        config_key: str = "",
+        weighted_value_index: int = -1,
+    ) -> Any:
+        """Resolve a Value object to a Python native type.
+
+        ``weighted_value_index`` is the variant the evaluator already picked
+        for a weighted value (``EvalResult.weighted_value_index``). When given
+        it is served as-is, so the served value always agrees with the index
+        reported in details and telemetry. Without a hash property the pick
+        is random, so drawing again here would disagree (qfg-3ibo)."""
         if value is None:
             return None
 
@@ -73,7 +85,13 @@ class Resolver:
 
         # Handle weighted values
         if vtype == "weighted_values":
-            return self._resolve_weighted(raw, value, contexts, config_key=config_key)
+            return self._resolve_weighted(
+                raw,
+                value,
+                contexts,
+                config_key=config_key,
+                weighted_value_index=weighted_value_index,
+            )
 
         # Handle decryption
         if value.confidential and value.decrypt_with:
@@ -97,7 +115,12 @@ class Resolver:
         raise QuonfigEnvVarNotSetError(f"Unknown provided source: {source!r}")
 
     def _resolve_weighted(
-        self, raw: Any, value: Value, contexts: Contexts, config_key: str = ""
+        self,
+        raw: Any,
+        value: Value,
+        contexts: Contexts,
+        config_key: str = "",
+        weighted_value_index: int = -1,
     ) -> Any:
         """Hash-based weighted value selection.
 
@@ -114,6 +137,11 @@ class Resolver:
 
         if not weighted_values:
             return None
+
+        if 0 <= weighted_value_index < len(weighted_values):
+            return self._resolve_selected(
+                weighted_values[weighted_value_index].get("value"), contexts, config_key
+            )
 
         # Determine hash fraction
         from .context import get_context_value
@@ -152,6 +180,9 @@ class Resolver:
         if selected is None:
             selected = weighted_values[0].get("value") if weighted_values else None
 
+        return self._resolve_selected(selected, contexts, config_key)
+
+    def _resolve_selected(self, selected: Any, contexts: Contexts, config_key: str) -> Any:
         if selected is None:
             return None
 

@@ -1306,7 +1306,12 @@ class Quonfig:
             return _NO_DEFAULT
 
         try:
-            resolved = self._resolver.resolve(result.value, merged, config_key=key)
+            resolved = self._resolver.resolve(
+                result.value,
+                merged,
+                config_key=key,
+                weighted_value_index=result.weighted_value_index,
+            )
         except (QuonfigEnvVarNotSetError, QuonfigDecryptionError):
             raise
         except Exception as e:
@@ -1400,7 +1405,12 @@ class Quonfig:
                 )
 
             try:
-                resolved = self._resolver.resolve(result.value, merged, config_key=key)
+                resolved = self._resolver.resolve(
+                    result.value,
+                    merged,
+                    config_key=key,
+                    weighted_value_index=result.weighted_value_index,
+                )
             except (QuonfigEnvVarNotSetError, QuonfigDecryptionError) as e:
                 return EvaluationDetails(
                     value=None,
