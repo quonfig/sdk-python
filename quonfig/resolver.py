@@ -131,9 +131,9 @@ class Resolver:
                 # (qfg-9dxb.8). Must agree with Evaluator._weighted_index.
                 fraction = 0.0
         else:
-            # No hash property configured -> first variant. Must agree with
-            # Evaluator._weighted_index.
-            fraction = 0.0
+            import random
+
+            fraction = random.random()
 
         # Select variant using running-sum >= threshold (matches Go SDK)
         total_weight = sum(wv.get("weight", 0) for wv in weighted_values)
