@@ -70,7 +70,7 @@ class Evaluator:
         if matching_env is not None:
             for idx, rule in enumerate(matching_env.rules):
                 if self._rule_matches(rule, contexts, seg_path):
-                    wv_idx = self._weighted_index(rule, contexts, key)
+                    wv_idx, hash_missing = self._weighted_index(rule, contexts, key)
                     tr = compute_telemetry_reason(idx, wv_idx, config)
                     return EvalResult(
                         value=rule.value,
@@ -83,11 +83,12 @@ class Evaluator:
                         config_type=config.type,
                         weighted_value_index=wv_idx,
                         telemetry_reason=tr,
+                        hash_property_missing=hash_missing,
                     )
 
         for idx, rule in enumerate(config.default.rules):
             if self._rule_matches(rule, contexts, seg_path):
-                wv_idx = self._weighted_index(rule, contexts, key)
+                wv_idx, hash_missing = self._weighted_index(rule, contexts, key)
                 tr = compute_telemetry_reason(idx, wv_idx, config)
                 return EvalResult(
                     value=rule.value,
@@ -100,6 +101,7 @@ class Evaluator:
                     config_type=config.type,
                     weighted_value_index=wv_idx,
                     telemetry_reason=tr,
+                    hash_property_missing=hash_missing,
                 )
 
         return EvalResult(
@@ -113,18 +115,22 @@ class Evaluator:
             config_type=config.type,
         )
 
-    def _weighted_index(self, rule: Rule, contexts: Contexts, config_key: str) -> int:
-        """Return the selected weighted value index, or -1 if not a weighted value."""
+    def _weighted_index(self, rule: Rule, contexts: Contexts, config_key: str) -> Tuple[int, bool]:
+        """Return ``(index, hash_property_missing)``: the selected weighted
+        value index (-1 if not a weighted value), and whether the rollout's
+        hashByPropertyName was absent from the context, in which case the
+        first variant is used (qfg-9dxb.8)."""
         if rule.value is None or rule.value.type != "weighted_values":
-            return -1
+            return -1, False
         raw = rule.value.value
         if not isinstance(raw, dict):
-            return -1
+            return -1, False
         weighted_values = raw.get("weightedValues", [])
         hash_by = raw.get("hashByPropertyName", "")
         if not weighted_values:
-            return -1
+            return -1, False
 
+        hash_missing = False
         if hash_by:
             hash_value, found = get_context_value(contexts, hash_by)
             if found and hash_value is not None:
@@ -132,21 +138,23 @@ class Evaluator:
                 uint32_val = mmh3.hash(to_hash, signed=False)
                 fraction = uint32_val / _MAX_UINT32
             else:
-                fraction = random.random()
+                # Missing hash property -> bucket 0 -> first variant.
+                fraction = 0.0
+                hash_missing = True
         else:
             fraction = random.random()
 
         total_weight = sum(wv.get("weight", 0) for wv in weighted_values)
         if total_weight == 0:
-            return -1
+            return -1, False
 
         threshold = fraction * total_weight
         running_sum = 0.0
         for i, wv in enumerate(weighted_values):
             running_sum += wv.get("weight", 0)
             if running_sum >= threshold:
-                return i
-        return 0
+                return i, hash_missing
+        return 0, hash_missing
 
     def _rule_matches(self, rule: Rule, contexts: Contexts, seg_path: Tuple[str, ...] = ()) -> bool:
         return all(self._criterion_matches(c, contexts, seg_path) for c in rule.criteria)

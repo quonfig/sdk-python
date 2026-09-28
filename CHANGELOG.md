@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Patch-level fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9). No wire change, no removed API, no new dependencies.
+Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollout behavior change (qfg-9dxb.8). No wire change, no removed API, no new dependencies.
 
 - **A bad `200` response no longer clears your config.** Before, a `200`
   whose body was not a real config payload (for example `{}` or
@@ -31,6 +31,14 @@ Patch-level fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9). No wire change, no remov
   cut at the first repeat and the repeated reference is treated like a missing
   segment (`IN_SEG` false, `NOT_IN_SEG` true), the same as sdk-go. Segments
   without a cycle, including two segments that share a third, are unchanged.
+- **A weighted rollout that hashes on a missing property now always serves the
+  first variant.** Before, an evaluation whose context lacked the rollout's
+  hash property (no context, no such named context, the property not set, or
+  set to `None`) got a random variant on every call. Now it always gets the
+  first variant, the same as sdk-net and sdk-java. The `*_details` getters
+  include `"hashPropertyMissing": True` in `flag_metadata` when this happens,
+  and the client logs one warning per flag. Users whose context has the
+  property land in the same variant as before.
 
 ## 1.5.0 - 2026-09-25
 

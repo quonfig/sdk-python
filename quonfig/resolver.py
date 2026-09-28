@@ -127,9 +127,9 @@ class Resolver:
                 uint32_val = mmh3.hash(to_hash, signed=False)
                 fraction = uint32_val / _MAX_UINT32
             else:
-                import random
-
-                fraction = random.random()
+                # Missing hash property -> bucket 0 -> first variant
+                # (qfg-9dxb.8). Must agree with Evaluator._weighted_index.
+                fraction = 0.0
         else:
             import random
 

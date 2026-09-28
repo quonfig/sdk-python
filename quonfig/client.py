@@ -7,7 +7,7 @@ import os
 import threading
 import uuid
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,6 +36,7 @@ from .types import (
     QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP,
     QUONFIG_SDK_LOGGING_CONTEXT_NAME,
     Contexts,
+    EvalResult,
     EvaluationDetails,
 )
 
@@ -381,6 +382,10 @@ class Quonfig:
         # Will be set after init
         self._evaluator: Optional[Evaluator] = None
         self._resolver = Resolver(self._store)
+        # Config keys already warned about a weighted rollout whose hash
+        # property was missing from context (qfg-9dxb.8). One warning per key
+        # per client; bounded by the number of flags.
+        self._hash_missing_warned: Set[str] = set()
 
         # Telemetry (optional).
         #
@@ -1294,6 +1299,8 @@ class Quonfig:
         assert self._evaluator is not None
         merged = self._effective_contexts(contexts)
         result = self._evaluator.evaluate(key, merged)
+        if result.hash_property_missing:
+            self._warn_hash_property_missing(key, result)
 
         if result.reason == "MISSING" or result.value is None:
             return _NO_DEFAULT
@@ -1355,6 +1362,8 @@ class Quonfig:
             assert self._evaluator is not None
             merged = self._effective_contexts(contexts)
             result = self._evaluator.evaluate(key, merged)
+            if result.hash_property_missing:
+                self._warn_hash_property_missing(key, result)
 
             # Distinguish flag-not-in-store (FLAG_NOT_FOUND) from
             # flag-exists-but-no-rule-matched (DEFAULT). The evaluator returns
@@ -1461,6 +1470,7 @@ class Quonfig:
                     result.row_index,
                     wvi,
                     reason_str,
+                    hash_property_missing=result.hash_property_missing,
                 ),
             )
         except Exception as e:  # noqa: BLE001 — *_details must never raise
@@ -1496,6 +1506,7 @@ class Quonfig:
         rule_index: Optional[int],
         weighted_value_index: Optional[int],
         reason: Optional[str],
+        hash_property_missing: bool = False,
     ) -> Dict[str, Any]:
         """Build the flag_metadata dict per the cross-SDK spec
         (``project/plans/openfeature-resolution-details.md`` §3) using
@@ -1511,7 +1522,25 @@ class Quonfig:
             md["rule_index"] = rule_index
         if weighted_value_index is not None and reason == "SPLIT":
             md["weighted_value_index"] = weighted_value_index
+        if hash_property_missing:
+            # camelCase on purpose: the cross-SDK metadata key (qfg-9dxb.8).
+            md["hashPropertyMissing"] = True
         return md
+
+    def _warn_hash_property_missing(self, key: str, result: EvalResult) -> None:
+        """Log once per config key that a weighted rollout's hash property
+        was missing from context, so the first variant was served."""
+        if key in self._hash_missing_warned:
+            return
+        self._hash_missing_warned.add(key)
+        raw = result.value.value if result.value is not None else None
+        prop = raw.get("hashByPropertyName", "") if isinstance(raw, dict) else ""
+        logger.warning(
+            'quonfig: weighted rollout for "%s" hashes on "%s" which is missing '
+            "from context; using first variant",
+            key,
+            prop,
+        )
 
     def _handle_missing(self, key: str, default: Any) -> Any:
         if default is not _NO_DEFAULT:
