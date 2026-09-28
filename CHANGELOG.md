@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.6.0 - 2026-09-28
+
+Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollout behavior change (qfg-9dxb.8). No wire change, no removed API, no new dependencies.
 
 - **Fix: a weighted rollout with no hash property reports the variant it
   served.** Such a rollout picks a random variant per evaluation, but the
@@ -16,11 +18,6 @@
   `variant="static"` and no `weighted_value_index` in `flag_metadata`. It is
   now SPLIT, `variant="split:0"`, with `weighted_value_index: 0`. The variant
   served is unchanged, and so is the telemetry wire format (qfg-stbb).
-
-## 1.6.0 - 2026-09-28
-
-Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollout behavior change (qfg-9dxb.8). No wire change, no removed API, no new dependencies.
-
 - **Behavior change: a weighted rollout that hashes on a missing property now
   serves one stable variant.** Before, an evaluation whose context lacked the
   rollout's hash property (no context, no such named context, the property not
