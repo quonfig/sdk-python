@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Tuple
 
 import mmh3
 
@@ -39,7 +39,12 @@ class Evaluator:
         """
         return self.store.get_meta_environment()
 
-    def evaluate(self, key: str, contexts: Contexts) -> EvalResult:
+    def evaluate(self, key: str, contexts: Contexts, _seg_path: Tuple[str, ...] = ()) -> EvalResult:
+        # ``_seg_path`` is internal: the keys of the configs being evaluated
+        # above this one through IN_SEG / NOT_IN_SEG. With ``key`` appended it
+        # lets segment resolution spot a reference cycle (qfg-9dxb.7). It is a
+        # path, not a global visited set, so a diamond still resolves.
+        seg_path = _seg_path + (key,)
         config = self.store.get(key)
         if config is None:
             return EvalResult(
@@ -64,7 +69,7 @@ class Evaluator:
 
         if matching_env is not None:
             for idx, rule in enumerate(matching_env.rules):
-                if self._rule_matches(rule, contexts):
+                if self._rule_matches(rule, contexts, seg_path):
                     wv_idx = self._weighted_index(rule, contexts, key)
                     tr = compute_telemetry_reason(idx, wv_idx, config)
                     return EvalResult(
@@ -81,7 +86,7 @@ class Evaluator:
                     )
 
         for idx, rule in enumerate(config.default.rules):
-            if self._rule_matches(rule, contexts):
+            if self._rule_matches(rule, contexts, seg_path):
                 wv_idx = self._weighted_index(rule, contexts, key)
                 tr = compute_telemetry_reason(idx, wv_idx, config)
                 return EvalResult(
@@ -143,10 +148,12 @@ class Evaluator:
                 return i
         return 0
 
-    def _rule_matches(self, rule: Rule, contexts: Contexts) -> bool:
-        return all(self._criterion_matches(c, contexts) for c in rule.criteria)
+    def _rule_matches(self, rule: Rule, contexts: Contexts, seg_path: Tuple[str, ...] = ()) -> bool:
+        return all(self._criterion_matches(c, contexts, seg_path) for c in rule.criteria)
 
-    def _criterion_matches(self, criterion: Criterion, contexts: Contexts) -> bool:
+    def _criterion_matches(
+        self, criterion: Criterion, contexts: Contexts, seg_path: Tuple[str, ...] = ()
+    ) -> bool:
         operator = criterion.operator
         if operator == "ALWAYS_TRUE":
             return True
@@ -160,4 +167,6 @@ class Evaluator:
         if operator == "IS_NOT_PRESENT":
             return not (found and prop_value is not None)
         criterion_value = criterion.value_to_match.value if criterion.value_to_match else None
-        return evaluate_operator(operator, prop_value, criterion_value, contexts, self.store)
+        return evaluate_operator(
+            operator, prop_value, criterion_value, contexts, self.store, seg_path=seg_path
+        )

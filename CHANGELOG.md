@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Patch-level fixes (qfg-9dxb.3, qfg-9dxb.9). No wire change, no removed API, no new dependencies.
+Patch-level fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9). No wire change, no removed API, no new dependencies.
 
 - **Non-envelope payloads are rejected.** A network payload must now carry a
   `meta` object with a non-empty `version` (api-delivery and `qfg serve` always
@@ -26,6 +26,13 @@ Patch-level fixes (qfg-9dxb.3, qfg-9dxb.9). No wire change, no removed API, no n
   damaged, so its payload could move a client back to old config and leave it
   stuck there until the next generation. Such a payload is now dropped silently:
   it is not counted as `guardRejected`. Datadir mode is unchanged.
+- **Segments that reference themselves now evaluate predictably.** A segment
+  that is, directly or through a chain of other segments, `IN_SEG` /
+  `NOT_IN_SEG` itself used to recurse until Python's recursion limit, and the
+  answer could change with how deep the caller's stack was. The loop is now
+  cut at the first repeat and the repeated reference is treated like a missing
+  segment (`IN_SEG` false, `NOT_IN_SEG` true), the same as sdk-go. Segments
+  without a cycle, including two segments that share a third, are unchanged.
 
 ## 1.5.0 - 2026-09-25
 

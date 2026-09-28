@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
 
 from .types import Contexts
 
@@ -188,9 +188,22 @@ def in_int_range(
         return False
 
 
-def in_seg(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore") -> bool:
-    """Look up segment by name and evaluate it against the current contexts."""
+def in_seg(
+    prop_value: Any,
+    criterion_value: Any,
+    contexts: Contexts,
+    store: "ConfigStore",
+    seg_path: Tuple[str, ...] = (),
+) -> bool:
+    """Look up segment by name and evaluate it against the current contexts.
+
+    ``seg_path`` holds the keys of the configs currently being evaluated. A
+    reference back onto that path is a cycle and is treated like a missing
+    segment (IN_SEG false, NOT_IN_SEG true), matching sdk-go (qfg-9dxb.7).
+    """
     if not isinstance(criterion_value, str):
+        return False
+    if criterion_value in seg_path:
         return False
     seg_config = store.get(criterion_value)
     if seg_config is None:
@@ -200,7 +213,7 @@ def in_seg(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "Co
 
     # Use a minimal evaluator with no environment (segment configs don't use env)
     evaluator = Evaluator(store, environment_id="")
-    result = evaluator.evaluate(criterion_value, contexts)
+    result = evaluator.evaluate(criterion_value, contexts, _seg_path=seg_path)
     if result.reason == "MISSING":
         return False
     # Segment value should be a bool
@@ -214,9 +227,13 @@ def in_seg(prop_value: Any, criterion_value: Any, contexts: Contexts, store: "Co
 
 
 def not_in_seg(
-    prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
+    prop_value: Any,
+    criterion_value: Any,
+    contexts: Contexts,
+    store: "ConfigStore",
+    seg_path: Tuple[str, ...] = (),
 ) -> bool:
-    return not in_seg(prop_value, criterion_value, contexts, store)
+    return not in_seg(prop_value, criterion_value, contexts, store, seg_path)
 
 
 _SEMVER_PATTERN = re.compile(
@@ -390,11 +407,14 @@ def evaluate_operator(
     criterion_value: Any,
     contexts: Contexts,
     store: "ConfigStore",
+    seg_path: Tuple[str, ...] = (),
 ) -> bool:
     fn: Optional[Callable] = OPERATOR_DISPATCH.get(operator)
     if fn is None:
         return False
     try:
+        if operator in ("IN_SEG", "NOT_IN_SEG"):
+            return bool(fn(prop_value, criterion_value, contexts, store, seg_path))
         return bool(fn(prop_value, criterion_value, contexts, store))
     except Exception:
         return False
