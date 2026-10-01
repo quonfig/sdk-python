@@ -107,29 +107,31 @@ def test_can_decrypt_and_return_a_secret_value_with_decryption_key_in_in_env_var
 def test_duration_200_ms(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT0.2S")
-    assert abs(result * 1000 - 200) < 1, f"Expected {result * 1000}ms to be close to 200ms"
+    assert result == 200 / 1000, f"Expected exactly 200ms (200 / 1000 s), got {result!r}s"
 
 
 # duration 90S
 def test_duration_90s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT90S")
-    assert abs(result * 1000 - 90000) < 1, f"Expected {result * 1000}ms to be close to 90000ms"
+    assert result == 90000 / 1000, f"Expected exactly 90000ms (90000 / 1000 s), got {result!r}s"
 
 
 # duration 30M
 def test_duration_30m(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT30M")
-    assert abs(result * 1000 - 1800000) < 1, f"Expected {result * 1000}ms to be close to 1800000ms"
+    assert result == 1800000 / 1000, (
+        f"Expected exactly 1800000ms (1800000 / 1000 s), got {result!r}s"
+    )
 
 
 # duration test.duration.P1DT6H2M1.5S
 def test_duration_test_duration_p1dt6h2m1_5s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.P1DT6H2M1.5S")
-    assert abs(result * 1000 - 108121500) < 1, (
-        f"Expected {result * 1000}ms to be close to 108121500ms"
+    assert result == 108121500 / 1000, (
+        f"Expected exactly 108121500ms (108121500 / 1000 s), got {result!r}s"
     )
 
 
@@ -137,22 +139,22 @@ def test_duration_test_duration_p1dt6h2m1_5s(config_client) -> None:
 def test_duration_zero_pt0s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT0S")
-    assert abs(result * 1000 - 0) < 1, f"Expected {result * 1000}ms to be close to 0ms"
+    assert result == 0 / 1000, f"Expected exactly 0ms (0 / 1000 s), got {result!r}s"
 
 
 # duration zero P0D
 def test_duration_zero_p0d(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.P0D")
-    assert abs(result * 1000 - 0) < 1, f"Expected {result * 1000}ms to be close to 0ms"
+    assert result == 0 / 1000, f"Expected exactly 0ms (0 / 1000 s), got {result!r}s"
 
 
 # duration days only P2D
 def test_duration_days_only_p2d(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.P2D")
-    assert abs(result * 1000 - 172800000) < 1, (
-        f"Expected {result * 1000}ms to be close to 172800000ms"
+    assert result == 172800000 / 1000, (
+        f"Expected exactly 172800000ms (172800000 / 1000 s), got {result!r}s"
     )
 
 
@@ -160,43 +162,47 @@ def test_duration_days_only_p2d(config_client) -> None:
 def test_duration_hours_only_pt1h(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT1H")
-    assert abs(result * 1000 - 3600000) < 1, f"Expected {result * 1000}ms to be close to 3600000ms"
+    assert result == 3600000 / 1000, (
+        f"Expected exactly 3600000ms (3600000 / 1000 s), got {result!r}s"
+    )
 
 
 # duration minutes only PT1M
 def test_duration_minutes_only_pt1m(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT1M")
-    assert abs(result * 1000 - 60000) < 1, f"Expected {result * 1000}ms to be close to 60000ms"
+    assert result == 60000 / 1000, f"Expected exactly 60000ms (60000 / 1000 s), got {result!r}s"
 
 
 # duration seconds only PT1S
 def test_duration_seconds_only_pt1s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT1S")
-    assert abs(result * 1000 - 1000) < 1, f"Expected {result * 1000}ms to be close to 1000ms"
+    assert result == 1000 / 1000, f"Expected exactly 1000ms (1000 / 1000 s), got {result!r}s"
 
 
 # duration leading zero PT05S
 def test_duration_leading_zero_pt05s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT05S")
-    assert abs(result * 1000 - 5000) < 1, f"Expected {result * 1000}ms to be close to 5000ms"
+    assert result == 5000 / 1000, f"Expected exactly 5000ms (5000 / 1000 s), got {result!r}s"
 
 
 # duration hours and minutes PT1H30M
 def test_duration_hours_and_minutes_pt1h30m(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT1H30M")
-    assert abs(result * 1000 - 5400000) < 1, f"Expected {result * 1000}ms to be close to 5400000ms"
+    assert result == 5400000 / 1000, (
+        f"Expected exactly 5400000ms (5400000 / 1000 s), got {result!r}s"
+    )
 
 
 # duration days and hours P1DT2H
 def test_duration_days_and_hours_p1dt2h(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.P1DT2H")
-    assert abs(result * 1000 - 93600000) < 1, (
-        f"Expected {result * 1000}ms to be close to 93600000ms"
+    assert result == 93600000 / 1000, (
+        f"Expected exactly 93600000ms (93600000 / 1000 s), got {result!r}s"
     )
 
 
@@ -204,15 +210,15 @@ def test_duration_days_and_hours_p1dt2h(config_client) -> None:
 def test_duration_one_millisecond_pt0_001s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT0.001S")
-    assert abs(result * 1000 - 1) < 1, f"Expected {result * 1000}ms to be close to 1ms"
+    assert result == 1 / 1000, f"Expected exactly 1ms (1 / 1000 s), got {result!r}s"
 
 
 # duration magnitude ceiling P36500D
 def test_duration_magnitude_ceiling_p36500d(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.P36500D")
-    assert abs(result * 1000 - 3153600000000) < 1, (
-        f"Expected {result * 1000}ms to be close to 3153600000000ms"
+    assert result == 3153600000000 / 1000, (
+        f"Expected exactly 3153600000000ms (3153600000000 / 1000 s), got {result!r}s"
     )
 
 
@@ -220,28 +226,28 @@ def test_duration_magnitude_ceiling_p36500d(config_client) -> None:
 def test_duration_rounding_pt2_01s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT2.01S")
-    assert abs(result * 1000 - 2010) < 1, f"Expected {result * 1000}ms to be close to 2010ms"
+    assert result == 2010 / 1000, f"Expected exactly 2010ms (2010 / 1000 s), got {result!r}s"
 
 
 # duration rounding PT1.005S
 def test_duration_rounding_pt1_005s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT1.005S")
-    assert abs(result * 1000 - 1005) < 1, f"Expected {result * 1000}ms to be close to 1005ms"
+    assert result == 1005 / 1000, f"Expected exactly 1005ms (1005 / 1000 s), got {result!r}s"
 
 
 # duration rounding half up PT0.0005S
 def test_duration_rounding_half_up_pt0_0005s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT0.0005S")
-    assert abs(result * 1000 - 1) < 1, f"Expected {result * 1000}ms to be close to 1ms"
+    assert result == 1 / 1000, f"Expected exactly 1ms (1 / 1000 s), got {result!r}s"
 
 
 # duration rounding down PT0.0004S
 def test_duration_rounding_down_pt0_0004s(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.PT0.0004S")
-    assert abs(result * 1000 - 0) < 1, f"Expected {result * 1000}ms to be close to 0ms"
+    assert result == 0 / 1000, f"Expected exactly 0ms (0 / 1000 s), got {result!r}s"
 
 
 # json test
@@ -303,7 +309,7 @@ def test_env_var_provided_duration_pt1_5s_via_get() -> None:
         c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
         c.init()
         result = c.get_duration("provided.duration.PT1.5S")
-        assert abs(result * 1000 - 1500) < 1, f"Expected {result * 1000}ms to be close to 1500ms"
+        assert result == 1500 / 1000, f"Expected exactly 1500ms (1500 / 1000 s), got {result!r}s"
     finally:
         for k, v in env_backup.items():
             if v is None:
@@ -316,7 +322,7 @@ def test_env_var_provided_duration_pt1_5s_via_get() -> None:
 def test_stored_malformed_duration_30s_returns_the_default(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.malformed.30s", default=7)
-    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
 
 
 # stored malformed duration 30s with no default returns nil
@@ -331,7 +337,7 @@ def test_stored_malformed_duration_30s_with_no_default_returns_nil() -> None:
 def test_stored_malformed_duration_pt0_5h_returns_the_default(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.malformed.PT0.5H", default=7)
-    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
 
 
 # stored malformed duration PT0.5H with no default returns nil
@@ -346,7 +352,7 @@ def test_stored_malformed_duration_pt0_5h_with_no_default_returns_nil() -> None:
 def test_stored_malformed_duration_p1dt_returns_the_default(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.malformed.P1DT", default=7)
-    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
 
 
 # stored malformed duration P1DT with no default returns nil
@@ -361,7 +367,7 @@ def test_stored_malformed_duration_p1dt_with_no_default_returns_nil() -> None:
 def test_stored_malformed_duration_garbage_returns_the_default(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.malformed.garbage", default=7)
-    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
 
 
 # stored malformed duration garbage with no default returns nil
@@ -376,7 +382,7 @@ def test_stored_malformed_duration_garbage_with_no_default_returns_nil() -> None
 def test_stored_malformed_duration_empty_returns_the_default(config_client) -> None:
     c = config_client
     result = c.get_duration("test.duration.malformed.empty", default=7)
-    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
 
 
 # stored malformed duration empty with no default returns nil
@@ -396,7 +402,7 @@ def test_env_var_provided_malformed_duration_30s_returns_the_default() -> None:
         c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
         c.init()
         result = c.get_duration("provided.duration.malformed.30s", default=7)
-        assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+        assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
     finally:
         for k, v in env_backup.items():
             if v is None:
@@ -432,7 +438,7 @@ def test_env_var_provided_malformed_duration_pt0_5h_returns_the_default() -> Non
         c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
         c.init()
         result = c.get_duration("provided.duration.malformed.PT0.5H", default=7)
-        assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+        assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
     finally:
         for k, v in env_backup.items():
             if v is None:
@@ -468,7 +474,7 @@ def test_env_var_provided_malformed_duration_p1dt_returns_the_default() -> None:
         c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
         c.init()
         result = c.get_duration("provided.duration.malformed.P1DT", default=7)
-        assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+        assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
     finally:
         for k, v in env_backup.items():
             if v is None:
@@ -504,7 +510,7 @@ def test_env_var_provided_malformed_duration_garbage_returns_the_default() -> No
         c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
         c.init()
         result = c.get_duration("provided.duration.malformed.garbage", default=7)
-        assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+        assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
     finally:
         for k, v in env_backup.items():
             if v is None:
