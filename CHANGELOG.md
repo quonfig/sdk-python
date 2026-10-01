@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Test: confidential-value redaction is guarded on the real telemetry path.**
+  A new unit test drives `confidential` and `decryptWith` configs through
+  `Quonfig.get` and `Quonfig.flush` and asserts the POSTed telemetry carries
+  only the redacted `*****<hash>` form. No behavior change (qfg-2agi.16).
+
 - **Fix: ENV_VAR-provided values are coerced to the config's valueType.**
   A `provided` value was returned as the raw environment string, so a `bool`
   config set to `false` read `True` from `get_bool`, `int`/`double` came back
