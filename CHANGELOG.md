@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Fix: stored durations use the shared ISO-8601 grammar.** A stored
+  `duration` value was parsed with `isodate`, so `PT0.5H`, `P1DT`, `P1Y` and
+  `-PT5S` were accepted, and anything `isodate` rejected came back as the raw
+  string, which `get_duration` then fed to `float()` (so `30`, `nan` and `1e3`
+  were read as seconds). Stored values now use the same grammar as ENV_VAR
+  values: fractions on seconds only, at least one component, no dangling `T`,
+  at most 9 fractional digits, at most `P36500D`, ASCII digits only, the
+  whole string must match (a trailing newline is rejected). Milliseconds are
+  exact decimal, rounded half up. A malformed stored value follows the same
+  contract as a malformed ENV_VAR value: the caller's default plus one
+  warning per key, `None` with no default, `QuonfigEnvVarCoerceError` with
+  `on_no_default="error"`, and `reason="ERROR"` in details. The raw value is
+  never logged. The `isodate` dependency is removed (qfg-2agi.11).
+
 - **Test: confidential-value redaction is guarded on the real telemetry path.**
   A new unit test drives `confidential` and `decryptWith` configs through
   `Quonfig.get` and `Quonfig.flush` and asserts the POSTed telemetry carries

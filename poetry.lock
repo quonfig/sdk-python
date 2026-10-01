@@ -562,17 +562,6 @@ files = [
 ]
 
 [[package]]
-name = "isodate"
-version = "0.7.2"
-description = "An ISO 8601 date/time/duration parser and formatter"
-optional = false
-python-versions = ">=3.7"
-files = [
-    {file = "isodate-0.7.2-py3-none-any.whl", hash = "sha256:28009937d8031054830160fce6d409ed342816b543597cece116d966c6d99e15"},
-    {file = "isodate-0.7.2.tar.gz", hash = "sha256:4cd1aa0f43ca76f4a6c6c0292a85f40b35ec2e43e315b59f06e6d32171a953e6"},
-]
-
-[[package]]
 name = "librt"
 version = "0.15.0"
 description = "Mypyc runtime library"
@@ -1448,4 +1437,4 @@ structlog = ["structlog"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<4.0"
-content-hash = "6a5f5af19a95d1d10dffb67657082a74edf578646d63dc33c4cf706f02ac4d9c"
+content-hash = "eb2caa47754c983fe5136e02061528547c268913819135b2db6b149cedb0e776"

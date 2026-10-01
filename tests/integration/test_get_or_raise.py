@@ -91,3 +91,115 @@ def test_raises_an_error_for_decryption_failure() -> None:
     c.init()
     with pytest.raises(QuonfigDecryptionError):
         c.get_string("a.broken.secret.config")
+
+
+# raises an error if an env-var-provided duration 30s cannot be coerced
+def test_raises_an_error_if_an_env_var_provided_duration_30s_cannot_be_coerced() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_30S"] = os.environ.get("QUONFIG_ITD_DURATION_30S")
+    os.environ["QUONFIG_ITD_DURATION_30S"] = "30s"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigKeyNotFoundError):
+            c.get_duration("provided.duration.malformed.30s")
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises an error if an env-var-provided duration PT0.5H cannot be coerced
+def test_raises_an_error_if_an_env_var_provided_duration_pt0_5h_cannot_be_coerced() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_PT0_5H"] = os.environ.get("QUONFIG_ITD_DURATION_PT0_5H")
+    os.environ["QUONFIG_ITD_DURATION_PT0_5H"] = "PT0.5H"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigKeyNotFoundError):
+            c.get_duration("provided.duration.malformed.PT0.5H")
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises an error if an env-var-provided duration P1DT cannot be coerced
+def test_raises_an_error_if_an_env_var_provided_duration_p1dt_cannot_be_coerced() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_P1DT"] = os.environ.get("QUONFIG_ITD_DURATION_P1DT")
+    os.environ["QUONFIG_ITD_DURATION_P1DT"] = "P1DT"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigKeyNotFoundError):
+            c.get_duration("provided.duration.malformed.P1DT")
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises an error if an env-var-provided duration garbage cannot be coerced
+def test_raises_an_error_if_an_env_var_provided_duration_garbage_cannot_be_coerced() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_GARBAGE"] = os.environ.get("QUONFIG_ITD_DURATION_GARBAGE")
+    os.environ["QUONFIG_ITD_DURATION_GARBAGE"] = "garbage"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigKeyNotFoundError):
+            c.get_duration("provided.duration.malformed.garbage")
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises an error if a stored duration 30s cannot be coerced
+def test_raises_an_error_if_a_stored_duration_30s_cannot_be_coerced() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigKeyNotFoundError):
+        c.get_duration("test.duration.malformed.30s")
+
+
+# raises an error if a stored duration PT0.5H cannot be coerced
+def test_raises_an_error_if_a_stored_duration_pt0_5h_cannot_be_coerced() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigKeyNotFoundError):
+        c.get_duration("test.duration.malformed.PT0.5H")
+
+
+# raises an error if a stored duration P1DT cannot be coerced
+def test_raises_an_error_if_a_stored_duration_p1dt_cannot_be_coerced() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigKeyNotFoundError):
+        c.get_duration("test.duration.malformed.P1DT")
+
+
+# raises an error if a stored duration garbage cannot be coerced
+def test_raises_an_error_if_a_stored_duration_garbage_cannot_be_coerced() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigKeyNotFoundError):
+        c.get_duration("test.duration.malformed.garbage")
+
+
+# raises an error if a stored duration empty cannot be coerced
+def test_raises_an_error_if_a_stored_duration_empty_cannot_be_coerced() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigKeyNotFoundError):
+        c.get_duration("test.duration.malformed.empty")

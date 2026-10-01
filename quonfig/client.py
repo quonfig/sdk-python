@@ -1705,15 +1705,23 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[float]:
-        """Get a duration value in seconds."""
+        """Get a duration value in seconds.
+
+        The stored or ENV_VAR string must match the ISO-8601 grammar
+        (qfg-2agi decision 1). A malformed value returns ``default`` and logs
+        a warning once per key; with no default it returns None, or raises
+        ``QuonfigEnvVarCoerceError`` when ``on_no_default="error"``.
+        """
         result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             val = self._handle_missing(key, default)
             return float(val) if val is not None else None
-        try:
+        # The resolver returns float seconds for a duration config. Anything
+        # else (a non-duration config read as a duration) is never parsed
+        # with float(): "30", "nan" and "1e3" are not durations.
+        if isinstance(result, (int, float)) and not isinstance(result, bool):
             return float(result)
-        except (TypeError, ValueError):
-            return self._handle_missing(key, default)
+        return self._handle_missing(key, default)
 
     def is_feature_enabled(
         self,

@@ -117,17 +117,10 @@ def test_duration_90s(config_client) -> None:
     assert abs(result * 1000 - 90000) < 1, f"Expected {result * 1000}ms to be close to 90000ms"
 
 
-# duration 1.5M
-def test_duration_1_5m(config_client) -> None:
+# duration 30M
+def test_duration_30m(config_client) -> None:
     c = config_client
-    result = c.get_duration("test.duration.PT1.5M")
-    assert abs(result * 1000 - 90000) < 1, f"Expected {result * 1000}ms to be close to 90000ms"
-
-
-# duration 0.5H
-def test_duration_0_5h(config_client) -> None:
-    c = config_client
-    result = c.get_duration("test.duration.PT0.5H")
+    result = c.get_duration("test.duration.PT30M")
     assert abs(result * 1000 - 1800000) < 1, f"Expected {result * 1000}ms to be close to 1800000ms"
 
 
@@ -138,6 +131,117 @@ def test_duration_test_duration_p1dt6h2m1_5s(config_client) -> None:
     assert abs(result * 1000 - 108121500) < 1, (
         f"Expected {result * 1000}ms to be close to 108121500ms"
     )
+
+
+# duration zero PT0S
+def test_duration_zero_pt0s(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT0S")
+    assert abs(result * 1000 - 0) < 1, f"Expected {result * 1000}ms to be close to 0ms"
+
+
+# duration zero P0D
+def test_duration_zero_p0d(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.P0D")
+    assert abs(result * 1000 - 0) < 1, f"Expected {result * 1000}ms to be close to 0ms"
+
+
+# duration days only P2D
+def test_duration_days_only_p2d(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.P2D")
+    assert abs(result * 1000 - 172800000) < 1, (
+        f"Expected {result * 1000}ms to be close to 172800000ms"
+    )
+
+
+# duration hours only PT1H
+def test_duration_hours_only_pt1h(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT1H")
+    assert abs(result * 1000 - 3600000) < 1, f"Expected {result * 1000}ms to be close to 3600000ms"
+
+
+# duration minutes only PT1M
+def test_duration_minutes_only_pt1m(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT1M")
+    assert abs(result * 1000 - 60000) < 1, f"Expected {result * 1000}ms to be close to 60000ms"
+
+
+# duration seconds only PT1S
+def test_duration_seconds_only_pt1s(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT1S")
+    assert abs(result * 1000 - 1000) < 1, f"Expected {result * 1000}ms to be close to 1000ms"
+
+
+# duration leading zero PT05S
+def test_duration_leading_zero_pt05s(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT05S")
+    assert abs(result * 1000 - 5000) < 1, f"Expected {result * 1000}ms to be close to 5000ms"
+
+
+# duration hours and minutes PT1H30M
+def test_duration_hours_and_minutes_pt1h30m(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT1H30M")
+    assert abs(result * 1000 - 5400000) < 1, f"Expected {result * 1000}ms to be close to 5400000ms"
+
+
+# duration days and hours P1DT2H
+def test_duration_days_and_hours_p1dt2h(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.P1DT2H")
+    assert abs(result * 1000 - 93600000) < 1, (
+        f"Expected {result * 1000}ms to be close to 93600000ms"
+    )
+
+
+# duration one millisecond PT0.001S
+def test_duration_one_millisecond_pt0_001s(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT0.001S")
+    assert abs(result * 1000 - 1) < 1, f"Expected {result * 1000}ms to be close to 1ms"
+
+
+# duration magnitude ceiling P36500D
+def test_duration_magnitude_ceiling_p36500d(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.P36500D")
+    assert abs(result * 1000 - 3153600000000) < 1, (
+        f"Expected {result * 1000}ms to be close to 3153600000000ms"
+    )
+
+
+# duration rounding PT2.01S
+def test_duration_rounding_pt2_01s(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT2.01S")
+    assert abs(result * 1000 - 2010) < 1, f"Expected {result * 1000}ms to be close to 2010ms"
+
+
+# duration rounding PT1.005S
+def test_duration_rounding_pt1_005s(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT1.005S")
+    assert abs(result * 1000 - 1005) < 1, f"Expected {result * 1000}ms to be close to 1005ms"
+
+
+# duration rounding half up PT0.0005S
+def test_duration_rounding_half_up_pt0_0005s(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT0.0005S")
+    assert abs(result * 1000 - 1) < 1, f"Expected {result * 1000}ms to be close to 1ms"
+
+
+# duration rounding down PT0.0004S
+def test_duration_rounding_down_pt0_0004s(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.PT0.0004S")
+    assert abs(result * 1000 - 0) < 1, f"Expected {result * 1000}ms to be close to 0ms"
 
 
 # json test
@@ -188,3 +292,240 @@ def test_list_on_left_side_test_3(config_client) -> None:
         "left.hand.test.opposite", contexts={"user": {"name": "james", "aka": ["a", "b"]}}
     )
     assert result == "correct"
+
+
+# env-var-provided duration PT1.5S via get
+def test_env_var_provided_duration_pt1_5s_via_get() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_PT1_5S"] = os.environ.get("QUONFIG_ITD_DURATION_PT1_5S")
+    os.environ["QUONFIG_ITD_DURATION_PT1_5S"] = "PT1.5S"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.get_duration("provided.duration.PT1.5S")
+        assert abs(result * 1000 - 1500) < 1, f"Expected {result * 1000}ms to be close to 1500ms"
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# stored malformed duration 30s returns the default
+def test_stored_malformed_duration_30s_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.malformed.30s", default=7000)
+    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+
+
+# stored malformed duration 30s with no default returns nil
+def test_stored_malformed_duration_30s_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("test.duration.malformed.30s")
+    assert result is None
+
+
+# stored malformed duration PT0.5H returns the default
+def test_stored_malformed_duration_pt0_5h_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.malformed.PT0.5H", default=7000)
+    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+
+
+# stored malformed duration PT0.5H with no default returns nil
+def test_stored_malformed_duration_pt0_5h_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("test.duration.malformed.PT0.5H")
+    assert result is None
+
+
+# stored malformed duration P1DT returns the default
+def test_stored_malformed_duration_p1dt_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.malformed.P1DT", default=7000)
+    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+
+
+# stored malformed duration P1DT with no default returns nil
+def test_stored_malformed_duration_p1dt_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("test.duration.malformed.P1DT")
+    assert result is None
+
+
+# stored malformed duration garbage returns the default
+def test_stored_malformed_duration_garbage_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.malformed.garbage", default=7000)
+    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+
+
+# stored malformed duration garbage with no default returns nil
+def test_stored_malformed_duration_garbage_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("test.duration.malformed.garbage")
+    assert result is None
+
+
+# stored malformed duration empty returns the default
+def test_stored_malformed_duration_empty_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("test.duration.malformed.empty", default=7000)
+    assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+
+
+# stored malformed duration empty with no default returns nil
+def test_stored_malformed_duration_empty_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("test.duration.malformed.empty")
+    assert result is None
+
+
+# env-var-provided malformed duration 30s returns the default
+def test_env_var_provided_malformed_duration_30s_returns_the_default() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_30S"] = os.environ.get("QUONFIG_ITD_DURATION_30S")
+    os.environ["QUONFIG_ITD_DURATION_30S"] = "30s"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.get_duration("provided.duration.malformed.30s", default=7000)
+        assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# env-var-provided malformed duration 30s with no default returns nil
+def test_env_var_provided_malformed_duration_30s_with_no_default_returns_nil() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_30S"] = os.environ.get("QUONFIG_ITD_DURATION_30S")
+    os.environ["QUONFIG_ITD_DURATION_30S"] = "30s"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+        c.init()
+        result = c.get_duration("provided.duration.malformed.30s")
+        assert result is None
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# env-var-provided malformed duration PT0.5H returns the default
+def test_env_var_provided_malformed_duration_pt0_5h_returns_the_default() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_PT0_5H"] = os.environ.get("QUONFIG_ITD_DURATION_PT0_5H")
+    os.environ["QUONFIG_ITD_DURATION_PT0_5H"] = "PT0.5H"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.get_duration("provided.duration.malformed.PT0.5H", default=7000)
+        assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# env-var-provided malformed duration PT0.5H with no default returns nil
+def test_env_var_provided_malformed_duration_pt0_5h_with_no_default_returns_nil() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_PT0_5H"] = os.environ.get("QUONFIG_ITD_DURATION_PT0_5H")
+    os.environ["QUONFIG_ITD_DURATION_PT0_5H"] = "PT0.5H"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+        c.init()
+        result = c.get_duration("provided.duration.malformed.PT0.5H")
+        assert result is None
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# env-var-provided malformed duration P1DT returns the default
+def test_env_var_provided_malformed_duration_p1dt_returns_the_default() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_P1DT"] = os.environ.get("QUONFIG_ITD_DURATION_P1DT")
+    os.environ["QUONFIG_ITD_DURATION_P1DT"] = "P1DT"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.get_duration("provided.duration.malformed.P1DT", default=7000)
+        assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# env-var-provided malformed duration P1DT with no default returns nil
+def test_env_var_provided_malformed_duration_p1dt_with_no_default_returns_nil() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_P1DT"] = os.environ.get("QUONFIG_ITD_DURATION_P1DT")
+    os.environ["QUONFIG_ITD_DURATION_P1DT"] = "P1DT"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+        c.init()
+        result = c.get_duration("provided.duration.malformed.P1DT")
+        assert result is None
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# env-var-provided malformed duration garbage returns the default
+def test_env_var_provided_malformed_duration_garbage_returns_the_default() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_GARBAGE"] = os.environ.get("QUONFIG_ITD_DURATION_GARBAGE")
+    os.environ["QUONFIG_ITD_DURATION_GARBAGE"] = "garbage"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.get_duration("provided.duration.malformed.garbage", default=7000)
+        assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# env-var-provided malformed duration garbage with no default returns nil
+def test_env_var_provided_malformed_duration_garbage_with_no_default_returns_nil() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_DURATION_GARBAGE"] = os.environ.get("QUONFIG_ITD_DURATION_GARBAGE")
+    os.environ["QUONFIG_ITD_DURATION_GARBAGE"] = "garbage"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+        c.init()
+        result = c.get_duration("provided.duration.malformed.garbage")
+        assert result is None
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v

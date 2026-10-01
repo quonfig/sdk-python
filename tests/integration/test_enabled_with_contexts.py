@@ -80,9 +80,21 @@ def test_returns_false_due_to_partial_scope_context_override_of_domain(config_cl
     c = config_client
     result = c.is_feature_enabled(
         "feature-flag.in-seg.segment-and",
-        contexts={"": {"domain": "example.com", "key": "prefab.cloud"}, "user": {"key": "nobody"}},
+        contexts={"": {"domain": "prefab.cloud"}, "user": {"key": "nobody"}},
     )
     assert result is False
+
+
+# returns true due to local override of domain when scope user.key already matches
+def test_returns_true_due_to_local_override_of_domain_when_scope_user_key_already_matches(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.in-seg.segment-and",
+        contexts={"": {"domain": "prefab.cloud"}, "user": {"key": "michael"}},
+    )
+    assert result is True
 
 
 # returns true due to full scope context override of user.key and domain

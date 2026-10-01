@@ -11,9 +11,11 @@ import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
+# Matched with ``fullmatch`` (``$`` would accept a trailing newline) and
+# ``[0-9]`` (``\d`` matches non-ASCII digits such as U+0665).
 _DURATION_RE = re.compile(
-    r"^P(?:(?P<d>\d+)D)?"
-    r"(?:(?P<t>T)(?:(?P<h>\d+)H)?(?:(?P<m>\d+)M)?(?:(?P<s>\d+(?:\.(?P<frac>\d+))?)S)?)?$"
+    r"P(?:(?P<d>[0-9]+)D)?"
+    r"(?:(?P<t>T)(?:(?P<h>[0-9]+)H)?(?:(?P<m>[0-9]+)M)?(?:(?P<s>[0-9]+(?:\.(?P<frac>[0-9]+))?)S)?)?"
 )
 
 _MAX_MS = 36500 * 86_400_000
@@ -23,7 +25,7 @@ def parse_duration_millis(text: str) -> Optional[int]:
     """Return the duration in whole milliseconds, or None if ``text`` is invalid."""
     if not isinstance(text, str):
         return None
-    m = _DURATION_RE.match(text)
+    m = _DURATION_RE.fullmatch(text)
     if m is None:
         return None
     d, h, mi, s = m.group("d"), m.group("h"), m.group("m"), m.group("s")

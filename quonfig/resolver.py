@@ -114,7 +114,7 @@ class Resolver:
         if value.confidential and value.decrypt_with:
             raw = self._decrypt_value(raw, value.decrypt_with)
 
-        return self._coerce(raw, vtype)
+        return self._coerce(raw, vtype, config_key)
 
     def _resolve_provided(self, raw: Any) -> Any:
         """Handle ENV_VAR provided values."""
@@ -294,7 +294,7 @@ class Resolver:
                     return v.value
         return None
 
-    def _coerce(self, raw: Any, vtype: str) -> Any:
+    def _coerce(self, raw: Any, vtype: str, config_key: str = "") -> Any:
         """Coerce raw value to the appropriate Python type."""
         if raw is None:
             # JSON's `null` is a legitimate native value — allow None to pass through.
@@ -312,6 +312,18 @@ class Resolver:
                 )
             # dict / list / int / float / bool (and None handled above) all pass through.
             return raw
+
+        # Durations follow the decided grammar (qfg-2agi decision 1). A
+        # malformed stored value raises the same coercion error as a malformed
+        # ENV_VAR one (decision 3), outside the try/except below so it is
+        # never swallowed into the raw string. The message omits the value.
+        if vtype == "duration":
+            ms = parse_duration_millis(raw) if isinstance(raw, str) else None
+            if ms is None:
+                raise QuonfigEnvVarCoerceError(
+                    f"Stored value for '{config_key}' could not be coerced to duration"
+                )
+            return ms / 1000
 
         try:
             if vtype == "bool":
@@ -341,14 +353,6 @@ class Resolver:
 
             elif vtype == "log_level":
                 return str(raw).upper()
-
-            elif vtype == "duration":
-                import isodate
-
-                if isinstance(raw, str):
-                    duration = isodate.parse_duration(raw)
-                    return duration.total_seconds()
-                return float(raw)
 
             else:
                 # Unknown type — return as-is

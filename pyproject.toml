@@ -17,7 +17,6 @@ mmh3 = ">=3.0.0,<6.0.0"
 # (pulled via requests); this floor keeps the locked resolution patched.
 cryptography = ">=50.0.0"
 tenacity = ">=8.0.0"
-isodate = ">=0.6.1,<0.8.0"
 packaging = ">=21.0"
 # Opt-in data_dir_auto_reload uses watchfiles (Rust-backed notify wrapper).
 # Always installed: keeps the optional-extras matrix simple and matches
@@ -43,10 +42,6 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.mypy]
 python_version = "3.10"
-
-[[tool.mypy.overrides]]
-module = ["isodate", "isodate.*"]
-ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py310"

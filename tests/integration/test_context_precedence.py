@@ -177,3 +177,24 @@ def test_returns_the_correct_get_value_when_local_context_clobbers_block_context
     c = config_client
     result = c.get_string("basic.rule.config", contexts={"user": {"email": "test@prefab.cloud"}})
     assert result == "override"
+
+
+# returns the correct `get` value when local context replaces the whole global named context (disjoint attributes)
+def test_returns_the_correct_get_value_when_local_context_replaces_the_whole_global_named_context_disjoint_attributes(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.get_string("basic.rule.config", contexts={"user": {"plan": "pro"}})
+    assert result == "default"
+
+
+# returns the correct `get` value when a named context the local context does not mention survives
+def test_returns_the_correct_get_value_when_a_named_context_the_local_context_does_not_mention_survives(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.get_string(
+        "basic.rule.config",
+        contexts={"user": {"email": "test@prefab.cloud"}, "team": {"plan": "pro"}},
+    )
+    assert result == "override"
