@@ -23,7 +23,9 @@
   contract as a malformed ENV_VAR value: the caller's default plus one
   warning per key, `None` with no default, `QuonfigEnvVarCoerceError` with
   `on_no_default="error"`, and `reason="ERROR"` in details. The raw value is
-  never logged. The `isodate` dependency is removed (qfg-2agi.11).
+  never logged. A number too long for exact decimal arithmetic (about 26 or
+  more digits) is rejected the same way instead of raising a decimal error.
+  The `isodate` dependency is removed (qfg-2agi.11).
 
 - **Test: confidential-value redaction is guarded on the real telemetry path.**
   A new unit test drives `confidential` and `decryptWith` configs through

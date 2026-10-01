@@ -42,7 +42,9 @@ def parse_duration_millis(text: str) -> Optional[int]:
         + Decimal(mi or 0) * 60_000
         + Decimal(s or 0) * 1000
     )
-    ms = int(total.quantize(Decimal(1), rounding=ROUND_HALF_UP))
-    if ms > _MAX_MS:
+    # Range-check before quantize: quantize raises InvalidOperation once the
+    # value exceeds Decimal's 28-digit precision. In range, total has at most
+    # 22 significant digits, so the sum and rounding below are exact.
+    if total > _MAX_MS:
         return None
-    return ms
+    return int(total.quantize(Decimal(1), rounding=ROUND_HALF_UP))

@@ -82,6 +82,9 @@ INVALID = [
     "1h30m",
     "30",
     "garbage",
+    # Beyond Decimal's 28-digit default precision: must not raise from quantize.
+    "PT" + "9" * 40 + "S",
+    "P" + "9" * 30 + "D",
 ]
 
 
@@ -167,7 +170,7 @@ def test_stored_malformed_get_or_raise_raises_coerce_error(raw: Any) -> None:
         c.get_duration("d.key")
 
 
-@pytest.mark.parametrize("raw", ["30s", "PT0.5H", "P1DT", "garbage"])
+@pytest.mark.parametrize("raw", ["30s", "PT0.5H", "P1DT", "garbage", "PT" + "9" * 40 + "S"])
 def test_stored_malformed_details_reports_error(raw: str) -> None:
     c = _client(raw)
     d = c.get_json_details("d.key")

@@ -315,7 +315,7 @@ def test_env_var_provided_duration_pt1_5s_via_get() -> None:
 # stored malformed duration 30s returns the default
 def test_stored_malformed_duration_30s_returns_the_default(config_client) -> None:
     c = config_client
-    result = c.get_duration("test.duration.malformed.30s", default=7000)
+    result = c.get_duration("test.duration.malformed.30s", default=7)
     assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
 
 
@@ -330,7 +330,7 @@ def test_stored_malformed_duration_30s_with_no_default_returns_nil() -> None:
 # stored malformed duration PT0.5H returns the default
 def test_stored_malformed_duration_pt0_5h_returns_the_default(config_client) -> None:
     c = config_client
-    result = c.get_duration("test.duration.malformed.PT0.5H", default=7000)
+    result = c.get_duration("test.duration.malformed.PT0.5H", default=7)
     assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
 
 
@@ -345,7 +345,7 @@ def test_stored_malformed_duration_pt0_5h_with_no_default_returns_nil() -> None:
 # stored malformed duration P1DT returns the default
 def test_stored_malformed_duration_p1dt_returns_the_default(config_client) -> None:
     c = config_client
-    result = c.get_duration("test.duration.malformed.P1DT", default=7000)
+    result = c.get_duration("test.duration.malformed.P1DT", default=7)
     assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
 
 
@@ -360,7 +360,7 @@ def test_stored_malformed_duration_p1dt_with_no_default_returns_nil() -> None:
 # stored malformed duration garbage returns the default
 def test_stored_malformed_duration_garbage_returns_the_default(config_client) -> None:
     c = config_client
-    result = c.get_duration("test.duration.malformed.garbage", default=7000)
+    result = c.get_duration("test.duration.malformed.garbage", default=7)
     assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
 
 
@@ -375,7 +375,7 @@ def test_stored_malformed_duration_garbage_with_no_default_returns_nil() -> None
 # stored malformed duration empty returns the default
 def test_stored_malformed_duration_empty_returns_the_default(config_client) -> None:
     c = config_client
-    result = c.get_duration("test.duration.malformed.empty", default=7000)
+    result = c.get_duration("test.duration.malformed.empty", default=7)
     assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
 
 
@@ -395,7 +395,7 @@ def test_env_var_provided_malformed_duration_30s_returns_the_default() -> None:
     try:
         c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
         c.init()
-        result = c.get_duration("provided.duration.malformed.30s", default=7000)
+        result = c.get_duration("provided.duration.malformed.30s", default=7)
         assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
     finally:
         for k, v in env_backup.items():
@@ -431,7 +431,7 @@ def test_env_var_provided_malformed_duration_pt0_5h_returns_the_default() -> Non
     try:
         c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
         c.init()
-        result = c.get_duration("provided.duration.malformed.PT0.5H", default=7000)
+        result = c.get_duration("provided.duration.malformed.PT0.5H", default=7)
         assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
     finally:
         for k, v in env_backup.items():
@@ -467,7 +467,7 @@ def test_env_var_provided_malformed_duration_p1dt_returns_the_default() -> None:
     try:
         c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
         c.init()
-        result = c.get_duration("provided.duration.malformed.P1DT", default=7000)
+        result = c.get_duration("provided.duration.malformed.P1DT", default=7)
         assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
     finally:
         for k, v in env_backup.items():
@@ -503,7 +503,7 @@ def test_env_var_provided_malformed_duration_garbage_returns_the_default() -> No
     try:
         c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
         c.init()
-        result = c.get_duration("provided.duration.malformed.garbage", default=7000)
+        result = c.get_duration("provided.duration.malformed.garbage", default=7)
         assert abs(result * 1000 - 7000) < 1, f"Expected {result * 1000}ms to be close to 7000ms"
     finally:
         for k, v in env_backup.items():
