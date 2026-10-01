@@ -1898,10 +1898,16 @@ class Quonfig:
 
     @contextlib.contextmanager
     def scoped_context(self, contexts: Contexts):
-        """Context manager that sets thread-local context for the duration."""
+        """Context manager that sets thread-local context for the duration.
+
+        Nested scopes stack REPLACE_NAMED: the inner scope's named contexts
+        replace the same-named outer ones wholesale, and outer named contexts
+        the inner scope does not mention survive. The outer scope is restored
+        on exit.
+        """
         old = get_thread_context()
         try:
-            set_thread_context(contexts)
+            set_thread_context(merge_contexts(old or {}, contexts or {}))
             yield self
         finally:
             if old is None:

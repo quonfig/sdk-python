@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fix: nested `scoped_context` keeps the outer scope's named contexts.** An
+  inner `scoped_context` replaced the whole thread-local context, so a named
+  context only the outer scope set (e.g. `team`) was lost inside the inner
+  block. Nested scopes now stack by the documented rule (REPLACE_NAMED): the
+  inner scope's named contexts replace the same-named outer ones wholesale,
+  and the outer named contexts it does not mention survive. The outer scope is
+  still restored on exit. This matches `with_context` chaining and the other
+  SDKs (qfg-2agi.37).
+
 - **Fix: stored durations use the shared ISO-8601 grammar.** A stored
   `duration` value was parsed with `isodate`, so `PT0.5H`, `P1DT`, `P1Y` and
   `-PT5S` were accepted, and anything `isodate` rejected came back as the raw
