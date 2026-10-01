@@ -14,6 +14,7 @@ the raw value never reaches a log line or error message.
 
 from __future__ import annotations
 
+import decimal
 import logging
 from typing import Any
 
@@ -177,3 +178,65 @@ def test_stored_malformed_details_reports_error(raw: str) -> None:
     assert d.reason == "ERROR"
     assert d.value is None
     assert raw not in (d.error_message or "")
+
+
+# The parser must not depend on the caller's thread-local decimal context: a
+# host app that lowers precision or traps Inexact/Rounded must still get exact
+# millis (or None), never a wrong value or a decimal exception.
+_HOSTILE_CONTEXTS = {
+    "low_prec": dict(prec=6),
+    "round_down": dict(rounding=decimal.ROUND_DOWN),
+    "traps_inexact_rounded": dict(
+        traps=[decimal.Inexact, decimal.Rounded, decimal.InvalidOperation]
+    ),
+    "tiny_exponent_range": dict(Emax=10, Emin=-10),
+}
+
+_HOSTILE_VALID = [
+    ("PT1.005S", 1005),
+    ("PT1.5S", 1500),
+    ("PT0.0005S", 1),
+    ("P1DT6H2M1.5S", 108121500),
+    ("PT12345.678901S", 12345679),
+    ("P36499DT23H59M59.999999999S", 3153599999999 + 1),
+    ("P36500D", 3153600000000),
+]
+
+_HOSTILE_INVALID = [
+    "P36501D",
+    "PT" + "9" * 40 + "S",
+    "P" + "9" * 30 + "D",
+]
+
+
+@pytest.mark.parametrize("ctx_name", sorted(_HOSTILE_CONTEXTS))
+def test_parse_ignores_caller_decimal_context(ctx_name: str) -> None:
+    with decimal.localcontext() as ctx:
+        for attr, value in _HOSTILE_CONTEXTS[ctx_name].items():
+            if attr == "traps":
+                for sig in value:
+                    ctx.traps[sig] = True
+            else:
+                setattr(ctx, attr, value)
+        before = (ctx.prec, ctx.rounding, ctx.Emax, ctx.Emin, dict(ctx.traps), dict(ctx.flags))
+        for text, millis in _HOSTILE_VALID:
+            assert parse_duration_millis(text) == millis, text
+        for text in _HOSTILE_INVALID:
+            assert parse_duration_millis(text) is None, text
+        current = decimal.getcontext()
+        after = (
+            current.prec,
+            current.rounding,
+            current.Emax,
+            current.Emin,
+            dict(current.traps),
+            dict(current.flags),
+        )
+        assert after == before
+
+
+# Range check runs before rounding: a value a hair over P36500D is rejected
+# rather than rounded down onto the ceiling (matches sdk-go and sdk-node).
+@pytest.mark.parametrize("text", ["P36500DT0.0001S", "P36500DT0.000000001S", "PT876000H0M0.4S"])
+def test_just_over_ceiling_rejected_not_rounded_onto_it(text: str) -> None:
+    assert parse_duration_millis(text) is None

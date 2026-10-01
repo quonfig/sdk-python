@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Fix: duration parsing ignores the caller's decimal context.** Duration
+  millis were computed with `Decimal` in the caller's thread-local context, so
+  a host app that lowered `decimal.getcontext().prec`, changed its rounding,
+  narrowed its exponent range or trapped `Inexact`/`Rounded` got wrong millis
+  (e.g. `P1DT6H2M1.5S` under `prec=6`) or a decimal exception from
+  `get_duration`. The arithmetic now runs in a private context, and the
+  caller's context and flags are left untouched. Related: the `P36500D` range
+  check now runs before rounding to whole milliseconds, so a value just over
+  the ceiling (e.g. `P36500DT0.0001S`) is rejected instead of being rounded
+  down onto `P36500D`, matching sdk-go and sdk-node (qfg-2agi.11).
+
 - **Fix: nested `scoped_context` keeps the outer scope's named contexts.** An
   inner `scoped_context` replaced the whole thread-local context, so a named
   context only the outer scope set (e.g. `team`) was lost inside the inner
