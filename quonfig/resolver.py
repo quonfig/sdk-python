@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from typing import TYPE_CHECKING, Any, Optional
 
 import mmh3
 
-from .exceptions import QuonfigDecryptionError, QuonfigEnvVarNotSetError, QuonfigValueTypeError
+from .duration import parse_duration_millis
+from .exceptions import (
+    QuonfigDecryptionError,
+    QuonfigEnvVarCoerceError,
+    QuonfigEnvVarNotSetError,
+    QuonfigValueTypeError,
+)
 from .types import Contexts, Value
 
 # Mirrors Reforge SDK config_value_unwrapper.py:24 — kept identical so
@@ -55,6 +62,11 @@ LOG_LEVEL_ORDER = {
 }
 
 
+_UNCOERCIBLE = object()
+_INT_RE = re.compile(r"^[+-]?\d+$")
+_DOUBLE_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+
+
 class Resolver:
     def __init__(self, store: "ConfigStore") -> None:
         self.store = store
@@ -65,8 +77,13 @@ class Resolver:
         contexts: Contexts,
         config_key: str = "",
         weighted_value_index: int = -1,
+        value_type: str = "",
     ) -> Any:
         """Resolve a Value object to a Python native type.
+
+        ``value_type`` is the config's declared valueType. An ENV_VAR-provided
+        value is coerced to it strictly; an uncoercible value raises
+        ``QuonfigEnvVarCoerceError`` (qfg-2agi.18).
 
         ``weighted_value_index`` is the variant the evaluator already picked
         for a weighted value (``EvalResult.weighted_value_index``). When given
@@ -81,7 +98,7 @@ class Resolver:
 
         # Handle provided (ENV_VAR) type
         if vtype == "provided":
-            return self._resolve_provided(raw)
+            return self._coerce_env_var(self._resolve_provided(raw), value_type, config_key)
 
         # Handle weighted values
         if vtype == "weighted_values":
@@ -113,6 +130,46 @@ class Resolver:
                 raise QuonfigEnvVarNotSetError(f"Environment variable '{lookup}' is not set")
             return env_val
         raise QuonfigEnvVarNotSetError(f"Unknown provided source: {source!r}")
+
+    def _coerce_env_var(self, raw: Any, value_type: str, config_key: str = "") -> Any:
+        """Strictly coerce an ENV_VAR string to the config's valueType.
+
+        The error message never includes the raw value: env vars often carry
+        secrets.
+        """
+        if not isinstance(raw, str) or value_type in ("", "string", "json"):
+            return raw
+
+        coerced: Any = _UNCOERCIBLE
+        if value_type == "bool":
+            lowered = raw.lower()
+            if lowered == "true":
+                coerced = True
+            elif lowered == "false":
+                coerced = False
+        elif value_type == "int":
+            if _INT_RE.match(raw):
+                coerced = int(raw)
+        elif value_type == "double":
+            if _DOUBLE_RE.match(raw):
+                coerced = float(raw)
+        elif value_type == "string_list":
+            coerced = [] if raw == "" else [part.strip() for part in raw.split(",")]
+        elif value_type == "duration":
+            ms = parse_duration_millis(raw)
+            if ms is not None:
+                coerced = ms / 1000
+        elif value_type == "log_level":
+            coerced = raw.upper()
+        else:
+            coerced = raw
+
+        if coerced is _UNCOERCIBLE:
+            raise QuonfigEnvVarCoerceError(
+                f"Environment-variable value for '{config_key}' could not be "
+                f"coerced to {value_type}"
+            )
+        return coerced
 
     def _resolve_weighted(
         self,

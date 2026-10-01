@@ -6,6 +6,7 @@ from .bound_client import BoundQuonfig
 from .client import Quonfig
 from .exceptions import (
     QuonfigDecryptionError,
+    QuonfigEnvVarCoerceError,
     QuonfigEnvVarNotSetError,
     QuonfigError,
     QuonfigInitTimeoutError,
@@ -28,6 +29,7 @@ __all__ = [
     "QuonfigKeyNotFoundError",
     "QuonfigInitTimeoutError",
     "QuonfigNotInitializedError",
+    "QuonfigEnvVarCoerceError",
     "QuonfigEnvVarNotSetError",
     "QuonfigDecryptionError",
     "Contexts",

@@ -28,3 +28,12 @@ class QuonfigValueTypeError(QuonfigError):
     Example: a ``json``-typed value arriving as a stringified JSON payload instead
     of a native dict/list/number/bool/None.
     """
+
+
+class QuonfigEnvVarCoerceError(QuonfigKeyNotFoundError):
+    """An ENV_VAR-provided value cannot be coerced to the config's valueType.
+
+    Raised only when no default was given and ``on_no_default="error"``
+    (the ``unable_to_coerce_env_var`` contract). Subclasses
+    ``QuonfigKeyNotFoundError`` so existing handlers keep catching it.
+    """

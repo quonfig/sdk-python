@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: ENV_VAR-provided values are coerced to the config's valueType.**
+  A `provided` value was returned as the raw environment string, so a `bool`
+  config set to `false` read `True` from `get_bool`, `int`/`double` came back
+  as strings, a `string_list` of `a,b` became `["a,b"]`, and durations were
+  read with a loose parser. Values are now coerced strictly: `bool` is
+  `true`/`false` (any case); `int` and `double` must be plain numbers (no
+  `nan`/`inf`); `string_list` splits on commas; `duration` uses the shared
+  ISO-8601 grammar (fractions on seconds only, round half up to whole ms).
+  A malformed value makes the typed getter return the caller's default and
+  log one warning per key (the raw value is never logged); with no default it
+  returns `None`; with `on_no_default="error"` it raises the new
+  `QuonfigEnvVarCoerceError` (a `QuonfigKeyNotFoundError` subclass, so
+  existing handlers still catch it). `get_float` and `get_duration` now
+  return the caller's default instead of `None` when parsing fails
+  (qfg-2agi.18).
+
 ## 1.6.0 - 2026-09-28
 
 Minor release: fixes (qfg-9dxb.3, qfg-9dxb.7, qfg-9dxb.9) plus a weighted-rollout behavior change (qfg-9dxb.8). No wire change, no removed API, no new dependencies.

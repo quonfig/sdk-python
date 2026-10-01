@@ -25,6 +25,7 @@ from .context import (
 from .evaluator import Evaluator
 from .exceptions import (
     QuonfigDecryptionError,
+    QuonfigEnvVarCoerceError,
     QuonfigEnvVarNotSetError,
     QuonfigInitTimeoutError,
     QuonfigKeyNotFoundError,
@@ -386,6 +387,7 @@ class Quonfig:
         # property was missing from context (qfg-9dxb.8). One warning per key
         # per client; bounded by the number of flags.
         self._hash_missing_warned: Set[str] = set()
+        self._coerce_warned: Set[str] = set()
 
         # Telemetry (optional).
         #
@@ -1294,7 +1296,12 @@ class Quonfig:
     # Core evaluate + resolve
     # ------------------------------------------------------------------
 
-    def _get(self, key: str, contexts: Optional[Contexts] = None) -> Any:
+    def _get(
+        self,
+        key: str,
+        contexts: Optional[Contexts] = None,
+        default: Any = _NO_DEFAULT,
+    ) -> Any:
         self._wait_initialized()
         assert self._evaluator is not None
         merged = self._effective_contexts(contexts)
@@ -1311,7 +1318,15 @@ class Quonfig:
                 merged,
                 config_key=key,
                 weighted_value_index=result.weighted_value_index,
+                value_type=result.value_type,
             )
+        except QuonfigEnvVarCoerceError as e:
+            # Malformed ENV_VAR value (qfg-2agi decision 3): warn once per key,
+            # then fall back to the caller's default; get_or_raise raises.
+            self._warn_coerce_failed(key, e)
+            if default is _NO_DEFAULT and self._on_no_default == "error":
+                raise
+            return _NO_DEFAULT
         except (QuonfigEnvVarNotSetError, QuonfigDecryptionError):
             raise
         except Exception as e:
@@ -1410,6 +1425,19 @@ class Quonfig:
                     merged,
                     config_key=key,
                     weighted_value_index=result.weighted_value_index,
+                    value_type=result.value_type,
+                )
+            except QuonfigEnvVarCoerceError as e:
+                self._warn_coerce_failed(key, e)
+                return EvaluationDetails(
+                    value=None,
+                    reason="ERROR",
+                    error_code="GENERAL",
+                    error_message=str(e),
+                    variant=self._build_variant("ERROR", None, None),
+                    flag_metadata=self._build_flag_metadata(
+                        result.config_id, result.config_type, None, None, None
+                    ),
                 )
             except (QuonfigEnvVarNotSetError, QuonfigDecryptionError) as e:
                 return EvaluationDetails(
@@ -1552,6 +1580,14 @@ class Quonfig:
             prop,
         )
 
+    def _warn_coerce_failed(self, key: str, err: Exception) -> None:
+        """Log once per config key that its ENV_VAR value could not be
+        coerced. The message never includes the raw value."""
+        if key in self._coerce_warned:
+            return
+        self._coerce_warned.add(key)
+        logger.warning("quonfig: %s; using the default", err)
+
     def _handle_missing(self, key: str, default: Any) -> Any:
         if default is not _NO_DEFAULT:
             return default
@@ -1574,7 +1610,7 @@ class Quonfig:
         contexts: Optional[Contexts] = None,
     ) -> Any:
         """Get any config value by key, returning raw Python type."""
-        result = self._get(key, contexts)
+        result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             return self._handle_missing(key, default)
         return result
@@ -1585,7 +1621,7 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[str]:
-        result = self._get(key, contexts)
+        result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             val = self._handle_missing(key, default)
             return str(val) if val is not None else None
@@ -1597,7 +1633,7 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[int]:
-        result = self._get(key, contexts)
+        result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             val = self._handle_missing(key, default)
             return int(val) if val is not None else None
@@ -1613,14 +1649,14 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[float]:
-        result = self._get(key, contexts)
+        result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             val = self._handle_missing(key, default)
             return float(val) if val is not None else None
         try:
             return float(result)
         except (TypeError, ValueError):
-            return None
+            return self._handle_missing(key, default)
 
     def get_bool(
         self,
@@ -1628,7 +1664,7 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[bool]:
-        result = self._get(key, contexts)
+        result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             val = self._handle_missing(key, default)
             return bool(val) if val is not None else None
@@ -1640,7 +1676,7 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[List[str]]:
-        result = self._get(key, contexts)
+        result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             val = self._handle_missing(key, default)
             if val is None:
@@ -1658,7 +1694,7 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Any:
-        result = self._get(key, contexts)
+        result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             return self._handle_missing(key, default)
         return result
@@ -1670,14 +1706,14 @@ class Quonfig:
         contexts: Optional[Contexts] = None,
     ) -> Optional[float]:
         """Get a duration value in seconds."""
-        result = self._get(key, contexts)
+        result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             val = self._handle_missing(key, default)
             return float(val) if val is not None else None
         try:
             return float(result)
         except (TypeError, ValueError):
-            return None
+            return self._handle_missing(key, default)
 
     def is_feature_enabled(
         self,
@@ -1687,7 +1723,7 @@ class Quonfig:
     ) -> bool:
         """Returns True only if the config is a boolean True value.
         Returns False for missing keys, non-boolean types, or boolean False."""
-        result = self._get(key, contexts)
+        result = self._get(key, contexts, default)
         if result is _NO_DEFAULT:
             return default
         if isinstance(result, bool):
