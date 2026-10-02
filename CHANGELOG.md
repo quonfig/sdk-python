@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 - 2026-10-02
 
 - **Fix: duration parsing ignores the caller's decimal context.** Duration
   millis were computed with `Decimal` in the caller's thread-local context, so
