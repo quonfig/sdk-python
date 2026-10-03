@@ -92,6 +92,33 @@ def test_even_split_ones_serves_second_variant_at_high_hash_fraction_2(config_cl
     assert result == "b"
 
 
+# non-ascii tracking_id emoji hashes utf-8 bytes
+def test_non_ascii_tracking_id_emoji_hashes_utf_8_bytes(config_client) -> None:
+    c = config_client
+    result = c.get_string(
+        "feature-flag.weighted.even-split-ones", contexts={"user": {"tracking_id": "🚀-rocket"}}
+    )
+    assert result == "a"
+
+
+# non-ascii tracking_id latin hashes utf-8 bytes
+def test_non_ascii_tracking_id_latin_hashes_utf_8_bytes(config_client) -> None:
+    c = config_client
+    result = c.get_string(
+        "feature-flag.weighted.even-split-ones", contexts={"user": {"tracking_id": "münchen-7"}}
+    )
+    assert result == "a"
+
+
+# non-ascii tracking_id cjk hashes utf-8 bytes
+def test_non_ascii_tracking_id_cjk_hashes_utf_8_bytes(config_client) -> None:
+    c = config_client
+    result = c.get_string(
+        "feature-flag.weighted.even-split-ones", contexts={"user": {"tracking_id": "ユーザー1"}}
+    )
+    assert result == "b"
+
+
 # non-standard sum still serves normalized true bucket
 def test_non_standard_sum_still_serves_normalized_true_bucket(config_client) -> None:
     c = config_client
