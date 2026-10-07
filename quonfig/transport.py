@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Callable, Iterator, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import requests  # type: ignore[import-untyped]
+import urllib3.exceptions
 
 from .types import ConfigEnvelope, InvalidEnvelopeError
 
@@ -276,9 +277,13 @@ class Transport:
                 self.last_fetch_index = idx
                 return envelope
             except (
-                requests.ConnectionError,
-                requests.Timeout,
-                requests.HTTPError,
+                requests.RequestException,
+                # The body is drained via ``raw.read1``, which raises urllib3
+                # errors (truncated/reset body -> ProtocolError, stalled body ->
+                # ReadTimeoutError) that requests does not wrap on that path.
+                # They are leg errors like any other: fail over (qfg-goi1.2.13).
+                urllib3.exceptions.HTTPError,
+                OSError,
                 InvalidEnvelopeError,
             ) as e:
                 last_error = e
@@ -338,12 +343,13 @@ class Transport:
                     self._etags[base_url] = new_etag
             self.last_fetch_index = idx
             return LegResult(source_index=idx, envelope=envelope)
-        except (
-            requests.ConnectionError,
-            requests.Timeout,
-            requests.HTTPError,
-            InvalidEnvelopeError,
-        ) as e:
+        except Exception as e:  # noqa: BLE001
+            # Every failure of a leg is a leg error, including urllib3 errors
+            # raised mid-body by ``raw.read1`` (truncated/reset body ->
+            # ProtocolError, stalled body -> ReadTimeoutError) that requests does
+            # not wrap. Letting one escape killed the leg thread before it put a
+            # result, so the hedge waited out its whole drain budget
+            # (qfg-goi1.2.13).
             return LegResult(source_index=idx, error=e)
 
     def fetch_hedged(
@@ -389,13 +395,23 @@ class Transport:
         fired = 1  # primary always fires
 
         def _run_leg(idx: int, mirror_primary: bool) -> None:
-            lr = self._fetch_leg(idx, abort)
-            if mirror_primary:
-                try:
-                    prim_q.put_nowait(lr)
-                except queue.Full:
-                    pass
-            out.put(lr)
+            # Always settle the leg: the drain below waits for exactly one
+            # result per fired leg, so a leg that dies without putting one
+            # stalls the hedge for its whole drain budget (qfg-goi1.2.13).
+            lr: Optional[LegResult] = None
+            try:
+                lr = self._fetch_leg(idx, abort)
+            except Exception as e:  # noqa: BLE001
+                lr = LegResult(source_index=idx, error=e)
+            finally:
+                if lr is None:  # a BaseException is propagating
+                    lr = LegResult(source_index=idx, error=RuntimeError("hedge leg aborted"))
+                if mirror_primary:
+                    try:
+                        prim_q.put_nowait(lr)
+                    except queue.Full:
+                        pass
+                out.put(lr)
 
         def _fire_secondary() -> None:
             nonlocal secondary_decided, fired

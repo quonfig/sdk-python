@@ -12,6 +12,16 @@
   silent: `on_sse_connection_state_change` no longer receives a repeated
   `connected` for it (qfg-goi1.2.12).
 
+- **Fix: a config response cut off mid-body no longer stalls the fetch
+  (patch).** The body is read through urllib3, whose errors for a truncated or
+  reset body (`ProtocolError`) or a stalled one (`ReadTimeoutError`) escaped
+  the per-URL catch. On the hedged path the leg's worker thread died without
+  reporting, so every fetch (init and each fallback-poll tick) waited out the
+  full ~15 s drain budget and printed a thread traceback; on the sequential
+  path the error escaped instead of failing over to the next URL. Every
+  failure of a URL is now a leg error: the hedge settles at once and fires the
+  secondary, and the sequential path fails over (qfg-goi1.2.13).
+
 ## 1.7.0 - 2026-10-02
 
 - **Fix: duration parsing ignores the caller's decimal context.** Duration
