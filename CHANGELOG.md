@@ -49,6 +49,11 @@
   response, so the connection drops and the SSE thread exits at once
   (qfg-goi1.2.13).
 
+- **Packaging: `tenacity` and `packaging` are no longer declared
+  dependencies (patch).** The SDK never imported either. If your own code
+  imports them and relied on `quonfig` pulling them in, declare them in your
+  project directly (qfg-goi1.2.13).
+
 ## 1.7.0 - 2026-10-02
 
 - **Fix: duration parsing ignores the caller's decimal context.** Duration

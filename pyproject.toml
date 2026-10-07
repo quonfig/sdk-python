@@ -16,8 +16,6 @@ mmh3 = ">=3.0.0,<6.0.0"
 # wheel); pip-audit in CI fails on anything below. cryptography is transitive
 # (pulled via requests); this floor keeps the locked resolution patched.
 cryptography = ">=50.0.0"
-tenacity = ">=8.0.0"
-packaging = ">=21.0"
 # Opt-in data_dir_auto_reload uses watchfiles (Rust-backed notify wrapper).
 # Always installed: keeps the optional-extras matrix simple and matches
 # sdk-node which uses Node's built-in fs.watch (no extras gate).

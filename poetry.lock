@@ -1214,21 +1214,6 @@ files = [
 typing-extensions = {version = "*", markers = "python_version < \"3.11\""}
 
 [[package]]
-name = "tenacity"
-version = "9.1.4"
-description = "Retry code until it succeeds"
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55"},
-    {file = "tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a"},
-]
-
-[package.extras]
-doc = ["reno", "sphinx"]
-test = ["pytest", "tornado (>=4.5)", "typeguard"]
-
-[[package]]
 name = "tomli"
 version = "2.4.1"
 description = "A lil' TOML parser"
@@ -1437,4 +1422,4 @@ structlog = ["structlog"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<4.0"
-content-hash = "eb2caa47754c983fe5136e02061528547c268913819135b2db6b149cedb0e776"
+content-hash = "b819479d69c2644b4a5052a4fa90affa72118cdae8c005eab68c4dd0f44b2e6f"
