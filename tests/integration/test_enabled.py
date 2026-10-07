@@ -49,6 +49,22 @@ def test_always_returns_false_for_a_non_boolean_flag(config_client) -> None:
     assert result is False
 
 
+# returns false for a flag key that does not exist
+def test_returns_false_for_a_flag_key_that_does_not_exist(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("my-missing-key")
+    assert result is False
+
+
+# returns false for a flag key that does not exist with a context
+def test_returns_false_for_a_flag_key_that_does_not_exist_with_a_context(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "my-missing-key", contexts={"user": {"key": "michael", "email": "michael@example.com"}}
+    )
+    assert result is False
+
+
 # returns true for a PROP_IS_ONE_OF rule when any prop matches
 def test_returns_true_for_a_prop_is_one_of_rule_when_any_prop_matches(config_client) -> None:
     c = config_client
