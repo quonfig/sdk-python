@@ -1914,11 +1914,11 @@ class Quonfig:
         on exit.
         """
         old = get_thread_context()
-        token = push_scoped_context(merge_contexts(old or {}, contexts or {}))
+        handle = push_scoped_context(merge_contexts(old or {}, contexts or {}))
         try:
             yield self
         finally:
-            pop_scoped_context(token)
+            pop_scoped_context(handle)
 
     # ------------------------------------------------------------------
     # Misc

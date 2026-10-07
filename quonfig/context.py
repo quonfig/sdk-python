@@ -81,12 +81,31 @@ def clear_thread_context() -> None:
     _scoped_context.set(None)
 
 
-def push_scoped_context(contexts: Contexts) -> "contextvars.Token[Optional[Contexts]]":
-    """Install ``contexts`` as the scoped context and return the token that
-    :func:`pop_scoped_context` uses to restore exactly the previous value."""
-    return _scoped_context.set(contexts)
+_ScopeToken = Tuple["contextvars.Token[Optional[Contexts]]", Optional[Contexts]]
 
 
-def pop_scoped_context(token: "contextvars.Token[Optional[Contexts]]") -> None:
-    """Restore the scoped context that was current before the matching push."""
-    _scoped_context.reset(token)
+def push_scoped_context(contexts: Contexts) -> _ScopeToken:
+    """Install ``contexts`` as the scoped context and return the handle that
+    :func:`pop_scoped_context` uses to restore exactly the previous value.
+
+    The handle keeps the previous value next to the ``ContextVar`` token so the
+    restore still works when the scope is exited in a different Context than
+    it was entered in (see :func:`pop_scoped_context`)."""
+    previous = _scoped_context.get()
+    return _scoped_context.set(contexts), previous
+
+
+def pop_scoped_context(handle: _ScopeToken) -> None:
+    """Restore the scoped context that was current before the matching push.
+
+    ``ContextVar.reset(token)`` raises ``ValueError`` when the token was created
+    in a different Context: a scope entered in one asyncio task and exited in
+    another (pytest-asyncio async-generator fixtures, an async generator closed
+    from another task). The old ``threading.local`` scope exited cleanly there,
+    so fall back to setting the previous value in the exiting Context
+    (qfg-goi1.2.45)."""
+    token, previous = handle
+    try:
+        _scoped_context.reset(token)
+    except ValueError:
+        _scoped_context.set(previous)

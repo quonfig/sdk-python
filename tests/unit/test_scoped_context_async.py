@@ -112,3 +112,33 @@ def test_new_thread_starts_without_the_scope(client):
         t.join()
         assert _who(client) == ["alice"]
     assert out == [[]]
+
+
+def test_scope_exited_in_a_different_task_restores_outer(client):
+    """Entering a scope in one task and exiting it in another must not raise
+    (qfg-goi1.2.45). ``ContextVar.reset(token)`` raises ``ValueError`` when the
+    token was created in a different Context, which is what happens with
+    pytest-asyncio async-generator fixtures (setup and teardown run as separate
+    tasks) and with async generators closed from another task. The exit falls
+    back to restoring the previous value in the exiting task."""
+    outer = {"user": {"key": "bob"}}
+
+    async def main() -> list:
+        with client.scoped_context(outer):
+            cm = client.scoped_context({"user": {"key": "alice"}})
+
+            async def enter() -> list:
+                cm.__enter__()
+                return _who(client)
+
+            async def exit_() -> object:
+                cm.__exit__(None, None, None)
+                return get_thread_context()
+
+            entered = await asyncio.create_task(enter())
+            restored = await asyncio.create_task(exit_())
+            return [entered, restored]
+
+    entered, restored = asyncio.run(main())
+    assert entered == ["alice"]
+    assert restored == outer

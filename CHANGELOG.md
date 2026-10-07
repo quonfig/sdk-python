@@ -41,6 +41,16 @@
   only its own scope, a task created inside a scope inherits it, and sync
   threaded code behaves as before (qfg-goi1.2.13).
 
+- **Fix: a `scoped_context` exited in a different asyncio task no longer
+  raises (patch).** The `ContextVar`-based scope above restored the outer
+  scope with `ContextVar.reset(token)`, which raises `ValueError: ... was
+  created in a different Context` when the `with` block is entered in one
+  task and exited in another: pytest-asyncio async-generator fixtures (setup
+  and teardown run as separate tasks) and async generators closed from
+  another task. The old `threading.local` scope exited cleanly there. The exit
+  now falls back to restoring the previous scope in the exiting task, so it
+  never raises (qfg-goi1.2.45).
+
 - **Fix: a confidential or `decryptWith` variant inside a weighted rollout is
   redacted in telemetry (patch).** Redaction looked only at the outer
   `weighted_values` value, so a rollout variant marked `confidential` (or
