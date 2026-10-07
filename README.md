@@ -35,6 +35,12 @@ with client.scoped_context({"user": {"id": "u123"}}):
     enabled = client.is_feature_enabled("my.flag")
 ```
 
+On a machine where someone has run `qfg login`, the SDK reads the signed-in
+email from `~/.quonfig/tokens.json` and adds it to every evaluation as
+`quonfig-user.email` (so it also appears in telemetry example contexts); pass
+`enable_quonfig_user_context=False` or set `QUONFIG_DEV_CONTEXT=false` to turn
+this off.
+
 ## Dynamic log levels
 
 ```python

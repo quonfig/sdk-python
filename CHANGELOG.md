@@ -54,6 +54,13 @@
   imports them and relied on `quonfig` pulling them in, declare them in your
   project directly (qfg-goi1.2.13).
 
+- **Docs: the README says that dev-context injection is on by default.** On a
+  machine where someone ran `qfg login`, the signed-in email from
+  `~/.quonfig/tokens.json` is added to every evaluation as
+  `quonfig-user.email` (and so reaches telemetry example contexts); the
+  README now names the two ways to turn it off (`enable_quonfig_user_context=False`,
+  `QUONFIG_DEV_CONTEXT=false`). No behavior change (qfg-goi1.2.13).
+
 ## 1.7.0 - 2026-10-02
 
 - **Fix: duration parsing ignores the caller's decimal context.** Duration
