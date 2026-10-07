@@ -2383,6 +2383,13 @@ class Quonfig:
                 # ``init_timeout_ms``, then raise.
                 self._finish_init()
             self._shutdown.set()
+            # Close the live SSE response so the stream's blocked read returns
+            # now, not at the next heartbeat / read timeout (qfg-goi1.2.13).
+            if self._sse is not None:
+                try:
+                    self._sse.stop()
+                except Exception:
+                    pass
             # Cancel any pending fallback engage timer so the daemon doesn't fire
             # after close().
             with self._fallback_lock:

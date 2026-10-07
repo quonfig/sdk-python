@@ -33,6 +33,22 @@ def _clean_eof_reconnect_sleep() -> float:
     return delay / 2 + random.random() * delay / 2
 
 
+def _close_response(response: requests.Response) -> None:
+    """Close a streaming response, first unblocking any thread parked in its
+    read (urllib3 >= 2.3 ``HTTPResponse.shutdown``; a plain close does not
+    reliably wake a blocked ``recv`` on Linux)."""
+    try:
+        shutdown = getattr(getattr(response, "raw", None), "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+    except Exception as e:  # noqa: BLE001 — best effort; close() below still runs
+        _LOG.debug("SSE response shutdown raised: %s: %s", type(e).__name__, e)
+    try:
+        response.close()
+    except Exception as e:  # noqa: BLE001
+        _LOG.debug("SSE response close raised: %s: %s", type(e).__name__, e)
+
+
 class SSEClient:
     def __init__(
         self,
@@ -64,10 +80,26 @@ class SSEClient:
         self._install = install
         self._thread: Optional[threading.Thread] = None
         self._stream_url_override: Optional[str] = None
+        # The live stream response, kept so ``stop()`` can close it and unblock
+        # the read at once instead of waiting for the next event / heartbeat or
+        # the 60 s read timeout (qfg-goi1.2.13).
+        self._response: Optional[requests.Response] = None
+        self._response_lock = threading.Lock()
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, daemon=True, name="quonfig-sse")
         self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the stream: set the shutdown flag and close the live response,
+        so the SSE thread's blocked read returns and the loop exits. The thread
+        is a daemon, so this does not join it."""
+        self.shutdown_event.set()
+        with self._response_lock:
+            response = self._response
+            self._response = None
+        if response is not None:
+            _close_response(response)
 
     def _emit(self, state: SSEState) -> None:
         if self._state_listener is None:
@@ -104,6 +136,7 @@ class SSEClient:
             if not silent:
                 self._emit("connecting")
             transparent_reconnect = False
+            response: Optional[requests.Response] = None
             try:
                 url = self._stream_url()
                 headers = self.transport._headers({"Accept": "text/event-stream"})
@@ -113,6 +146,12 @@ class SSEClient:
                     stream=True,
                     timeout=(5, 60),
                 )
+                with self._response_lock:
+                    self._response = response
+                if self.shutdown_event.is_set():
+                    # stop() ran while we were connecting: it could not see
+                    # this response, so close it here.
+                    break
                 response.raise_for_status()
                 client = sseclient.SSEClient(response)  # type: ignore[arg-type]
                 backoff = 1.0  # Reset on successful connection
@@ -179,4 +218,10 @@ class SSEClient:
                 # Exponential backoff with jitter
                 self.shutdown_event.wait(backoff)
                 backoff = min(backoff * 2 * (0.8 + 0.4 * random.random()), 60.0)
+            finally:
+                if response is not None:
+                    with self._response_lock:
+                        if self._response is response:
+                            self._response = None
+                    _close_response(response)
         self._emit("disconnected")

@@ -41,6 +41,14 @@
   the stored value, i.e. the ciphertext for `decryptWith`), matching sdk-go.
   Values returned to the caller are unchanged (qfg-goi1.2.13).
 
+- **Fix: `close()` closes the live SSE connection (patch).** `close()` only
+  set the shutdown flag, so the SSE thread stayed blocked in its read and the
+  delivery connection stayed open until the next event or heartbeat (~30 s)
+  or the 60 s read timeout. Repeated create/close (tests, per-tenant clients)
+  held that many extra connections. `close()` now closes the live stream
+  response, so the connection drops and the SSE thread exits at once
+  (qfg-goi1.2.13).
+
 ## 1.7.0 - 2026-10-02
 
 - **Fix: duration parsing ignores the caller's decimal context.** Duration
