@@ -277,17 +277,23 @@ class ChaosProbe:
             with self.lock:
                 self.restart_layer1 += 1
 
-    def sdk_metric(self, name: str, labels: Dict[str, str]) -> float:
+    def sdk_metric(self, name: str, labels: Dict[str, str]) -> tuple[float, bool]:
+        """Return ``(value, known)`` for an SDK-side metric.
+
+        ``known`` is False for a metric name the probe does not implement, so
+        the evaluator fails the expectation loudly instead of comparing against
+        a silent 0. Mirrors sdk-go's ``chaosProbe.sdkMetric``.
+        """
         with self.lock:
             if name == "quonfig_sdk_worker_restart_total":
                 if labels.get("layer") == "1":
-                    return float(self.restart_layer1)
+                    return float(self.restart_layer1), True
                 if labels.get("layer") == "2":
-                    return float(self.restart_layer2)
-                return float(self.restart_layer1 + self.restart_layer2)
+                    return float(self.restart_layer2), True
+                return float(self.restart_layer1 + self.restart_layer2), True
             if name == "quonfig_sse_connect_attempts_total":
-                return float(self.conn_attempts)
-        return 0.0
+                return float(self.conn_attempts), True
+        return 0.0, False
 
     def log_matches(self, level: str, regex: re.Pattern) -> int:
         with self.log_lock:
@@ -391,7 +397,9 @@ def _eval_leaf(
     if m:
         metric, layer, op, want_str = m.group(1), m.group(2), m.group(3), m.group(4)
         labels = {"layer": layer} if layer else {}
-        got = probe.sdk_metric(metric, labels)
+        got, known = probe.sdk_metric(metric, labels)
+        if not known:
+            return False, f"unknown sdkMetric {metric!r}: the chaos probe does not implement it"
         want = float(want_str)
         ok = _compare(op, got, want)
         return ok, f"sdkMetric({metric},layer={layer or ''})={got} {op} {want}"

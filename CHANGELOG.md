@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Chaos harness: an unknown `sdkMetric` name now fails loudly (none; test
+  harness only, not shipped in the package).** The chaos probe returned 0 for
+  a metric name it does not implement, so an expectation such as
+  `client.sdkMetric('typo_total') == 0` passed without checking anything. The
+  probe now reports the name as unknown and the expectation fails with
+  `unknown sdkMetric '<name>'`, matching sdk-go. Every metric name in ITD
+  v2026.10.03 is implemented, so no current scenario result changes
+  (qfg-goi1.2.22).
+
 - **Fix: SSE no longer reconnects in a tight loop after a clean close
   (patch).** When the server answered `200 text/event-stream` and then closed
   the stream cleanly (a server FIN, a load balancer recycling the
