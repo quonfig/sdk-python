@@ -17,10 +17,10 @@ if TYPE_CHECKING:
 
 from ._fork import register_instance
 from .context import (
-    clear_thread_context,
     get_thread_context,
     merge_contexts,
-    set_thread_context,
+    pop_scoped_context,
+    push_scoped_context,
 )
 from .evaluator import Evaluator
 from .exceptions import (
@@ -1283,7 +1283,7 @@ class Quonfig:
     # ------------------------------------------------------------------
 
     def _effective_contexts(self, contexts: Optional[Contexts]) -> Contexts:
-        """Merge global, thread-local, and per-call contexts."""
+        """Merge global, scoped (per thread / asyncio task), and per-call contexts."""
         parts = [self._global_context]
         thread_ctx = get_thread_context()
         if thread_ctx:
@@ -1898,7 +1898,11 @@ class Quonfig:
 
     @contextlib.contextmanager
     def scoped_context(self, contexts: Contexts):
-        """Context manager that sets thread-local context for the duration.
+        """Context manager that sets the scoped context for the duration.
+
+        The scope is per thread and per asyncio task (a ``ContextVar``), so
+        concurrent tasks on one event loop never see each other's scope, and a
+        task created inside the scope inherits it.
 
         Nested scopes stack REPLACE_NAMED: the inner scope's named contexts
         replace the same-named outer ones wholesale, and outer named contexts
@@ -1906,14 +1910,11 @@ class Quonfig:
         on exit.
         """
         old = get_thread_context()
+        token = push_scoped_context(merge_contexts(old or {}, contexts or {}))
         try:
-            set_thread_context(merge_contexts(old or {}, contexts or {}))
             yield self
         finally:
-            if old is None:
-                clear_thread_context()
-            else:
-                set_thread_context(old)
+            pop_scoped_context(token)
 
     # ------------------------------------------------------------------
     # Misc

@@ -22,6 +22,16 @@
   failure of a URL is now a leg error: the hedge settles at once and fires the
   secondary, and the sequential path fails over (qfg-goi1.2.13).
 
+- **Fix: `scoped_context` is per asyncio task, not just per thread
+  (patch).** The scope lived in `threading.local()`, and asyncio tasks share
+  one thread, so in FastAPI/Starlette/aiohttp/Django-async handlers two
+  requests whose scopes interleaved across an `await` evaluated flags with
+  each other's context, and the scope restored on exit could stay installed
+  on the event-loop thread for every later evaluation. The scope now lives in
+  a `contextvars.ContextVar` and is restored with its token: each task sees
+  only its own scope, a task created inside a scope inherits it, and sync
+  threaded code behaves as before (qfg-goi1.2.13).
+
 ## 1.7.0 - 2026-10-02
 
 - **Fix: duration parsing ignores the caller's decimal context.** Duration

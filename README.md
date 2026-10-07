@@ -30,7 +30,7 @@ result = client.get_string("my.key", contexts={"user": {"plan": "pro"}})
 user_client = client.with_context({"user": {"id": "u123", "plan": "pro"}})
 enabled = user_client.is_feature_enabled("my.flag")
 
-# Thread-local scoped context
+# Scoped context: per thread and per asyncio task, restored on exit
 with client.scoped_context({"user": {"id": "u123"}}):
     enabled = client.is_feature_enabled("my.flag")
 ```

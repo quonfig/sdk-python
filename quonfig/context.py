@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-import threading
+import contextvars
 import time
 from typing import Any, Optional, Tuple
 
 from .types import Contexts
 
-_thread_local = threading.local()
+# The scoped context lives in a ContextVar, not threading.local(): under
+# asyncio many tasks share one thread, so a thread-local let interleaved
+# request scopes evaluate each other's context and leak one onto the thread
+# (qfg-goi1.2.13). A ContextVar is per thread AND per asyncio task (a task
+# copies the context it was created in), so sync threaded code behaves exactly
+# as before.
+_scoped_context: contextvars.ContextVar[Optional[Contexts]] = contextvars.ContextVar(
+    "quonfig_scoped_context", default=None
+)
 
 # Magic property names that resolve to current time in milliseconds
 _MAGIC_TIME_PROPS = frozenset(
@@ -59,16 +67,26 @@ def get_context_value(contexts: Contexts, property_name: str) -> Tuple[Any, bool
 
 
 def set_thread_context(contexts: Contexts) -> None:
-    """Store contexts in thread-local storage."""
-    _thread_local.quonfig_context = contexts
+    """Set the scoped context for the current thread / asyncio task."""
+    _scoped_context.set(contexts)
 
 
 def get_thread_context() -> Optional[Contexts]:
-    """Retrieve contexts from thread-local storage."""
-    return getattr(_thread_local, "quonfig_context", None)
+    """Return the scoped context of the current thread / asyncio task."""
+    return _scoped_context.get()
 
 
 def clear_thread_context() -> None:
-    """Remove contexts from thread-local storage."""
-    if hasattr(_thread_local, "quonfig_context"):
-        del _thread_local.quonfig_context
+    """Clear the scoped context of the current thread / asyncio task."""
+    _scoped_context.set(None)
+
+
+def push_scoped_context(contexts: Contexts) -> "contextvars.Token[Optional[Contexts]]":
+    """Install ``contexts`` as the scoped context and return the token that
+    :func:`pop_scoped_context` uses to restore exactly the previous value."""
+    return _scoped_context.set(contexts)
+
+
+def pop_scoped_context(token: "contextvars.Token[Optional[Contexts]]") -> None:
+    """Restore the scoped context that was current before the matching push."""
+    _scoped_context.reset(token)
