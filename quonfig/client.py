@@ -30,7 +30,7 @@ from .exceptions import (
     QuonfigInitTimeoutError,
     QuonfigKeyNotFoundError,
 )
-from .resolver import LOG_LEVEL_ORDER, Resolver, compute_reportable_value
+from .resolver import LOG_LEVEL_ORDER, Resolver, compute_reportable_value_for
 from .store import ConfigStore
 from .transport import FallbackPoller, Transport
 from .types import (
@@ -1339,7 +1339,9 @@ class Quonfig:
             # Redact selectedValue for confidential / encrypted values before
             # the eval-summary aggregator sees it (matches Reforge SDK
             # reportable_wrapped_value pattern).
-            result.reportable_value = compute_reportable_value(result.value)
+            result.reportable_value = compute_reportable_value_for(
+                result.value, result.weighted_value_index
+            )
             self._telemetry.record_evaluation(result)
             if merged:
                 self._telemetry.record_context(merged)
@@ -1468,7 +1470,9 @@ class Quonfig:
             # the original getters.
             if self._telemetry is not None:
                 result.resolved_value = resolved
-                result.reportable_value = compute_reportable_value(result.value)
+                result.reportable_value = compute_reportable_value_for(
+                    result.value, result.weighted_value_index
+                )
                 try:
                     self._telemetry.record_evaluation(result)
                     if merged:

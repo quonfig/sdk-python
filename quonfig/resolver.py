@@ -45,6 +45,31 @@ def compute_reportable_value(value: Value) -> Optional[str]:
     return f"{CONFIDENTIAL_PREFIX}{digest}"
 
 
+def compute_reportable_value_for(value: Value, weighted_value_index: int = -1) -> Optional[str]:
+    """Redacted telemetry form for an evaluation result's value.
+
+    For a ``weighted_values`` Value the SELECTED variant decides: a rollout's
+    variants carry their own ``confidential`` / ``decryptWith``, and the outer
+    Value never does, so keying off the outer Value alone sent a confidential
+    variant (or, for ``decryptWith``, the decrypted secret) to telemetry in
+    plaintext (qfg-goi1.2.13). Matches sdk-go, whose ``reportableValueFor``
+    sees the selected Value. The hash input is the variant's stored raw value
+    (ciphertext for ``decryptWith``), as for a plain value. An outer Value that
+    is itself flagged stays redacted.
+    """
+    if value is not None and value.type == "weighted_values" and weighted_value_index >= 0:
+        raw = value.value
+        variants = raw.get("weightedValues") if isinstance(raw, dict) else None
+        if isinstance(variants, list) and weighted_value_index < len(variants):
+            entry = variants[weighted_value_index]
+            selected = entry.get("value") if isinstance(entry, dict) else None
+            if isinstance(selected, dict):
+                redacted = compute_reportable_value(Value.from_dict(selected))
+                if redacted is not None:
+                    return redacted
+    return compute_reportable_value(value)
+
+
 if TYPE_CHECKING:
     from .store import ConfigStore
 

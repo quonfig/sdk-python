@@ -32,6 +32,15 @@
   only its own scope, a task created inside a scope inherits it, and sync
   threaded code behaves as before (qfg-goi1.2.13).
 
+- **Fix: a confidential or `decryptWith` variant inside a weighted rollout is
+  redacted in telemetry (patch).** Redaction looked only at the outer
+  `weighted_values` value, so a rollout variant marked `confidential` (or
+  encrypted with `decryptWith`) reached the telemetry `selectedValue` in
+  plaintext; for `decryptWith` that was the decrypted secret. The selected
+  variant now decides, and it is sent as the usual `*****<hash>` form (hash of
+  the stored value, i.e. the ciphertext for `decryptWith`), matching sdk-go.
+  Values returned to the caller are unchanged (qfg-goi1.2.13).
+
 ## 1.7.0 - 2026-10-02
 
 - **Fix: duration parsing ignores the caller's decimal context.** Duration

@@ -136,3 +136,99 @@ def test_confidential_and_decrypt_with_values_are_redacted_on_the_wire(
     finally:
         client.close()
         capture.close()
+
+
+WEIGHTED_SECRET = "weighted-plaintext-secret"
+WEIGHTED_DECRYPTED = "weighted-decrypted-secret"
+
+
+def _weighted(variant: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "weighted_values",
+        "value": {
+            "hashByPropertyName": "user.key",
+            "weightedValues": [{"weight": 100, "value": variant}],
+        },
+    }
+
+
+def test_confidential_weighted_variant_is_redacted_on_the_wire(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """qfg-goi1.2.13: redaction keyed off the OUTER ``weighted_values`` Value, so
+    a confidential / ``decryptWith`` variant inside a rollout went to telemetry
+    in plaintext (the decrypted secret, for ``decryptWith``). The selected
+    variant's own flags decide, matching sdk-go (which redacts the selected
+    Value)."""
+    monkeypatch.delenv("QUONFIG_BACKEND_SDK_KEY", raising=False)
+    monkeypatch.delenv("QUONFIG_DOMAIN", raising=False)
+    enc_key = generate_new_b64_key()
+    ciphertext = encrypt(WEIGHTED_DECRYPTED, enc_key)
+
+    datadir = tmp_path / "workspace"
+    (datadir / "configs").mkdir(parents=True)
+    (datadir / "quonfig.json").write_text(
+        json.dumps({"environments": ["Production"]}), encoding="utf-8"
+    )
+    configs = [
+        _config(
+            "secret.weighted-plain",
+            _weighted({"type": "string", "value": WEIGHTED_SECRET, "confidential": True}),
+        ),
+        _config(
+            "secret.weighted-encrypted",
+            _weighted(
+                {
+                    "type": "string",
+                    "value": ciphertext,
+                    "confidential": True,
+                    "decryptWith": "secret.enc-key",
+                }
+            ),
+        ),
+        _config("secret.enc-key", {"type": "string", "value": enc_key}),
+    ]
+    for cfg in configs:
+        (datadir / "configs" / f"{cfg['key']}.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    capture = _TelemetryCapture()
+    client = Quonfig(
+        sdk_key="qf_sk_development_0000_dead",
+        datadir=str(datadir),
+        environment="Production",
+        telemetry_url=capture.url,
+        enable_quonfig_user_context=False,
+    )
+    ctx = {"user": {"key": "u1"}}
+    try:
+        client.init()
+        # The caller still gets the plaintext, on both getter paths.
+        assert client.get("secret.weighted-plain", contexts=ctx) == WEIGHTED_SECRET
+        assert client.get("secret.weighted-encrypted", contexts=ctx) == WEIGHTED_DECRYPTED
+        assert (
+            client.get_string_details("secret.weighted-plain", contexts=ctx).value
+            == WEIGHTED_SECRET
+        )
+        assert (
+            client.get_string_details("secret.weighted-encrypted", contexts=ctx).value
+            == WEIGHTED_DECRYPTED
+        )
+
+        client.flush()
+
+        assert capture.posts, "flush() delivered no telemetry"
+        wire = "\n".join(capture.posts)
+        assert WEIGHTED_SECRET not in wire, f"weighted confidential plaintext leaked: {wire}"
+        assert WEIGHTED_DECRYPTED not in wire, f"weighted decrypted plaintext leaked: {wire}"
+
+        selected = _selected_values(capture.posts)
+        assert set(map(json.dumps, selected.get("secret.weighted-plain", []))) == {
+            json.dumps({"string": _redacted(WEIGHTED_SECRET)})
+        }, selected
+        # decryptWith hashes the stored ciphertext, never the plaintext.
+        assert set(map(json.dumps, selected.get("secret.weighted-encrypted", []))) == {
+            json.dumps({"string": _redacted(ciphertext)})
+        }, selected
+    finally:
+        client.close()
+        capture.close()
