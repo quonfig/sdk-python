@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: SSE no longer reconnects in a tight loop after a clean close
+  (patch).** When the server answered `200 text/event-stream` and then closed
+  the stream cleanly (a server FIN, a load balancer recycling the
+  connection), the client reconnected immediately with no delay, so a server
+  that kept doing that got thousands of connections per second from one
+  client. Every reconnect now waits a jittered 0.25-0.5 s first, matching
+  sdk-go. A clean close does not grow the backoff, and the reconnect stays
+  silent: `on_sse_connection_state_change` no longer receives a repeated
+  `connected` for it (qfg-goi1.2.12).
+
 ## 1.7.0 - 2026-10-02
 
 - **Fix: duration parsing ignores the caller's decimal context.** Duration

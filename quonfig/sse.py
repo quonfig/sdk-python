@@ -20,6 +20,18 @@ _LOG = logging.getLogger(__name__)
 # same way per-SDK.
 SSEState = str  # one of: "connecting", "connected", "error", "disconnected"
 
+# Reconnect floor after a stream that ended cleanly (server FIN / LB recycle).
+# Mirrors sdk-go's runLoop: sleep a jittered ``delay/2 .. delay`` before every
+# reconnect, with ``delay`` = sdk-go's 500 ms initial delay, and no growth on
+# a clean EOF. Without it a 200-then-close server is hammered in a tight loop
+# (qfg-goi1.2.12).
+_CLEAN_EOF_RECONNECT_DELAY_S = 0.5
+
+
+def _clean_eof_reconnect_sleep() -> float:
+    delay = _CLEAN_EOF_RECONNECT_DELAY_S
+    return delay / 2 + random.random() * delay / 2
+
 
 class SSEClient:
     def __init__(
@@ -85,7 +97,11 @@ class SSEClient:
         # a spurious Layer 1 restart count (qfg-47c2.31).
         transparent_reconnect = False
         while not self.shutdown_event.is_set():
-            if not transparent_reconnect:
+            # On a transparent reconnect the public state is still
+            # "connected", so neither "connecting" nor a repeated
+            # "connected" is emitted for it (qfg-goi1.2.12).
+            silent = transparent_reconnect
+            if not silent:
                 self._emit("connecting")
             transparent_reconnect = False
             try:
@@ -100,7 +116,8 @@ class SSEClient:
                 response.raise_for_status()
                 client = sseclient.SSEClient(response)  # type: ignore[arg-type]
                 backoff = 1.0  # Reset on successful connection
-                self._emit("connected")
+                if not silent:
+                    self._emit("connected")
                 for event in client.events():
                     if self.shutdown_event.is_set():
                         break
@@ -149,6 +166,7 @@ class SSEClient:
                         "Quonfig SSE: stream ended cleanly mid-session, reconnecting transparently"
                     )
                     transparent_reconnect = True
+                    self.shutdown_event.wait(_clean_eof_reconnect_sleep())
             except Exception as e:
                 if self.shutdown_event.is_set():
                     break
