@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.1 - 2026-10-09
 
 - **Chaos harness: an unknown `sdkMetric` name now fails loudly (none; test
   harness only, not shipped in the package).** The chaos probe returned 0 for
