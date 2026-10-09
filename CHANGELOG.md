@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Chaos hygiene (none; CI only, not shipped in the package).** The chaos and
+  failover-chaos workflows pin `integration-test-data` at `v2026.10.07`, equal to
+  the unit/contract pin, and record the resolved `api-delivery@main` SHA in the
+  run summary so a red run is reproducible (qfg-goi1.1.4).
+
 ## 1.7.1 - 2026-10-09
 
 - **Chaos harness: an unknown `sdkMetric` name now fails loudly (none; test
