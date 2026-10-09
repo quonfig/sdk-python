@@ -38,7 +38,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Poetry
-        uses: snok/install-poetry@76e04a911780d5b312d89783f7b1cd627778900a  # v1
+        uses: snok/install-poetry@a783c322200f0519c7926aa6faa857c4e23e9263  # v1
         with:
           version: "1.8.3"
           virtualenvs-create: true
@@ -72,4 +72,4 @@ jobs:
 
       - name: Publish to PyPI
         if: steps.version_check.outputs.new_version == 'true'
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1 (v1.9.0)
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1 (v1.9.0)
