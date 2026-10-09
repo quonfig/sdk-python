@@ -28,8 +28,9 @@ import os
 import re
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import pytest
@@ -362,9 +363,37 @@ def _compare(op: str, a: float, b: float) -> bool:
     return False
 
 
-def _eval_leaf(
-    expr: str, probe: ChaosProbe, server_metric: Callable[[str], float]
-) -> tuple[bool, str]:
+# Why server_metric(...) is not evaluated by this rig (Decision 6 in
+# project/sdk-quality-check/META-ANALYSIS.md): api-delivery exports its metrics
+# only by OTLP push, so there is nothing to scrape from here. Server-side lag is
+# covered by the staging drill (qfg-47c2.19) and the QuonfigSubscriberLagHigh
+# alert. Mirrors sdk-ruby chaos/expressions.rb (qfg-goi1.1.3).
+SERVER_METRIC_SKIP_REASON = (
+    "server-side metric; api-delivery exports via OTLP only, no scrape endpoint "
+    "in the rig; covered by staging drill qfg-47c2.19 and the "
+    "QuonfigSubscriberLagHigh alert"
+)
+
+
+@dataclass
+class EvalResult:
+    """Outcome of evaluating one expectation expression.
+
+    ``status`` is ``"pass"``, ``"fail"`` or ``"skip"``. ``skipped`` lists every
+    skipped leaf with its reason so the run can print a tally; a skipped leaf is
+    neutral inside a compound (see ``_evaluate``).
+    """
+
+    status: str
+    reason: str = ""
+    skipped: List[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "pass"
+
+
+def _eval_leaf(expr: str, probe: ChaosProbe) -> EvalResult:
     expr = expr.strip()
     m = _RE_CONN_STATE_EQ.match(expr)
     if m:
@@ -372,18 +401,18 @@ def _eval_leaf(
         with probe.lock:
             got = probe.conn_state
         ok = (got == want) if op == "==" else (got != want)
-        return ok, f"connectionState={got} {op} {want}"
+        return _leaf(ok, f"connectionState={got} {op} {want}")
     m = _RE_FALLBACK_EQ.match(expr)
     if m:
         want = m.group(1) == "true"
         with probe.lock:
             got = probe.fallback_active
-        return got == want, f"fallbackPollerActive={got} want {want}"
+        return _leaf(got == want, f"fallbackPollerActive={got} want {want}")
     m = _RE_PROC_ALIVE_EQ.match(expr)
     if m:
         want = m.group(1) == "true"
         alive = not probe.process_crashed
-        return alive == want, f"processStillAlive={alive} want {want}"
+        return _leaf(alive == want, f"processStillAlive={alive} want {want}")
     m = _RE_LAST_REFRESH.match(expr)
     if m:
         op = m.group(1)
@@ -392,24 +421,24 @@ def _eval_leaf(
             last = probe.last_refresh_ms
         threshold = int(time.time() * 1000) - ago
         ok = _compare(op, last, threshold)
-        return ok, f"lastSuccessfulRefresh={last} {op} (now()-{ago})={threshold}"
+        return _leaf(ok, f"lastSuccessfulRefresh={last} {op} (now()-{ago})={threshold}")
     m = _RE_SDK_METRIC.match(expr)
     if m:
         metric, layer, op, want_str = m.group(1), m.group(2), m.group(3), m.group(4)
         labels = {"layer": layer} if layer else {}
         got, known = probe.sdk_metric(metric, labels)
         if not known:
-            return False, f"unknown sdkMetric {metric!r}: the chaos probe does not implement it"
+            return _leaf(
+                False, f"unknown sdkMetric {metric!r}: the chaos probe does not implement it"
+            )
         want = float(want_str)
         ok = _compare(op, got, want)
-        return ok, f"sdkMetric({metric},layer={layer or ''})={got} {op} {want}"
+        return _leaf(ok, f"sdkMetric({metric},layer={layer or ''})={got} {op} {want}")
     m = _RE_SERVER_METRIC.match(expr)
     if m:
-        name, op, want_str = m.group(1), m.group(2), m.group(3)
-        got = server_metric(name)
-        want = float(want_str)
-        ok = _compare(op, got, want)
-        return ok, f"server_metric({name})={got} {op} {want}"
+        # Explicit SKIP, never a silent 0 (qfg-goi1.1.4, Decision 6).
+        why = f"server_metric({m.group(1)}) {m.group(2)} {m.group(3)}: {SERVER_METRIC_SKIP_REASON}"
+        return EvalResult("skip", why, [why])
     m = _RE_SDK_LOG.match(expr)
     if m:
         level, pattern, op, want_str = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -417,33 +446,44 @@ def _eval_leaf(
         got = probe.log_matches(level, regex)
         want = float(want_str)
         ok = _compare(op, got, want)
-        return ok, f"sdkLog({level},/{pattern}/i)={got} {op} {want}"
-    return False, f"unrecognized expression: {expr}"
+        return _leaf(ok, f"sdkLog({level},/{pattern}/i)={got} {op} {want}")
+    return _leaf(False, f"unrecognized expression: {expr}")
 
 
-def _evaluate(
-    expr: str, probe: ChaosProbe, server_metric: Callable[[str], float]
-) -> tuple[bool, str]:
+def _leaf(ok: bool, reason: str) -> EvalResult:
+    return EvalResult("pass" if ok else "fail", reason)
+
+
+def _evaluate(expr: str, probe: ChaosProbe) -> EvalResult:
+    """Evaluate ``expr`` against ``probe``.
+
+    A skipped leaf is neutral in a compound: an AND passes when every
+    non-skipped leaf passes, an OR passes only when a non-skipped leaf passes,
+    and a compound whose leaves are all skipped is itself skipped.
+    """
     expr = expr.strip()
     if not expr:
-        return True, ""
+        return EvalResult("pass")
+    # Every leaf is evaluated (no short-circuit) so the skipped tally is complete.
     if " OR " in expr:
-        parts = _split_outside_quotes_and_regex(expr, " OR ")
-        reasons: List[str] = []
-        for p in parts:
-            ok, why = _evaluate(p, probe, server_metric)
-            if ok:
-                return True, ""
-            reasons.append(why)
-        return False, "OR: " + " | ".join(reasons)
+        results = [_evaluate(p, probe) for p in _split_outside_quotes_and_regex(expr, " OR ")]
+        skipped = [leaf for r in results for leaf in r.skipped]
+        if any(r.status == "pass" for r in results):
+            return EvalResult("pass", "", skipped)
+        reasons = [r.reason for r in results if r.status == "fail"]
+        if not reasons:
+            return EvalResult("skip", "OR: all leaves skipped", skipped)
+        return EvalResult("fail", "OR: " + " | ".join(reasons), skipped)
     if " AND " in expr:
-        parts = _split_outside_quotes_and_regex(expr, " AND ")
-        for p in parts:
-            ok, why = _evaluate(p, probe, server_metric)
-            if not ok:
-                return False, "AND: " + why
-        return True, ""
-    return _eval_leaf(expr, probe, server_metric)
+        results = [_evaluate(p, probe) for p in _split_outside_quotes_and_regex(expr, " AND ")]
+        skipped = [leaf for r in results for leaf in r.skipped]
+        for r in results:
+            if r.status == "fail":
+                return EvalResult("fail", "AND: " + r.reason, skipped)
+        if not any(r.status == "pass" for r in results):
+            return EvalResult("skip", "AND: all leaves skipped", skipped)
+        return EvalResult("pass", "", skipped)
+    return _eval_leaf(expr, probe)
 
 
 # ----- runner -----
@@ -560,23 +600,27 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
                 "hit_at": None,
                 "held_since": None,
                 "last_reason": "",
+                "skipped": False,
+                "skipped_leaves": [],
             }
             for i, e in enumerate(run.get("expectations") or [])
         ]
-
-        def _server_metric(_name: str) -> float:
-            return 0.0
 
         poll_interval = CHAOS_POLL_MS / 1000.0
         while (int(time.time() * 1000) - baseline_ms) < wall_clock:
             elapsed = int(time.time() * 1000) - baseline_ms
             all_terminal = True
             for s in states:
-                if s["passed"] or s["failed"]:
+                if s["passed"] or s["failed"] or s["skipped"]:
                     continue
-                ok, why = _evaluate(s["exp"]["assert"], probe, _server_metric)
-                s["last_reason"] = why
-                if ok:
+                r = _evaluate(s["exp"]["assert"], probe)
+                s["last_reason"] = r.reason
+                s["skipped_leaves"] = r.skipped
+                if r.status == "skip":
+                    # Explicit SKIP (qfg-goi1.1.4): terminal, counted apart from pass/fail.
+                    s["skipped"] = True
+                    continue
+                if r.ok:
                     if s["held_since"] is None:
                         s["held_since"] = int(time.time() * 1000)
                         s["hit_at"] = elapsed
@@ -594,26 +638,34 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
             time.sleep(poll_interval)
 
         for s in states:
-            if not s["passed"]:
+            if not s["passed"] and not s["skipped"]:
                 s["failed"] = True
 
         details: List[str] = []
-        passed = failed = 0
+        passed = failed = skipped = 0
         for s in states:
             exp = s["exp"]
             label = (
                 f"exp[{s['idx']}] within={exp['within_ms']}ms "
                 f"hold={exp.get('must_hold_for_ms') or 0}ms: {exp['assert']}"
             )
-            if s["passed"]:
+            if s["skipped"]:
+                skipped += 1
+                details.append(f"SKIP  {label} — {s['last_reason']}")
+            elif s["passed"]:
                 passed += 1
-                details.append(f"PASS  {label} (hit at {s['hit_at']}ms)")
+                suffix = f" (hit at {s['hit_at']}ms)"
+                if s["skipped_leaves"]:
+                    suffix += f" [skipped leaves: {len(s['skipped_leaves'])}]"
+                details.append(f"PASS  {label}{suffix}")
             else:
                 failed += 1
                 details.append(f"FAIL  {label} — last: {s['last_reason']}")
+            for leaf in s["skipped_leaves"]:
+                details.append(f"      SKIP leaf: {leaf}")
         with probe.lock:
             details.append(
-                f"summary: {passed} passed, {failed} failed "
+                f"summary: {passed} passed, {failed} failed, {skipped} skipped "
                 f"(state={probe.conn_state}, restartLayer1={probe.restart_layer1}, "
                 f"fallback={probe.fallback_active}, lastRefreshMs={probe.last_refresh_ms})"
             )
