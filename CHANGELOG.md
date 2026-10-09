@@ -5,7 +5,12 @@
 - **Chaos hygiene (none; CI only, not shipped in the package).** The chaos and
   failover-chaos workflows pin `integration-test-data` at `v2026.10.07`, equal to
   the unit/contract pin, and record the resolved `api-delivery@main` SHA in the
-  run summary so a red run is reproducible (qfg-goi1.1.4).
+  run summary so a red run is reproducible. `server_metric(...)` expectations are
+  now reported as SKIPPED with a reason instead of silently evaluating to 0 and
+  passing: api-delivery exports metrics only by OTLP push, so the rig has nothing
+  to scrape (Decision 6; covered by staging drill qfg-47c2.19 and the
+  `QuonfigSubscriberLagHigh` alert). A skipped leaf is neutral in a compound, so
+  the other leaves are still enforced (qfg-goi1.1.4).
 
 ## 1.7.1 - 2026-10-09
 
