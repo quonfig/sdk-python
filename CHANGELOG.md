@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Fix: datadir mode reads config files and `quonfig.json` as UTF-8
+  (patch).** Both were opened with the locale encoding, so on Windows (cp1252)
+  or under a non-UTF-8 locale a non-ASCII value (an accented string, an em
+  dash) was served as mojibake, a non-ASCII environment name in
+  `quonfig.json` failed validation, or an undecodable file was skipped with a
+  warning. They are now always decoded as UTF-8, like sdk-node, sdk-go and the
+  dev-context file (qfg-goi1.2.27).
+
 - **Change: `should_log(logger_path=...)` no longer waits for init (minor).**
   While the HTTP init was in flight, every call waited up to
   `init_timeout_ms` (10 s by default) for the first config load, and
