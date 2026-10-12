@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 import mmh3
 
@@ -137,7 +137,7 @@ class Resolver:
 
         # Handle decryption
         if value.confidential and value.decrypt_with:
-            raw = self._decrypt_value(raw, value.decrypt_with)
+            raw = self._decrypt_value(raw, value.decrypt_with, contexts, (config_key,))
 
         return self._coerce(raw, vtype, config_key)
 
@@ -274,18 +274,38 @@ class Resolver:
             return self.resolve(inner_value, contexts, config_key=config_key)
         return selected
 
-    def _decrypt_value(self, raw: Any, decrypt_with_key: str) -> Any:
-        """Look up encryption key from store and decrypt."""
-        from .crypto import decrypt
+    def _decrypt_value(
+        self,
+        raw: Any,
+        decrypt_with_key: str,
+        contexts: Contexts,
+        key_path: Tuple[str, ...] = (),
+    ) -> Any:
+        """Look up the encryption key config, evaluate it, and decrypt.
 
+        The key config is evaluated through the normal evaluator for the
+        client's effective environment, with criteria honored: env rules
+        first, then default (qfg-goi1.2.25). It used to take the first valued
+        rule across EVERY environment, so a non-production client could pick
+        the production key. Mirrors sdk-go ``resolveDecryption``.
+        """
+        from .crypto import decrypt
+        from .evaluator import Evaluator
+
+        if decrypt_with_key in key_path:
+            raise QuonfigDecryptionError(
+                f"Encryption key config '{decrypt_with_key}' is part of a decryptWith cycle"
+            )
         key_config = self.store.get(decrypt_with_key)
         if key_config is None:
             raise QuonfigDecryptionError(
                 f"Encryption key config '{decrypt_with_key}' not found in store"
             )
-        # Resolve the encryption key value — may be a plain string or provided (ENV_VAR)
-        key_value = self._resolve_key_config_value(key_config)
-        if key_value is None:
+        key_result = Evaluator(self.store).evaluate(decrypt_with_key, contexts)
+        key_value = self._resolve_key_value(
+            key_result.value, contexts, key_path + (decrypt_with_key,)
+        )
+        if not isinstance(key_value, str) or key_value == "":
             raise QuonfigDecryptionError(
                 f"Could not retrieve encryption key from '{decrypt_with_key}'"
             )
@@ -293,31 +313,21 @@ class Resolver:
             raise QuonfigDecryptionError("Encrypted value must be a string")
         return decrypt(raw, key_value)
 
-    def _resolve_key_config_value(self, config: Any) -> Any:
-        """Extract the encryption key string from a config.
-
-        Handles plain string and provided (ENV_VAR).
-        """
-        # Try environment rules first, then default rules
-        rules = []
-        for env in getattr(config, "environments", []):
-            rules.extend(env.rules)
-        if config.environment and config.environment not in getattr(config, "environments", []):
-            rules.extend(config.environment.rules)
-        rules.extend(config.default.rules)
-
-        for rule in rules:
-            if rule.value is not None:
-                v = rule.value
-                if v.type == "provided":
-                    # Resolve the env var
-                    try:
-                        return self._resolve_provided(v.value)
-                    except QuonfigEnvVarNotSetError:
-                        return None
-                elif isinstance(v.value, str):
-                    return v.value
-        return None
+    def _resolve_key_value(
+        self, value: Optional[Value], contexts: Contexts, key_path: Tuple[str, ...]
+    ) -> Any:
+        """Resolve the matched key-config value: a plain string, an ENV_VAR,
+        or itself an encrypted value (cycle-guarded by ``key_path``)."""
+        if value is None:
+            return None
+        if value.type == "provided":
+            try:
+                return self._resolve_provided(value.value)
+            except QuonfigEnvVarNotSetError:
+                return None
+        if value.confidential and value.decrypt_with:
+            return self._decrypt_value(value.value, value.decrypt_with, contexts, key_path)
+        return value.value
 
     def _coerce(self, raw: Any, vtype: str, config_key: str = "") -> Any:
         """Coerce raw value to the appropriate Python type."""
