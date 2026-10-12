@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Fix: the `decryptWith` key config is resolved for the client's
+  environment (patch).** The key config named by `decryptWith` was resolved by
+  taking the first valued rule across every environment, then the default,
+  ignoring criteria. With a key config shaped like
+  `quonfig.secrets.encryption.key` (default `ENV_VAR QUONFIG_ENCRYPTION_KEY`,
+  production `ENV_VAR QUONFIG_ENCRYPTION_KEY_PROD`), a non-production client
+  picked the production key and failed to decrypt, or failed outright when the
+  production env var was not set on that host. The key config is now evaluated
+  like any other config: the effective environment's rules first, then the
+  default rules, with criteria matched against the call's contexts. A
+  `decryptWith` cycle raises `QuonfigDecryptionError`. Edge note: a client
+  that only worked because it picked another environment's key now fails to
+  decrypt; set the env var that its own environment's rule names. Matches
+  sdk-go `resolveDecryption` (qfg-goi1.2.25).
+
 - **Chaos hygiene (none; CI only, not shipped in the package).** The chaos and
   failover-chaos workflows pin `integration-test-data` at `v2026.10.07`, equal to
   the unit/contract pin, and record the resolved `api-delivery@main` SHA in the
