@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Fix: `Quonfig()` no longer raises when the home directory cannot be
+  determined (patch).** With no `HOME` and no password-database entry (some
+  containers), `Path.home()` raised `RuntimeError` or `KeyError` while the
+  client looked for the `qfg login` tokens file, so construction failed. That
+  case now means "no dev context" and the client is built normally, like
+  sdk-go (qfg-goi1.10.4).
+
 - **Fix: datadir mode reads config files and `quonfig.json` as UTF-8
   (patch).** Both were opened with the locale encoding, so on Windows (cp1252)
   or under a non-UTF-8 locale a non-ASCII value (an accented string, an em
