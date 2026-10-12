@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import datetime
+import decimal
+import math
 import threading
 import time
+import uuid
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..reason import field_type_for_value, marshal_selected_value
 from ..types import Contexts, EvalResult
@@ -22,6 +26,75 @@ from .models import (
 
 def _millis() -> int:
     return int(time.time() * 1000)
+
+
+_DROP = object()
+# Deeper than any real context value; stops a pathological nesting from
+# raising RecursionError on the evaluating thread.
+_MAX_TELEMETRY_DEPTH = 32
+
+
+def telemetry_context_value(value: Any) -> Any:
+    """Return a copy of a context value that is safe to keep for example-context
+    telemetry, or ``_DROP`` when the value is a kind telemetry cannot send
+    (qfg-goi1.2.36).
+
+    The copy is taken at record time so the flush never sees the caller's own
+    objects (a later mutation does not change the example) and the window
+    always serializes with ``json.dumps(allow_nan=False)``: one non-JSON value
+    used to drop the whole window. Dicts, lists and tuples are copied; value
+    types that have a canonical string form are rendered to it (``uuid.UUID``,
+    ``datetime``/``date``/``time`` as ISO 8601, ``Decimal``), so a UUID-typed
+    key still identifies the example. Dropped: NaN/Infinity, a container that
+    closes a reference cycle, nesting deeper than 32, and any other object.
+    Dict keys are rendered with ``str``. Mirrors sdk-go
+    ``telemetryContextValue`` (qfg-goi1.2.44, qfg-goi1.2.46).
+    """
+    return _telemetry_value_on_path(value, ())
+
+
+def _telemetry_value_on_path(value: Any, path: Tuple[int, ...]) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _DROP
+    if isinstance(value, (datetime.date, datetime.time)):
+        # datetime.datetime is a datetime.date subclass.
+        return value.isoformat()
+    if isinstance(value, (uuid.UUID, decimal.Decimal)):
+        if isinstance(value, decimal.Decimal) and not value.is_finite():
+            return _DROP
+        return str(value)
+    if isinstance(value, (dict, list, tuple)):
+        ref = id(value)
+        if ref in path or len(path) >= _MAX_TELEMETRY_DEPTH:
+            return _DROP
+        child_path = path + (ref,)
+        if isinstance(value, dict):
+            out: Dict[str, Any] = {}
+            for k, v in value.items():
+                c = _telemetry_value_on_path(v, child_path)
+                if c is not _DROP:
+                    out[str(k)] = c
+            return out
+        items = []
+        for v in value:
+            c = _telemetry_value_on_path(v, child_path)
+            if c is not _DROP:
+                items.append(c)
+        return items
+    return _DROP
+
+
+def _copy_contexts_for_telemetry(contexts: Contexts) -> Contexts:
+    out: Contexts = {}
+    for ns, vals in contexts.items():
+        if not isinstance(vals, dict):
+            continue
+        copied = telemetry_context_value(vals)
+        if copied is not _DROP:
+            out[ns] = copied
+    return out
 
 
 class EvaluationSummaryCollector:
@@ -232,7 +305,8 @@ class ExampleContextCollector:
                 self._prune_cache()
                 if len(self._seen) >= self._max_seen:
                     return  # drop newest
-            self._examples.append((now, contexts))
+            # Copy at record time, never at flush (qfg-goi1.2.36).
+            self._examples.append((now, _copy_contexts_for_telemetry(contexts)))
             self._seen[key] = now
 
     def drain(self) -> Optional[TelemetryEvent]:

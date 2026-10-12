@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Fix: example-context telemetry copies context values when it records them
+  (patch, telemetry only).** The example-context collector kept the caller's
+  own context dicts and serialized them later on the telemetry thread, so a
+  mutation after the call changed the recorded example, and one value that
+  `json.dumps` cannot encode (a `datetime`, a `uuid.UUID`, a `Decimal`, NaN)
+  dropped the whole telemetry window. Values are now copied at record time:
+  dicts, lists and tuples are copied; `uuid.UUID`, `Decimal` and
+  `datetime`/`date`/`time` (ISO 8601) are rendered to strings, so a UUID-typed
+  `key` still identifies the example. Dropped kinds (the field is omitted,
+  the rest of the example is kept): NaN and Infinity floats and Decimals, a
+  dict/list that closes a reference cycle, nesting deeper than 32 levels, and
+  any other object type. Dict keys are rendered with `str`. Evaluation and
+  context-shape telemetry are unchanged. Matches sdk-go `telemetryContextValue`
+  (qfg-goi1.2.36).
+
 - **Fix: the `decryptWith` key config is resolved for the client's
   environment (patch).** The key config named by `decryptWith` was resolved by
   taking the first valued rule across every environment, then the default,
