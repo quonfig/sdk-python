@@ -70,7 +70,7 @@ def load_datadir(datadir: str, environment: str) -> ConfigEnvelope:
             continue
         for path in sorted(d.glob("*.json")):
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
                 # Coerce int/double values from JSON strings to numbers BEFORE
                 # building the ConfigResponse, so the loaded envelope carries
@@ -95,7 +95,7 @@ def load_datadir(datadir: str, environment: str) -> ConfigEnvelope:
     known_environments: List[str] = []
     if quonfig_json.exists():
         try:
-            with open(quonfig_json) as f:
+            with open(quonfig_json, encoding="utf-8") as f:
                 meta = json.load(f)
             known_environments = meta.get("environments", [])
         except Exception as e:
