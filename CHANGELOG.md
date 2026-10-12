@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Change: `should_log(logger_path=...)` no longer waits for init (minor).**
+  While the HTTP init was in flight, every call waited up to
+  `init_timeout_ms` (10 s by default) for the first config load, and
+  `QuonfigLoggerFilter` and `QuonfigLoggerProcessor` call it on every log
+  record, so every thread that logged during startup stalled. Before init
+  completes the `logger_path` form now returns `True` ("no opinion", the
+  record is emitted) immediately; after init the configured level applies as
+  before. Typed getters and the `config_key=` form keep their blocking
+  contract. Matches sdk-java (qfg-goi1.2.30).
+
 - **Fix: example-context telemetry copies context values when it records them
   (patch, telemetry only).** The example-context collector kept the caller's
   own context dicts and serialized them later on the telemetry thread, so a

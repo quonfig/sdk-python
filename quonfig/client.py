@@ -1856,6 +1856,14 @@ class Quonfig:
                     'Quonfig constructor. Pass `logger_key="log-level.<your-app>"` or '
                     "use the `config_key=...` form instead."
                 )
+            # Before init completes, return "no opinion" (allow) instead of
+            # waiting up to init_timeout_ms: the logging filter and structlog
+            # processor call this on every record, so waiting stalled every
+            # thread that logged during startup (qfg-goi1.2.30). Typed getters
+            # and the config_key form keep blocking. Matches sdk-java.
+            self._ensure_rebuilt_after_fork()
+            if not self._initialized.is_set():
+                return True
             resolved_config_key: str = self._logger_key
             logger_ctx: Contexts = {
                 QUONFIG_SDK_LOGGING_CONTEXT_NAME: {
