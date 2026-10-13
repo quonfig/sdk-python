@@ -182,3 +182,66 @@ def test_malformed_details_reports_error(monkeypatch):
     assert d.reason == "ERROR"
     assert d.value is None
     assert "banana" not in (d.error_message or "")
+
+
+# --- ENV_VAR inside a weighted variant (qfg-goi1.10.6) -----------------------
+
+
+def _weighted_env_client(value_type: str) -> Quonfig:
+    c = _client(value_type)
+    cfg = ConfigResponse.from_dict(
+        {
+            "id": "id-w.key",
+            "key": "w.key",
+            "type": "feature_flag",
+            "valueType": value_type,
+            "sendToClientSdk": False,
+            "default": {
+                "rules": [
+                    {
+                        "criteria": [{"operator": "ALWAYS_TRUE"}],
+                        "value": {
+                            "type": "weighted_values",
+                            "value": {
+                                "hashByPropertyName": "user.key",
+                                "weightedValues": [
+                                    {
+                                        "weight": 1,
+                                        "value": {
+                                            "type": "provided",
+                                            "value": {"source": "ENV_VAR", "lookup": ENV},
+                                        },
+                                    }
+                                ],
+                            },
+                        },
+                    }
+                ]
+            },
+        }
+    )
+    c._store.update(
+        ConfigEnvelope(configs=[cfg], meta=Meta(version="test2", environment="Production"))
+    )
+    return c
+
+
+def test_weighted_variant_env_var_coerced_to_int(monkeypatch):
+    monkeypatch.setenv(ENV, "42")
+    c = _weighted_env_client("int")
+    ctx = {"user": {"key": "u1"}}
+    assert c.get_int("w.key", default=0, contexts=ctx) == 42
+    assert c.get("w.key", contexts=ctx) == 42
+    assert isinstance(c.get("w.key", contexts=ctx), int)
+
+
+def test_weighted_variant_env_var_coerced_to_bool(monkeypatch):
+    monkeypatch.setenv(ENV, "false")
+    c = _weighted_env_client("bool")
+    assert c.get("w.key", contexts={"user": {"key": "u1"}}) is False
+
+
+def test_weighted_variant_malformed_env_var_returns_default(monkeypatch):
+    monkeypatch.setenv(ENV, "not-an-int")
+    c = _weighted_env_client("int")
+    assert c.get_int("w.key", default=7, contexts={"user": {"key": "u1"}}) == 7
