@@ -255,3 +255,24 @@ def test_quonfig_uses_staging_tokens_file_when_domain_set(
     client = _empty_client(enable_quonfig_user_context=True)
 
     assert client._global_context == {"quonfig-user": {"email": "stg@foo.com"}}
+
+
+# --- no home directory (qfg-goi1.10.4) ---
+
+
+@pytest.mark.parametrize(
+    "exc", [RuntimeError("Could not determine home directory."), KeyError("HOME")]
+)
+def test_quonfig_constructs_when_home_cannot_be_determined(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    # No HOME and no pwd entry (some containers): Path.home() raises.
+    # Construction must succeed with no dev context, like sdk-go.
+    def no_home() -> Path:
+        raise exc
+
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+
+    assert load_quonfig_user_context() is None
+    client = _empty_client(enable_quonfig_user_context=True)
+    assert client._global_context == {}

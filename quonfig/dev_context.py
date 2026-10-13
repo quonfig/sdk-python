@@ -59,13 +59,18 @@ def _derive_domain_from_api_urls(api_urls: Optional[List[str]]) -> str:
     return host
 
 
-def _config_home() -> Path:
+def _config_home() -> Optional[Path]:
     """The parent of ``.quonfig``. ``QUONFIG_CONFIG_HOME`` overrides for
-    test isolation; defaults to the user's home directory."""
+    test isolation; defaults to the user's home directory. ``None`` when the
+    home directory cannot be determined (no ``HOME``, no pwd entry, as in some
+    containers): that means "no dev context", like sdk-go (qfg-goi1.10.4)."""
     override = os.environ.get("QUONFIG_CONFIG_HOME", "").strip()
     if override:
         return Path(override)
-    return Path.home()
+    try:
+        return Path.home()
+    except (RuntimeError, KeyError):
+        return None
 
 
 def load_quonfig_user_context(
@@ -76,7 +81,10 @@ def load_quonfig_user_context(
     parsed. Parse failures emit a single ``logger.warning`` and yield
     ``None`` so SDK init can continue.
     """
-    path = _config_home() / ".quonfig" / token_filename_for_api_urls(api_urls)
+    home = _config_home()
+    if home is None:
+        return None
+    path = home / ".quonfig" / token_filename_for_api_urls(api_urls)
 
     try:
         raw = path.read_text(encoding="utf-8")
