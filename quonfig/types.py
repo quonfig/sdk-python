@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
 
@@ -8,6 +9,8 @@ Contexts = Dict[str, Dict[str, Any]]
 ContextValue = Union[str, int, float, bool, list, None]
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -95,10 +98,37 @@ class Rule:
         # as null rather than omitting the key.
         criteria = [Criterion.from_dict(c) for c in (data.get("criteria") or [])]
         v = data.get("value")
+        value = Value.from_dict(v) if v else None
+        if value is not None and value.type == "weighted_values":
+            _validate_weighted_values(value.value)
         return cls(
             criteria=criteria,
-            value=Value.from_dict(v) if v else None,
+            value=value,
         )
+
+
+def _validate_weighted_values(raw: Any) -> None:
+    """Reject a malformed weighted value at decode time, so the config is
+    skipped (with a WARN) instead of raising ``TypeError`` out of every getter
+    at evaluation time (qfg-goi1.10.5). A ``weight`` must be an integer (not a
+    bool, float, string or null); a missing ``weight`` counts as 0, as before.
+    Matches sdk-go, whose int weight fails ``json.Unmarshal`` the same way."""
+    if not isinstance(raw, dict):
+        raise ValueError("weighted_values value must be an object")
+    entries = raw.get("weightedValues")
+    if entries is None:
+        return
+    if not isinstance(entries, list):
+        raise ValueError("weightedValues must be a list")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("weightedValues entry must be an object")
+        if "weight" in entry:
+            weight = entry["weight"]
+            if isinstance(weight, bool) or not isinstance(weight, int):
+                raise ValueError(
+                    f"weightedValues weight must be an integer (got {type(weight).__name__})"
+                )
 
 
 @dataclass
@@ -236,12 +266,46 @@ class ConfigEnvelope:
         version = meta_data.get("version")
         if not isinstance(version, str) or version == "":
             raise InvalidEnvelopeError("config payload meta has no version")
+        raw_configs = data.get("configs")
+        if raw_configs is None:
+            raw_configs = []
+        if not isinstance(raw_configs, list):
+            raise InvalidEnvelopeError("config payload configs is not a list")
         try:
-            return cls.from_dict(data)
+            meta = Meta.from_dict(meta_data)
         except Exception as e:  # noqa: BLE001 — any shape error is a bad payload
             raise InvalidEnvelopeError(
-                f"config payload could not be decoded: {type(e).__name__}: {e}"
+                f"config payload meta could not be decoded: {type(e).__name__}: {e}"
             ) from e
+
+        # Decode config by config: one that fails is skipped with a WARN
+        # naming its key and the rest installs (qfg-goi1.10.5, sdk-go
+        # 2f6b98b). If every entry fails, reject the envelope as before, so an
+        # undecodable payload never installs as an empty workspace.
+        configs: List[ConfigResponse] = []
+        first_error: Optional[Exception] = None
+        for entry in raw_configs:
+            try:
+                if not isinstance(entry, dict):
+                    raise ValueError(f"config entry is not an object ({type(entry).__name__})")
+                configs.append(ConfigResponse.from_dict(entry))
+            except Exception as e:  # noqa: BLE001 — any shape error skips this entry
+                if first_error is None:
+                    first_error = e
+                key = entry.get("key", "") if isinstance(entry, dict) else ""
+                logger.warning(
+                    "quonfig: skipping config that failed to decode; other configs are "
+                    "unaffected (key=%r, version=%s): %s: %s",
+                    key,
+                    meta.version,
+                    type(e).__name__,
+                    e,
+                )
+        if not configs and first_error is not None:
+            raise InvalidEnvelopeError(
+                f"config payload could not be decoded: {type(first_error).__name__}: {first_error}"
+            ) from first_error
+        return cls(configs=configs, meta=meta)
 
 
 class InvalidEnvelopeError(ValueError):
