@@ -134,6 +134,7 @@ class Resolver:
                 contexts,
                 config_key=config_key,
                 weighted_value_index=weighted_value_index,
+                value_type=value_type,
             )
 
         # Handle decryption
@@ -204,6 +205,7 @@ class Resolver:
         contexts: Contexts,
         config_key: str = "",
         weighted_value_index: int = -1,
+        value_type: str = "",
     ) -> Any:
         """Hash-based weighted value selection.
 
@@ -223,7 +225,10 @@ class Resolver:
 
         if 0 <= weighted_value_index < len(weighted_values):
             return self._resolve_selected(
-                weighted_values[weighted_value_index].get("value"), contexts, config_key
+                weighted_values[weighted_value_index].get("value"),
+                contexts,
+                config_key,
+                value_type,
             )
 
         # Determine hash fraction
@@ -263,16 +268,20 @@ class Resolver:
         if selected is None:
             selected = weighted_values[0].get("value") if weighted_values else None
 
-        return self._resolve_selected(selected, contexts, config_key)
+        return self._resolve_selected(selected, contexts, config_key, value_type)
 
-    def _resolve_selected(self, selected: Any, contexts: Contexts, config_key: str) -> Any:
+    def _resolve_selected(
+        self, selected: Any, contexts: Contexts, config_key: str, value_type: str = ""
+    ) -> Any:
         if selected is None:
             return None
 
-        # Recursively resolve the selected value
+        # Recursively resolve the selected value. Pass the config's value type
+        # so an ENV_VAR variant is coerced like a non-weighted one
+        # (qfg-goi1.10.6, matches sdk-go).
         if isinstance(selected, dict):
             inner_value = Value.from_dict(selected)
-            return self.resolve(inner_value, contexts, config_key=config_key)
+            return self.resolve(inner_value, contexts, config_key=config_key, value_type=value_type)
         return selected
 
     def _decrypt_value(

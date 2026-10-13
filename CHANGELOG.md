@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **UPGRADE: may change returned values. An ENV_VAR inside a weighted
+  variant is coerced to the config's value type (minor).** Release note for
+  Jeff: ship in a release of its own, separate from the patch entries and the
+  WS8 rule set. A weighted rollout whose selected variant is
+  `{"type": "provided", "source": "ENV_VAR"}` returned the raw env string,
+  so `get("flag")` on an `int` config returned `"42"` and on a `bool` config
+  returned `"false"` (truthy). It is now coerced like a non-weighted ENV_VAR
+  value (1.7.0): `42`, `False`; a malformed value returns the caller's default
+  with one warning per key. Matches sdk-go (qfg-goi1.10.6).
+
 - **UPGRADE: may change returned values. Skip one bad config instead of the
   whole envelope; validate weights at decode; `get_json` returns a copy
   (minor, WS8).** Release note for Jeff: this is the WS8 rule set; ship it in
