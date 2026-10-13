@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **UPGRADE: may change returned values. Skip one bad config instead of the
+  whole envelope; validate weights at decode; `get_json` returns a copy
+  (minor, WS8).** Release note for Jeff: this is the WS8 rule set; ship it in
+  a release of its own, not bundled with the patch entries below (confirm at
+  publish time whether copy-on-return goes out separately, per Q3b).
+  - A config in an HTTP or SSE payload that fails to decode is now skipped
+    with a WARN naming its key, and the rest of the payload installs. Before,
+    one bad config rejected the whole payload, which blocked init or froze the
+    workspace at its last good snapshot. If every config fails, the payload is
+    still rejected, so it can never install as an empty workspace. Datadir
+    mode already skipped a bad file. Matches sdk-go 2f6b98b.
+  - A weighted value whose `weight` is not an integer (a string, float, bool
+    or null) now fails that config's decode, so the config is skipped with the
+    WARN above (in datadir mode, the file is skipped). Before, it installed
+    and every getter for that key raised `TypeError` at evaluation time. A
+    missing `weight` still counts as 0.
+  - `get_json` (and `get` / `get_json_details` on a JSON config) returns a
+    deep copy of a dict or list value instead of the stored object, so
+    mutating a returned value no longer changes what later reads see. Each
+    call now returns a new object (`is` identity differs between calls), and
+    each read pays for the copy, which is noticeable on very large JSON
+    values. Matches sdk-go 543ee9c (qfg-goi1.10.5).
+
 - **Fix: `Quonfig()` no longer raises when the home directory cannot be
   determined (patch).** With no `HOME` and no password-database entry (some
   containers), `Path.home()` raised `RuntimeError` or `KeyError` while the

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import re
@@ -345,7 +346,12 @@ class Resolver:
                     "json value must be a native JSON type "
                     "(dict/list/number/bool/None); stringified JSON is no longer allowed"
                 )
-            # dict / list / int / float / bool (and None handled above) all pass through.
+            # dict / list / int / float / bool (and None handled above) all pass
+            # through. Return a copy, never the store's object, so a caller
+            # mutation cannot change the config for later reads
+            # (qfg-goi1.10.5, sdk-go 543ee9c).
+            if isinstance(raw, (dict, list)):
+                return copy.deepcopy(raw)
             return raw
 
         # Durations follow the decided grammar (qfg-2agi decision 1). A
