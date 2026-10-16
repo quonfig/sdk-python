@@ -8,6 +8,7 @@ import threading
 import uuid
 import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,7 +33,7 @@ from .exceptions import (
 )
 from .resolver import LOG_LEVEL_ORDER, Resolver, compute_reportable_value_for
 from .store import ConfigStore
-from .transport import FallbackPoller, Transport
+from .transport import CycleOutcome, FallbackPoller, Transport, is_auth_class_status
 from .types import (
     QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP,
     QUONFIG_SDK_LOGGING_CONTEXT_NAME,
@@ -103,6 +104,14 @@ def _coerce_value(value: Any, expected_type: str) -> tuple[Any, bool]:
 # staging control plane without per-URL overrides — this mirrors the CLI
 # (`cli/src/util/domain-urls.ts`) and the rest of the SDK fleet.
 _DEFAULT_DOMAIN = "quonfig.com"
+
+
+def _host_of(url: str) -> str:
+    """host[:port] of a base URL (no userinfo, path or query), for log lines."""
+    parts = urlsplit(url)
+    if not parts.hostname:
+        return url
+    return f"{parts.hostname}:{parts.port}" if parts.port is not None else parts.hostname
 
 
 def _derive_defaults(domain: str) -> tuple[List[str], str]:
@@ -498,6 +507,11 @@ class Quonfig:
         self._sse_ever_connected = False
         self._fallback_engage_timer: Optional[threading.Timer] = None
         self._fallback_lock = threading.Lock()
+        # Test seam (supervisor contract Test 8): when set, every background
+        # wait (SSE reconnect sleep, poller engage grace, poll interval, auth
+        # probe) goes through it as ``hook(kind, requested_seconds)`` and the
+        # SDK waits the returned value instead. Never a customer option.
+        self._test_wait_hook: Optional[Callable[[str, float], float]] = None
         self._on_config_update = on_config_update
         self._on_sse_connection_state_change = on_sse_connection_state_change
         self._data_dir_auto_reload = data_dir_auto_reload
@@ -599,7 +613,20 @@ class Quonfig:
             # parallel-failover hedge so an established client heals forward
             # to a newer leg on the poll loop too, not just at init.
             refresh=lambda: self._fetch_and_install_hedged(initial=False),
+            wait_hook=self._requested_wait,
+            # Auth-failure rule (qfg-goi1.10.25): the poller's cycle reports
+            # how the legs answered, so a rejecting cycle can enter auth-failed.
+            cycle=lambda: self._hedged_cycle(initial=False),
+            on_auth_failed=self._enter_auth_failed,
+            on_auth_recovered=self._exit_auth_failed,
+            polling_mode=not self._enable_sse,
         )
+
+    def _requested_wait(self, kind: str, seconds: float) -> float:
+        hook = self._test_wait_hook
+        if hook is not None:
+            return hook(kind, seconds)
+        return seconds
 
     def _build_transport(self) -> Transport:
         return Transport(
@@ -1051,14 +1078,28 @@ class Quonfig:
         Coalescing here would make a manual ``refresh()`` silently no-op whenever
         a background fetch is in flight, which violates the refresh contract.
         """
+        return self._hedged_cycle(initial=initial).installed
+
+    def _hedged_cycle(self, *, initial: bool) -> CycleOutcome:
+        """One hedged config-fetch cycle (see ``_fetch_and_install_hedged``),
+        also reporting how the legs answered for the auth-failure rule
+        (qfg-goi1.10.25, R2): a cycle where no leg returned 200/304 and the
+        primary leg returned 401/403/404/410 carries that status and the
+        primary's host. Only the fallback poller acts on it; the init fetch
+        and ``refresh()`` never enter auth-failed."""
         if self._transport is None:
-            return False
+            return CycleOutcome()
         installed_once = False
+        answered = False
+        primary_status = 0
         fired = 0
         for lr in self._transport.fetch_hedged():
             fired += 1
+            if lr.source_index == 0:
+                primary_status = lr.status
             if lr.error is not None:
                 continue
+            answered = True
             if lr.not_changed:
                 # 304 Not Modified: the leg answered and confirmed the held
                 # config is current — a successful refresh with nothing to
@@ -1087,7 +1128,70 @@ class Quonfig:
         # payload won the guard. Mirrors sdk-go's `fired > 1` check.
         if fired > 1 and self._telemetry is not None:
             self._telemetry.record_hedge_fired()
-        return installed_once
+        outcome = CycleOutcome(installed=installed_once, answered=answered)
+        if not answered and is_auth_class_status(primary_status):
+            outcome.auth_status = primary_status
+            outcome.auth_host = _host_of(self._transport.api_urls[0])
+        return outcome
+
+    def _start_sse(self) -> None:
+        """Start a new SSE stream. Each stream gets its own stop event, so
+        the auth-failure rule can stop and later restart SSE (from its base
+        backoff) without touching the client's shutdown flag; ``close()``
+        stops the live one."""
+        from .sse import SSEClient
+
+        transport = self._transport
+        if transport is None:
+            return
+        sse = SSEClient(
+            transport,
+            self._store,
+            threading.Event(),
+            state_listener=self._handle_sse_state_change,
+            on_config_update=self._fire_on_config_update,
+            install=lambda env: self._install_network_envelope(env, from_http=False),
+            record_refresh=self._record_successful_refresh,
+            wait_hook=self._requested_wait,
+        )
+        with self._fallback_lock:
+            if self._shutdown.is_set():
+                return
+            self._sse = sse
+        sse.start()
+        if self._shutdown.is_set():
+            # close() ran between the check and start(), and may have missed it.
+            sse.stop()
+
+    def _enter_auth_failed(self, status: int, host: str) -> None:
+        """Auth-failure rule entry (R3, R5, R6), called from the fallback
+        poller's thread after it set its auth-failed flag. SSE is stopped (not
+        attempted while auth-failed), a pending poller engage is cancelled, and
+        the entering cycle logs the one config ERROR: status and host, never
+        the key."""
+        with self._fallback_lock:
+            if self._fallback_engage_timer is not None:
+                self._fallback_engage_timer.cancel()
+                self._fallback_engage_timer = None
+            sse = self._sse
+            self._sse = None
+        if sse is not None:
+            sse.stop()
+            sse.join(1.0)
+        logger.error(
+            "[quonfig] config fetch rejected with HTTP %d by %s: the SDK key is invalid or "
+            "revoked (check the SDK key). Streaming and polling are paused; probing every "
+            "150-300s until a fetch is accepted",
+            status,
+            host,
+        )
+
+    def _exit_auth_failed(self) -> None:
+        """Auth-failure rule exit (R4), SSE mode: a probe was accepted, so
+        SSE restarts as a new stream, from its base backoff. The poller is back
+        on its normal engage rule, driven by the new stream's state edges."""
+        if self._enable_sse and not self._shutdown.is_set():
+            self._start_sse()
 
     def _load_from_datadir(self) -> None:
         from .datadir import load_datadir
@@ -1169,10 +1273,6 @@ class Quonfig:
         ``_wait_initialized`` would never see an unset event.
         """
         assert self._transport is not None
-        # Bind to a local so mypy narrows inside the nested closure below;
-        # `self._transport` is reread through `self` and would lose its
-        # narrowing across the closure boundary.
-        transport = self._transport
 
         def _initial_fetch() -> None:
             try:
@@ -1207,18 +1307,7 @@ class Quonfig:
             # Start SSE for live updates. SSE state edges drive the Layer 2
             # fallback poller (engage on initial failure / sustained disconnect,
             # disengage on recovery) — see `_handle_sse_state_change`.
-            from .sse import SSEClient
-
-            self._sse = SSEClient(
-                transport,
-                self._store,
-                self._shutdown,
-                state_listener=self._handle_sse_state_change,
-                on_config_update=self._fire_on_config_update,
-                install=lambda env: self._install_network_envelope(env, from_http=False),
-                record_refresh=self._record_successful_refresh,
-            )
-            self._sse.start()
+            self._start_sse()
         elif self._fallback_poller is not None:
             # SSE is off, so the Layer 2 poller is the ONLY update channel —
             # engage it now rather than waiting on `_handle_sse_state_change`,
@@ -1992,6 +2081,10 @@ class Quonfig:
 
         if not self._fallback_poll_enabled or self._fallback_poller is None:
             return
+        if self._fallback_poller.auth_failed():
+            # Auth-failed: SSE is stopped and the poller does not engage
+            # (R3); a late edge from the stopped stream changes nothing.
+            return
 
         if state == "connected":
             with self._fallback_lock:
@@ -2021,7 +2114,9 @@ class Quonfig:
                     if self._fallback_poller is not None:
                         self._fallback_poller.engage("sse-disconnected-grace-elapsed")
 
-                timer = threading.Timer(grace_seconds, _engage_after_grace)
+                timer = threading.Timer(
+                    self._requested_wait("engage", grace_seconds), _engage_after_grace
+                )
                 timer.daemon = True
                 with self._fallback_lock:
                     self._fallback_engage_timer = timer
@@ -2303,6 +2398,11 @@ class Quonfig:
 
         Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
         """
+        poller = self._fallback_poller
+        if poller is not None and poller.auth_failed():
+            # Auth-failure rule R6: disconnected while auth-failed, never
+            # falling_back, in every mode.
+            return "disconnected"
         if not self._enable_sse:
             with self._health_lock:
                 last_refresh = self._last_successful_refresh

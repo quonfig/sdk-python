@@ -59,8 +59,13 @@ class SSEClient:
         on_config_update: Optional[Callable[[], None]] = None,
         install: Optional[Callable[[ConfigEnvelope], bool]] = None,
         record_refresh: Optional[Callable[[], None]] = None,
+        wait_hook: Optional[Callable[[str, float], float]] = None,
     ) -> None:
         self.transport = transport
+        # Test seam (supervisor contract Test 8): maps each requested
+        # reconnect sleep to the duration actually slept, so a test can record
+        # the requested value and compress it. ``None`` in production.
+        self._wait_hook = wait_hook
         self.store = store
         self.shutdown_event = shutdown_event
         self._state_listener = state_listener
@@ -100,6 +105,18 @@ class SSEClient:
             self._response = None
         if response is not None:
             _close_response(response)
+
+    def join(self, timeout: float) -> None:
+        """Wait up to ``timeout`` seconds for the SSE thread to finish (after
+        ``stop()``)."""
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout)
+
+    def _sleep(self, seconds: float) -> None:
+        if self._wait_hook is not None:
+            seconds = self._wait_hook("sse", seconds)
+        self.shutdown_event.wait(seconds)
 
     def _emit(self, state: SSEState) -> None:
         if self._state_listener is None:
@@ -205,7 +222,7 @@ class SSEClient:
                         "Quonfig SSE: stream ended cleanly mid-session, reconnecting transparently"
                     )
                     transparent_reconnect = True
-                    self.shutdown_event.wait(_clean_eof_reconnect_sleep())
+                    self._sleep(_clean_eof_reconnect_sleep())
             except Exception as e:
                 if self.shutdown_event.is_set():
                     break
@@ -216,7 +233,7 @@ class SSEClient:
                 )
                 self._emit("error")
                 # Exponential backoff with jitter
-                self.shutdown_event.wait(backoff)
+                self._sleep(backoff)
                 backoff = min(backoff * 2 * (0.8 + 0.4 * random.random()), 60.0)
             finally:
                 if response is not None:
