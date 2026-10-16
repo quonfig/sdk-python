@@ -124,7 +124,10 @@ class Resolver:
 
         # Handle provided (ENV_VAR) type
         if vtype == "provided":
-            return self._coerce_env_var(self._resolve_provided(raw), value_type, config_key)
+            env_var_name = raw.get("lookup", "") if isinstance(raw, dict) else ""
+            return self._coerce_env_var(
+                self._resolve_provided(raw), value_type, config_key, env_var_name
+            )
 
         # Handle weighted values
         if vtype == "weighted_values":
@@ -158,11 +161,14 @@ class Resolver:
             return env_val
         raise QuonfigEnvVarNotSetError(f"Unknown provided source: {source!r}")
 
-    def _coerce_env_var(self, raw: Any, value_type: str, config_key: str = "") -> Any:
+    def _coerce_env_var(
+        self, raw: Any, value_type: str, config_key: str = "", env_var_name: str = ""
+    ) -> Any:
         """Strictly coerce an ENV_VAR string to the config's valueType.
 
-        The error message never includes the raw value: env vars often carry
-        secrets.
+        The error message names the variable and the config but never includes
+        the raw value: env vars often carry secrets. Wording is the cross-SDK
+        template pinned in integration-test-data (qfg-goi1.10.22).
         """
         if not isinstance(raw, str) or value_type in ("", "string", "json"):
             return raw
@@ -193,8 +199,8 @@ class Resolver:
 
         if coerced is _UNCOERCIBLE:
             raise QuonfigEnvVarCoerceError(
-                f"Environment-variable value for '{config_key}' could not be "
-                f"coerced to {value_type}"
+                f'environment variable "{env_var_name}" cannot be converted to '
+                f'{value_type} for config "{config_key}"'
             )
         return coerced
 

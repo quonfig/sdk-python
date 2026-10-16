@@ -5,7 +5,30 @@
 
 from __future__ import annotations
 
+import re
+
 from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator
+
+
+class RedactedSelectedValue:
+    """Matches a selectedValue of exactly {"string": "*****<5 hex>"}.
+
+    The redaction shape, without pinning the hash input (YAML
+    `selected_value: {redacted: true}`).
+    """
+
+    PATTERN = re.compile(r"^\*{5}[0-9a-f]{5}$")
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, dict) or list(other) != ["string"]:
+            return False
+        value = other["string"]
+        return isinstance(value, str) and self.PATTERN.fullmatch(value) is not None
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return f"{{'string': <matches {self.PATTERN.pattern}>}}"
 
 
 # reason is STATIC for config with no targeting rules
@@ -446,6 +469,71 @@ def test_confidential_encrypted_string_is_redacted_using_ciphertext_hash() -> No
             "count": 1,
             "reason": 1,
             "selected_value": {"string": "*****936c9"},
+            "summary": {"config_row_index": 0, "conditional_value_index": 0},
+        }
+    ]
+
+
+# confidential weighted variant is redacted in selectedValue
+def test_confidential_weighted_variant_is_redacted_in_selectedvalue() -> None:
+    agg = build_aggregator("evaluation_summary", {})
+    feed_aggregator(
+        agg,
+        "evaluation_summary",
+        {"keys": ["confidential.weighted.variant"]},
+        contexts={"user": {"tracking_id": "92a202f2"}},
+    )
+    assert aggregator_post(agg, "evaluation_summary", endpoint="/api/v1/telemetry") == [
+        {
+            "key": "confidential.weighted.variant",
+            "type": "CONFIG",
+            "value": "weighted-secret-variant",
+            "value_type": "string",
+            "count": 1,
+            "reason": 3,
+            "selected_value": {"string": "*****364b0"},
+            "summary": {
+                "config_row_index": 0,
+                "conditional_value_index": 0,
+                "weighted_value_index": 0,
+            },
+        }
+    ]
+
+
+# confidential ENV_VAR-provided value is redacted in selectedValue
+def test_confidential_env_var_provided_value_is_redacted_in_selectedvalue() -> None:
+    agg = build_aggregator("evaluation_summary", {})
+    feed_aggregator(
+        agg, "evaluation_summary", {"keys": ["confidential.provided.a.number"]}, contexts={}
+    )
+    assert aggregator_post(agg, "evaluation_summary", endpoint="/api/v1/telemetry") == [
+        {
+            "key": "confidential.provided.a.number",
+            "type": "CONFIG",
+            "value": "1234",
+            "value_type": "string",
+            "count": 1,
+            "reason": 1,
+            "selected_value": RedactedSelectedValue(),
+            "summary": {"config_row_index": 0, "conditional_value_index": 0},
+        }
+    ]
+
+
+# non-confidential ENV_VAR-provided value is reported as its resolved value
+def test_non_confidential_env_var_provided_value_is_reported_as_its_resolved_value() -> None:
+    agg = build_aggregator("evaluation_summary", {})
+    feed_aggregator(agg, "evaluation_summary", {"keys": ["provided.a.number"]}, contexts={})
+    assert aggregator_post(agg, "evaluation_summary", endpoint="/api/v1/telemetry") == [
+        {
+            "key": "provided.a.number",
+            "type": "CONFIG",
+            "value": 1234,
+            "value_type": "int",
+            "count": 1,
+            "reason": 1,
+            "selected_value": {"int": 1234},
             "summary": {"config_row_index": 0, "conditional_value_index": 0},
         }
     ]

@@ -25,10 +25,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from quonfig.datadir import load_datadir
-from quonfig.evaluator import Evaluator
-from quonfig.resolver import Resolver, compute_reportable_value
-from quonfig.store import ConfigStore
+from quonfig import Quonfig
 from quonfig.telemetry.collectors import (
     ContextShapeCollector,
     EvaluationSummaryCollector,
@@ -54,10 +51,31 @@ os.environ.setdefault("IS_A_NUMBER", "1234")
 os.environ.setdefault("NOT_A_NUMBER", "not_a_number")
 os.environ.pop("MISSING_ENV_VAR", None)
 
-_store = ConfigStore()
-_store.update(load_datadir(DATA_DIR, ENV_ID))
-_evaluator = Evaluator(_store, ENV_ID)
-_resolver = Resolver(_store)
+# Evaluations go through the public client (``Quonfig.get``) so the
+# telemetry rows these tests assert on are the ones the real getter records:
+# same resolve call (config value type, weighted index) and the same
+# reportable-value redaction. A hand-rolled evaluate+resolve here used to
+# drift from the client and test a code path customers never run
+# (qfg-goi1.10.22).
+_client = Quonfig(
+    datadir=DATA_DIR,
+    environment=ENV_ID,
+    on_init_failure="return_zero_value",
+)
+_client.init()
+
+
+class _RecordInto:
+    """Telemetry stand-in that hands each recorded evaluation to ``agg``."""
+
+    def __init__(self) -> None:
+        self.results: List[EvalResult] = []
+
+    def record_evaluation(self, result: EvalResult) -> None:
+        self.results.append(result)
+
+    def record_context(self, contexts: Contexts) -> None:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -155,17 +173,19 @@ def aggregator_post(agg, kind: str, endpoint: str) -> Any:
 
 
 def _evaluate_for_telemetry(key: str, contexts: Optional[Contexts] = None) -> Optional[EvalResult]:
-    ctx = contexts or {}
-    result = _evaluator.evaluate(key, ctx)
-    if result.reason == "MISSING" or result.value is None:
-        return None
+    """Evaluate ``key`` via the public getter and return the EvalResult the
+    client recorded for telemetry, or ``None`` if it recorded nothing
+    (missing key, unresolvable value)."""
+    recorder = _RecordInto()
+    saved = _client._telemetry
+    _client._telemetry = recorder  # type: ignore[assignment]
     try:
-        resolved = _resolver.resolve(result.value, ctx, config_key=key)
+        _client.get(key, None, contexts=contexts or {})
     except Exception:
         return None
-    result.resolved_value = resolved
-    result.reportable_value = compute_reportable_value(result.value)
-    return result
+    finally:
+        _client._telemetry = saved
+    return recorder.results[-1] if recorder.results else None
 
 
 def _post_evaluation_summary(agg: EvaluationSummaryCollector) -> Optional[List[dict]]:

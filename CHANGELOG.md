@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **ENV_VAR coercion error text follows the cross-SDK template (patch).** A
+  malformed ENV_VAR value now raises/logs
+  `environment variable "<NAME>" cannot be converted to <type> for config "<key>"`
+  (was `Environment-variable value for '<key>' could not be coerced to <type>`).
+  The env value itself is still never included. Pinned by
+  integration-test-data v2026.10.12 (qfg-goi1.10.22).
 - **UPGRADE: may change returned values. An ENV_VAR inside a weighted
   variant is coerced to the config's value type (minor).** Release note for
   Jeff: ship in a release of its own, separate from the patch entries and the

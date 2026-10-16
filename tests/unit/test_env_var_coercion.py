@@ -151,7 +151,9 @@ def test_malformed_returns_default_and_logs_once(monkeypatch, caplog, vtype, env
     with caplog.at_level(logging.WARNING, logger="quonfig"):
         assert getattr(c, getter)("p.key", default=default) == default
         assert getattr(c, getter)("p.key", default=default) == default
-    coerce_logs = [r for r in caplog.records if "could not be coerced" in r.getMessage()]
+    # Cross-SDK template pinned in integration-test-data (qfg-goi1.10.22).
+    template = f'environment variable "{ENV}" cannot be converted to {vtype} for config "p.key"'
+    coerce_logs = [r for r in caplog.records if template in r.getMessage()]
     assert len(coerce_logs) == 1
     assert env not in coerce_logs[0].getMessage()  # raw value never logged
 
