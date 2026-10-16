@@ -25,7 +25,7 @@ from quonfig.transport import Transport
 
 
 def _start_eof_server() -> tuple[socket.socket, dict]:
-    """A socket server that answers 200 event-stream and closes immediately."""
+    """A socket server that answers 200 event-stream, one keepalive, and closes."""
     sock = socket.socket()
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", 0))
@@ -45,6 +45,10 @@ def _start_eof_server() -> tuple[socket.socket, dict]:
                     b"HTTP/1.1 200 OK\r\n"
                     b"Content-Type: text/event-stream\r\n"
                     b"Connection: close\r\n\r\n"
+                    # One keepalive frame first: a session that ends with no
+                    # frame is a failed attempt, not a clean-EOF reconnect
+                    # (qfg-goi1.10.44, tested in test_supervisor.py Test 9).
+                    b": keepalive\n\n"
                 )
             except OSError:
                 pass

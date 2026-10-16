@@ -46,7 +46,7 @@ def test_get_or_raise_raises_the_correct_error_if_it_doesn_t_raise_on_init_timeo
         on_no_default="error",
         initialization_timeout_sec=0.01,
         on_init_failure="return",
-        api_urls=["https://app.staging-prefab.cloud"],
+        api_urls=["http://192.0.2.1:1"],
     )
     c.init()
     with pytest.raises(QuonfigKeyNotFoundError):
@@ -60,7 +60,7 @@ def test_get_or_raise_can_raise_an_error_if_the_client_does_not_initialize_in_ti
         on_no_default="error",
         initialization_timeout_sec=0.01,
         on_init_failure="raise",
-        api_urls=["https://app.staging-prefab.cloud"],
+        api_urls=["http://192.0.2.1:1"],
     )
     c.init()
     with pytest.raises(QuonfigInitTimeoutError):

@@ -26,6 +26,7 @@ the entry ERROR and the exit INFO.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -586,3 +587,454 @@ def test_supervisor_auth_failed_polling_mode_waits_max_of_period_and_interval(
     first_wait = next(e for e in after if e.kind.startswith("wait:"))
     assert (first_wait.kind, first_wait.d) == ("wait:poll", interval_s)
     assert c.connection_state() == "connected"
+
+
+# =============================================================================
+# Test 9: first-frame rule against a local server (qfg-goi1.10.44)
+# =============================================================================
+#
+# Contract: integration-test-data ``chaos/supervisor-test-contract.md`` "Rule:
+# a connection is `connected` at its first valid frame" + Test 9 (a)-(d) +
+# Test 2 "Reset", at v2026.10.16.4. Plan:
+# project/plans/2026-10-12-sse-connected-first-frame.md. Shape follows the
+# sdk-go canary (sdk-go 2891ee2, ``sse_first_frame_test.go``).
+#
+# Unlike Test 8 this drives the REAL SSE worker against a local 127.0.0.1
+# server that writes chunked ``text/event-stream`` bodies, the way
+# api-delivery does. Only the fallback poll interval is shrunk (option), and
+# requested waits are recorded but NOT compressed.
+#
+# sdk-python keeps the bounded transparent reconnect (contract Rule, Jeff
+# 2026-10-16): ``connected`` is held across a clean-EOF reconnect with no
+# edge, until a connection ends with no frame.
+
+T9_KEY = "t9.value"
+SSE_INITIAL = 0.5  # sse.py _CLEAN_EOF_RECONNECT_DELAY_S: the reconnect delay after a frame
+
+
+def t9_envelope(gen: int, value: str) -> bytes:
+    rule = {"criteria": [{"operator": "ALWAYS_TRUE"}], "value": {"type": "string", "value": value}}
+    return json.dumps(
+        {
+            "configs": [
+                {
+                    "id": "id-t9",
+                    "key": T9_KEY,
+                    "type": "config",
+                    "valueType": "string",
+                    "sendToClientSdk": False,
+                    "default": {"rules": [rule]},
+                    "environments": [{"id": "Production", "rules": [rule]}],
+                }
+            ],
+            "meta": {"version": f"gen-{gen}", "environment": "Production", "generation": gen},
+        }
+    ).encode()
+
+
+def sse_open(h: BaseHTTPRequestHandler) -> None:
+    """200 + event-stream headers, chunked, flushed, no body byte yet."""
+    h.send_response(200)
+    h.send_header("Content-Type", "text/event-stream")
+    h.send_header("Transfer-Encoding", "chunked")
+    h.end_headers()
+    h.wfile.flush()
+
+
+def sse_write(h: BaseHTTPRequestHandler, data: bytes) -> None:
+    h.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
+    h.wfile.flush()
+
+
+def sse_end(h: BaseHTTPRequestHandler) -> None:
+    """Clean EOF: the terminating chunk, then the connection closes."""
+    h.wfile.write(b"0\r\n\r\n")
+    h.wfile.flush()
+    h.close_connection = True
+
+
+@dataclass
+class T9:
+    """Real client + local servers + recorders for one Test 9 sub-test."""
+
+    body: Callable[["T9", BaseHTTPRequestHandler, int], None]
+    rig: Rig = field(default_factory=lambda: Rig(sse_status=200))
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    edges: List[tuple] = field(default_factory=list)  # (state, monotonic)
+    sse_waits: List[float] = field(default_factory=list)
+    attempts: int = 0
+    config_hits: int = 0
+    hold: threading.Event = field(default_factory=threading.Event)
+    gate: threading.Event = field(default_factory=threading.Event)
+    sampling: threading.Event = field(default_factory=threading.Event)
+    first_connected_at: Optional[float] = None
+    ever_connected: bool = False
+    ever_not_connected_after_connected: bool = False
+    ever_active: bool = False
+    client: Optional[Quonfig] = None
+
+    def _sse(self, h: BaseHTTPRequestHandler) -> None:
+        self.gate.wait(5)  # cycle 1 is always the init fetch
+        with self.lock:
+            self.attempts += 1
+            n = self.attempts
+        self.body(self, h, n)
+
+    def _config(self, h: BaseHTTPRequestHandler) -> None:
+        with self.lock:
+            self.config_hits += 1
+            n = self.config_hits
+        body = t9_envelope(1, "v1") if n == 1 else t9_envelope(2, "v2")
+        Rig._reply(h, 200, body)
+
+    def _wait(self, kind: str, seconds: float) -> float:
+        if kind == "sse":
+            with self.lock:
+                self.sse_waits.append(seconds)
+        return seconds
+
+    def _on_state(self, state: str) -> None:
+        with self.lock:
+            self.edges.append((state, time.monotonic()))
+
+    def _sample(self) -> None:
+        c = self.client
+        while not self.sampling.is_set() and c is not None:
+            st = c.connection_state()
+            active = c.fallback_poller_active()
+            now = time.monotonic()
+            with self.lock:
+                if st == "connected":
+                    if self.first_connected_at is None:
+                        self.first_connected_at = now
+                    self.ever_connected = True
+                elif self.ever_connected:
+                    self.ever_not_connected_after_connected = True
+                if active:
+                    self.ever_active = True
+            time.sleep(0.001)
+
+    def start(self, poll_interval_s: float) -> Quonfig:
+        sse_url = self.rig._serve(self._sse)
+        cfg_url = self.rig._serve(self._config)
+        c = Quonfig(
+            sdk_key=KEY,
+            api_urls=[cfg_url],
+            collect_evaluation_summaries=False,
+            context_upload_mode="none",
+            init_timeout_ms=8000,
+            fallback_poll_interval_ms=int(poll_interval_s * 1000),
+            on_sse_connection_state_change=self._on_state,
+        )
+        c._test_wait_hook = self._wait
+        assert c._transport is not None
+        c._transport._Transport__test_stream_url_override = sse_url  # type: ignore[attr-defined]
+        self.client = c
+        threading.Thread(target=self._sample, daemon=True).start()
+        c.init()
+        assert c._initialized.wait(8)
+        assert c.get(T9_KEY) == "v1"
+        self.gate.set()
+        return c
+
+    def stop(self) -> None:
+        self.sampling.set()
+        self.hold.set()
+        self.gate.set()
+        if self.client is not None:
+            self.client.close()
+        for s in self.rig.servers:
+            s.shutdown()
+            s.server_close()
+
+    def connected_edges(self) -> List[float]:
+        with self.lock:
+            return [t for s, t in self.edges if s == "connected"]
+
+    def states(self) -> List[str]:
+        with self.lock:
+            return [s for s, _ in self.edges]
+
+
+@pytest.fixture
+def t9() -> Iterator[Callable[..., T9]]:
+    made: List[T9] = []
+
+    def make(body: Callable[[T9, BaseHTTPRequestHandler, int], None]) -> T9:
+        x = T9(body=body)
+        made.append(x)
+        return x
+
+    yield make
+    for x in made:
+        x.stop()
+
+
+def wait_for(cond: Callable[[], bool], within: float) -> bool:
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        if cond():
+            return True
+        time.sleep(0.005)
+    return cond()
+
+
+def test_first_frame_9a_headers_only_is_a_failed_attempt(t9: Callable[..., T9]) -> None:
+    """9a: every attempt is 200 + headers, flush, clean close. No frame ever,
+    so no `connected`, the backoff grows, and the poller delivers v2."""
+
+    def body(x: T9, h: BaseHTTPRequestHandler, n: int) -> None:
+        sse_open(h)
+        sse_end(h)
+
+    x = t9(body)
+    c = x.start(poll_interval_s=0.5)
+    t0 = time.monotonic()
+    got_v2 = wait_for(lambda: c.fallback_poller_active() and c.get(T9_KEY) == "v2", 3.0)
+    assert got_v2, (
+        f"poller never delivered v2 (config frozen at {c.get(T9_KEY)!r}); "
+        f"state={c.connection_state()} edges={x.states()} sse_waits={x.sse_waits}"
+    )
+    assert c.connection_state() == "falling_back"
+    time.sleep(max(0.0, 3.0 - (time.monotonic() - t0)))
+    assert x.connected_edges() == [], f"connected edge on a frameless stream: {x.states()}"
+    assert not x.ever_connected, "connection_state() reported connected with no frame"
+    assert x.attempts <= 4, f"{x.attempts} attempts in 3s: reconnect storm"
+    with x.lock:
+        w = list(x.sse_waits)
+    assert w, "no reconnect sleep requested"
+    check_sse_ladder(w, "9a")
+
+
+def test_first_frame_9b_headers_early_frame_late(t9: Callable[..., T9]) -> None:
+    """9b: headers flushed, keepalive 1s later, stream held. `connected` is
+    reported at the keepalive, not at the headers."""
+    sent: dict = {}
+
+    def body(x: T9, h: BaseHTTPRequestHandler, n: int) -> None:
+        sse_open(h)
+        time.sleep(1.0)
+        sent.setdefault("at", time.monotonic())
+        sse_write(h, b": keepalive\n\n")
+        x.hold.wait(10)
+
+    x = t9(body)
+    x.start(poll_interval_s=5.0)
+    assert wait_for(lambda: "at" in sent and len(x.connected_edges()) >= 1, 3.0), x.states()
+    time.sleep(0.2)
+    edges = x.connected_edges()
+    assert len(edges) == 1, x.states()
+    assert edges[0] >= sent["at"] - 0.05, (
+        f"connected edge {sent['at'] - edges[0]:.3f}s before the keepalive was sent"
+    )
+    assert x.first_connected_at is not None
+    assert x.first_connected_at >= sent["at"] - 0.05, (
+        f"connection_state() connected {sent['at'] - x.first_connected_at:.3f}s "
+        "before the keepalive was sent"
+    )
+    assert x.attempts == 1
+
+
+def test_first_frame_keepalive_on_a_close_delimited_stream_is_seen_at_once(
+    t9: Callable[..., T9],
+) -> None:
+    """A non-chunked (close-delimited) stream: the lone 13-byte keepalive must
+    be read when it lands. ``iter_content(128)`` would block on it until 128
+    bytes or EOF, leaving the stream unconnected for many keepalive intervals."""
+    sent: dict = {}
+
+    def body(x: T9, h: BaseHTTPRequestHandler, n: int) -> None:
+        h.send_response(200)
+        h.send_header("Content-Type", "text/event-stream")
+        h.send_header("Connection", "close")
+        h.end_headers()
+        sent.setdefault("at", time.monotonic())
+        h.wfile.write(b": keepalive\n\n")
+        h.wfile.flush()
+        x.hold.wait(10)
+
+    x = t9(body)
+    x.start(poll_interval_s=5.0)
+    assert wait_for(lambda: len(x.connected_edges()) >= 1, 2.0), x.states()
+    assert x.connected_edges()[0] - sent["at"] < 0.5
+
+
+def test_first_frame_9c_keepalive_then_close_holds_connected(t9: Callable[..., T9]) -> None:
+    """9c: every attempt sends one keepalive then closes. Each connection
+    delivered a frame, so python holds `connected` across the reconnects
+    (bounded transparent reconnect): one edge, no error, initial delay."""
+
+    def body(x: T9, h: BaseHTTPRequestHandler, n: int) -> None:
+        sse_open(h)
+        sse_write(h, b": keepalive\n\n")
+        sse_end(h)
+
+    x = t9(body)
+    c = x.start(poll_interval_s=0.5)  # engage grace = 1s > any sleep at the initial delay
+    time.sleep(2.5)
+    assert x.attempts >= 3, x.attempts
+    assert len(x.connected_edges()) == 1, x.states()
+    assert "error" not in x.states(), x.states()
+    assert not x.ever_not_connected_after_connected, "connected was not held across reconnects"
+    with x.lock:
+        w = list(x.sse_waits)
+    assert w and all(s <= SSE_INITIAL + 1e-9 for s in w), w
+    assert not x.ever_active, "poller engaged against a live stream"
+    assert c.connection_state() == "connected"
+    assert c.get(T9_KEY) == "v1"
+
+
+def test_first_frame_9c_hold_is_bounded_by_the_next_connection(t9: Callable[..., T9]) -> None:
+    """Bounded transparent reconnect: after a keepalive-then-close session the
+    next connection delivers no frame. The hold ends there: `error` at once,
+    the backoff grows, and the poller takes over (v2)."""
+
+    def body(x: T9, h: BaseHTTPRequestHandler, n: int) -> None:
+        sse_open(h)
+        if n == 1:
+            sse_write(h, b": keepalive\n\n")
+        sse_end(h)
+
+    x = t9(body)
+    c = x.start(poll_interval_s=0.5)  # grace 1s
+    assert wait_for(lambda: c.get(T9_KEY) == "v2", 5.0), (
+        f"poller never took over; edges={x.states()} sse_waits={x.sse_waits}"
+    )
+    states = x.states()
+    assert states.count("connected") == 1, states
+    i = states.index("connected")
+    assert "error" in states[i:], states
+    with x.lock:
+        w = list(x.sse_waits)
+    # sleep 1: after the frame session (initial delay); sleep 2: after the
+    # frameless one, the error ladder's 1s base, not the initial delay.
+    assert len(w) >= 2, w
+    assert w[0] <= SSE_INITIAL + 1e-9, w
+    assert w[1] == pytest.approx(SSE_BASE), w
+
+
+def test_first_frame_9d_envelope_control(t9: Callable[..., T9]) -> None:
+    """9d: 200 + snapshot envelope, held open: one edge, connected, v2, no poller."""
+
+    def body(x: T9, h: BaseHTTPRequestHandler, n: int) -> None:
+        sse_open(h)
+        sse_write(h, b"data: " + t9_envelope(2, "v2") + b"\n\n")
+        x.hold.wait(10)
+
+    x = t9(body)
+    c = x.start(poll_interval_s=5.0)
+    assert wait_for(lambda: c.get(T9_KEY) == "v2", 3.0), x.states()
+    time.sleep(0.2)
+    assert len(x.connected_edges()) == 1, x.states()
+    assert c.connection_state() == "connected"
+    assert not x.ever_active
+    assert x.config_hits == 1
+
+
+def test_first_frame_test2_reset_only_on_a_frame() -> None:
+    """Test 2 Reset at the SSE-client level: a session that delivered a frame
+    resets the backoff; a 200 with no frame does not."""
+    from quonfig.sse import SSEClient
+    from quonfig.store import ConfigStore
+    from quonfig.transport import Transport
+
+    rig = Rig(sse_status=200)
+    lock = threading.Lock()
+    hits = {"n": 0}
+    hold = threading.Event()
+    sleeps: List[float] = []
+    done = threading.Event()
+
+    def handle(h: BaseHTTPRequestHandler) -> None:
+        with lock:
+            hits["n"] += 1
+            n = hits["n"]
+        if n in (1, 3):
+            Rig._reply(h, 503)
+        elif n == 2:
+            sse_open(h)
+            sse_write(h, b"data: " + t9_envelope(2, "v2") + b"\n\n")
+            sse_end(h)
+        elif n == 4:
+            sse_open(h)
+            sse_end(h)
+        else:
+            done.set()
+            sse_open(h)
+            hold.wait(10)
+
+    url = rig._serve(handle)
+    shutdown = threading.Event()
+
+    def wait_hook(kind: str, s: float) -> float:
+        with lock:
+            sleeps.append(s)
+        return 0.001
+
+    sse = SSEClient(
+        Transport([url], "sk"),
+        ConfigStore(),
+        shutdown,
+        install=lambda env: True,
+        wait_hook=wait_hook,
+    )
+    sse._stream_url_override = url + "/api/v2/sse/config"
+    sse.start()
+    try:
+        assert done.wait(10), f"never reached conn 5; sleeps={sleeps}"
+        with lock:
+            s = list(sleeps)
+        assert len(s) == 4, s
+        assert s[0] == pytest.approx(SSE_BASE), s  # conn1 503
+        assert s[1] <= SSE_INITIAL + 1e-9, s  # conn2 frame + EOF: reset
+        assert s[2] == pytest.approx(SSE_BASE), s  # conn3 503: ladder restarted by the frame
+        assert s[3] >= SSE_BASE * 1.6 - 1e-9, s  # conn4 frameless: grown, NOT reset
+    finally:
+        hold.set()
+        sse.stop()
+        sse.join(2)
+        for srv in rig.servers:
+            srv.shutdown()
+            srv.server_close()
+
+
+class _NullTransport:
+    pass
+
+
+@pytest.mark.parametrize(
+    "name,chunks,frame",
+    [
+        ("empty body", [], False),
+        ("keepalive", [b": keepalive\n\n"], True),
+        ("bare colon comment", [b":\n\n"], True),
+        ("keepalive cut off by EOF", [b": keepalive\n"], False),
+        ("keepalive split across chunks", [b": keep", b"alive\n", b"\n"], True),
+        ("crlf keepalive", [b": keepalive\r\n\r\n"], True),
+        ("envelope", [b"data: " + t9_envelope(2, "v2") + b"\n\n"], True),
+        ("envelope without blank line", [b"data: " + t9_envelope(2, "v2") + b"\n"], False),
+        ("malformed data", [b"data: {not json\n\n"], False),
+        ("json that is not an envelope", [b'data: {"error":"nope"}\n\n'], False),
+        ("id-only block", [b"id: 7\n\n"], False),
+        ("bare blank line", [b"\n"], False),
+        ("comment plus field is not comment-only", [b": hi\nid: 7\n\n"], False),
+        ("garbage block then keepalive", [b"data: {bad\n\n", b": keepalive\n\n"], True),
+    ],
+)
+def test_first_frame_parser_table(name: str, chunks: List[bytes], frame: bool) -> None:
+    """The frame table: frame seen, and exactly one `connected` edge, iff a
+    valid frame arrived (contract Rule; canary shape item 2)."""
+    from quonfig.sse import SSEClient
+    from quonfig.store import ConfigStore
+
+    states: List[str] = []
+    sse = SSEClient(
+        _NullTransport(),  # type: ignore[arg-type]
+        ConfigStore(),
+        threading.Event(),
+        state_listener=states.append,
+        install=lambda env: True,
+    )
+    seen = sse._parse_stream(iter(chunks), announce=True)
+    assert seen is frame, name
+    assert states.count("connected") == (1 if frame else 0), (name, states)
