@@ -4,8 +4,6 @@
 
 ### Upgrade notes
 
-- SSE reconnect backoff caps at 30s, not 60s, matching the other SDKs
-  (patch, qfg-q8lb).
 - **UPGRADE: retry cadence and log levels change after a rejected
   401/403/404/410 fetch cycle; a revoked key logs one config ERROR (minor,
   qfg-goi1.10.25).** The cross-SDK auth-failure rule (plan
@@ -93,6 +91,10 @@
 
 ### Other changes
 
+- **SSE reconnect backoff caps at 30s, not 60s, matching the other SDKs
+  (patch, qfg-q8lb).** Matches sdk-go `MaxDelay` and sdk-node
+  `SSE_RECONNECT_MAX_DELAY_MS`, so the first reconnect after a long outage
+  lands within 30s of the server returning.
 - **ENV_VAR coercion error text follows the cross-SDK template (patch).** A
   malformed ENV_VAR value now raises/logs
   `environment variable "<NAME>" cannot be converted to <type> for config "<key>"`
