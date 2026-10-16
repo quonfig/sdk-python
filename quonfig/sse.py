@@ -27,6 +27,11 @@ SSEState = str  # one of: "connecting", "connected", "error", "disconnected"
 # (qfg-goi1.2.12).
 _CLEAN_EOF_RECONNECT_DELAY_S = 0.5
 
+# Cap on the error-path reconnect backoff. Matches sdk-go (sse_client.go
+# MaxDelay) and sdk-node (SSE_RECONNECT_MAX_DELAY_MS): 30 s, so the first
+# attempt after a long outage clears lands within 30 s (qfg-q8lb).
+_SSE_RECONNECT_MAX_DELAY_S = 30.0
+
 
 def _clean_eof_reconnect_sleep() -> float:
     delay = _CLEAN_EOF_RECONNECT_DELAY_S
@@ -234,7 +239,9 @@ class SSEClient:
                 self._emit("error")
                 # Exponential backoff with jitter
                 self._sleep(backoff)
-                backoff = min(backoff * 2 * (0.8 + 0.4 * random.random()), 60.0)
+                backoff = min(
+                    backoff * 2 * (0.8 + 0.4 * random.random()), _SSE_RECONNECT_MAX_DELAY_S
+                )
             finally:
                 if response is not None:
                     with self._response_lock:

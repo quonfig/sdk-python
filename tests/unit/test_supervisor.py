@@ -43,7 +43,7 @@ COMPRESSION = 2000.0
 AUTH_STATUSES = [401, 403, 404, 410]
 PROBE_MIN, PROBE_MAX = 150.0, 300.0
 SSE_BASE = 1.0  # sdk-python's first SSE reconnect backoff (sse.py)
-SSE_CAP = 60.0
+SSE_CAP = 30.0  # sse.py _SSE_RECONNECT_MAX_DELAY_S, matching sdk-go/sdk-node (qfg-q8lb)
 POLL_INTERVAL = 60.0  # fallback_poll_interval_ms default
 
 
