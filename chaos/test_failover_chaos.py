@@ -55,6 +55,7 @@ import pytest
 import requests
 import yaml
 
+from chaos.timeline import ExpState, step, validate_expectations
 from quonfig import Quonfig
 
 # ----- paths -----
@@ -512,60 +513,42 @@ def _run_rig_scenario(
 def _eval_expectations(
     run: Dict[str, Any], baseline: float, probe: ChaosProbe, wall_clock: float
 ) -> Tuple[int, int, List[str]]:
-    states = [
-        {
-            "idx": i,
-            "exp": e,
-            "passed": False,
-            "failed": False,
-            "held_since": None,
-            "hit_at": None,
-            "last": "",
-        }
-        for i, e in enumerate(run.get("expectations") or [])
-    ]
+    states = [ExpState(i, e) for i, e in enumerate(run.get("expectations") or [])]
+
+    def _eval_fn(expr: str):  # noqa: ANN202
+        def _f() -> Tuple[str, str, List[str]]:
+            ok, why = _evaluate(expr, probe)
+            return ("pass" if ok else "fail"), why, []
+
+        return _f
+
     deadline = baseline + wall_clock
     while time.monotonic() < deadline:
         elapsed_ms = (time.monotonic() - baseline) * 1000.0
-        all_terminal = True
         for s in states:
-            if s["passed"] or s["failed"]:
-                continue
-            ok, why = _evaluate(s["exp"]["assert"], probe)
-            s["last"] = why
-            if ok:
-                if s["held_since"] is None:
-                    s["held_since"] = time.monotonic()
-                    s["hit_at"] = elapsed_ms
-                hold_for = int(s["exp"].get("must_hold_for_ms") or 0)
-                if hold_for <= 0 or (time.monotonic() - s["held_since"]) * 1000.0 >= hold_for:
-                    s["passed"] = True
-            else:
-                s["held_since"] = None
-            if not s["passed"] and elapsed_ms > int(s["exp"]["within_ms"]):
-                s["failed"] = True
-            if not s["passed"] and not s["failed"]:
-                all_terminal = False
-        if all_terminal:
+            step(s, elapsed_ms, _eval_fn(s.exp["assert"]))
+        if all(s.terminal for s in states):
             break
         time.sleep(0.2)
 
     details: List[str] = []
     passed = failed = 0
     for s in states:
-        if not s["passed"]:
-            s["failed"] = True
-        exp = s["exp"]
+        if not s.passed:
+            s.failed = True
+        exp = s.exp
         label = (
-            f"exp[{s['idx']}] within={exp['within_ms']}ms "
+            f"exp[{s.idx}] after={exp.get('after_ms') or 0}ms within={exp['within_ms']}ms "
             f"hold={exp.get('must_hold_for_ms') or 0}ms: {exp['assert']}"
         )
-        if s["passed"]:
+        if s.passed:
             passed += 1
-            details.append(f"PASS  {label} (hit at {int(s['hit_at'] or 0)}ms)")
+            details.append(
+                f"PASS  {label} (hit at {int(s.hit_at or 0)}ms, passed at {int(s.passed_at or 0)}ms)"
+            )
         else:
             failed += 1
-            details.append(f"FAIL  {label} — last: {s['last']}")
+            details.append(f"FAIL  {label} — last: {s.last_reason}")
     details.append(
         f"summary: {passed} passed, {failed} failed (ready={probe.ready()}, "
         f"resolvedFrom={probe.resolved_from()!r}, heldGeneration={probe.held_generation()}, "
@@ -595,6 +578,7 @@ def _load_runs(scenario_dir: Path) -> List[Tuple[Path, Dict[str, Any]]]:
             continue
         scenario = yaml.safe_load(f.read_text())
         for run in scenario.get("tests") or []:
+            validate_expectations(run, f.name)
             out.append((f, run))
     return out
 

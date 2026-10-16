@@ -37,6 +37,7 @@ import pytest
 import requests
 import yaml
 
+from chaos.timeline import ExpState, step, validate_expectations
 from quonfig import Quonfig
 
 # ----- paths -----
@@ -235,7 +236,7 @@ class ChaosProbe:
         self.conn_state = (
             "initializing"  # initializing|connected|reconnecting|falling_back|disconnected
         )
-        self.last_refresh_ms = 0
+        self._client: Optional[Any] = None
         self.conn_attempts = 0
         self.restart_layer1 = 0
         self.restart_layer2 = 0
@@ -257,9 +258,21 @@ class ChaosProbe:
             elif state == "disconnected":
                 self.conn_state = "disconnected"
 
-    def on_config_update(self) -> None:
+    def set_client(self, client: Any) -> None:
         with self.lock:
-            self.last_refresh_ms = int(time.time() * 1000)
+            self._client = client
+
+    def last_refresh_ms(self) -> int:
+        """Epoch ms of ``client.last_successful_refresh()``, 0 before the first.
+
+        Reads the SDK's liveness accessor, which a 304 / guard-dropped poll also
+        advances; an install-only ``on_update`` stamp would freeze on a static
+        rig config (qfg-goi1.7 probe rewire).
+        """
+        with self.lock:
+            c = self._client
+        stamp = c.last_successful_refresh() if c is not None else None
+        return int(stamp.timestamp() * 1000) if stamp is not None else 0
 
     def set_fallback_active(self, active: bool) -> None:
         with self.lock:
@@ -417,8 +430,7 @@ def _eval_leaf(expr: str, probe: ChaosProbe) -> EvalResult:
     if m:
         op = m.group(1)
         ago = int(m.group(2))
-        with probe.lock:
-            last = probe.last_refresh_ms
+        last = probe.last_refresh_ms()
         threshold = int(time.time() * 1000) - ago
         ok = _compare(op, last, threshold)
         return _leaf(ok, f"lastSuccessfulRefresh={last} {op} (now()-{ago})={threshold}")
@@ -531,8 +543,9 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
             collect_evaluation_summaries=False,
             context_upload_mode="none",
             on_sse_connection_state_change=lambda s: probe.on_sse_state(s),
-            on_config_update=lambda: (probe.on_config_update(), _user_config_update_cb()),
+            on_config_update=_user_config_update_cb,
         )
+        probe.set_client(client)
 
         # Test seam: route SSE through chaos port BEFORE init() starts SSE
         # (mirrors sdk-node setting transport.__testStreamUrlOverride).
@@ -590,84 +603,61 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
         for ev in run.get("chaos") or []:
             _schedule(ev)
 
-        # Track expectation states.
-        states: List[Dict[str, Any]] = [
-            {
-                "idx": i,
-                "exp": e,
-                "passed": False,
-                "failed": False,
-                "hit_at": None,
-                "held_since": None,
-                "last_reason": "",
-                "skipped": False,
-                "skipped_leaves": [],
-            }
-            for i, e in enumerate(run.get("expectations") or [])
+        # Track expectation states. SKIPPED is shape-based (a whole-expression
+        # server_metric), so it is read off a blank probe once, up front.
+        states: List[ExpState] = [
+            ExpState(i, e) for i, e in enumerate(run.get("expectations") or [])
         ]
+        skip_shape = [_evaluate(s.exp["assert"], ChaosProbe()).status == "skip" for s in states]
+
+        def _eval_fn(expr: str):  # noqa: ANN202
+            def _f() -> tuple[str, str, List[str]]:
+                r = _evaluate(expr, probe)
+                return r.status, r.reason, r.skipped
+
+            return _f
 
         poll_interval = CHAOS_POLL_MS / 1000.0
         while (int(time.time() * 1000) - baseline_ms) < wall_clock:
             elapsed = int(time.time() * 1000) - baseline_ms
-            all_terminal = True
-            for s in states:
-                if s["passed"] or s["failed"] or s["skipped"]:
-                    continue
-                r = _evaluate(s["exp"]["assert"], probe)
-                s["last_reason"] = r.reason
-                s["skipped_leaves"] = r.skipped
-                if r.status == "skip":
-                    # Explicit SKIP (qfg-goi1.1.4): terminal, counted apart from pass/fail.
-                    s["skipped"] = True
-                    continue
-                if r.ok:
-                    if s["held_since"] is None:
-                        s["held_since"] = int(time.time() * 1000)
-                        s["hit_at"] = elapsed
-                    hold_for = int(s["exp"].get("must_hold_for_ms") or 0)
-                    if hold_for <= 0 or (int(time.time() * 1000) - s["held_since"]) >= hold_for:
-                        s["passed"] = True
-                else:
-                    s["held_since"] = None
-                if not s["passed"] and elapsed > int(s["exp"]["within_ms"]):
-                    s["failed"] = True
-                if not s["passed"] and not s["failed"]:
-                    all_terminal = False
-            if all_terminal:
+            for s, shape in zip(states, skip_shape):
+                step(s, elapsed, _eval_fn(s.exp["assert"]), skip_shape=shape)
+            if all(s.terminal for s in states):
                 break
             time.sleep(poll_interval)
 
         for s in states:
-            if not s["passed"] and not s["skipped"]:
-                s["failed"] = True
+            if not s.passed and not s.skipped:
+                s.failed = True
 
         details: List[str] = []
         passed = failed = skipped = 0
         for s in states:
-            exp = s["exp"]
+            exp = s.exp
             label = (
-                f"exp[{s['idx']}] within={exp['within_ms']}ms "
+                f"exp[{s.idx}] after={exp.get('after_ms') or 0}ms within={exp['within_ms']}ms "
                 f"hold={exp.get('must_hold_for_ms') or 0}ms: {exp['assert']}"
             )
-            if s["skipped"]:
+            if s.skipped:
                 skipped += 1
-                details.append(f"SKIP  {label} — {s['last_reason']}")
-            elif s["passed"]:
+                details.append(f"SKIP  {label} — {s.last_reason}")
+            elif s.passed:
                 passed += 1
-                suffix = f" (hit at {s['hit_at']}ms)"
-                if s["skipped_leaves"]:
-                    suffix += f" [skipped leaves: {len(s['skipped_leaves'])}]"
+                suffix = f" (hit at {s.hit_at}ms, passed at {s.passed_at}ms)"
+                if s.skipped_leaves:
+                    suffix += f" [skipped leaves: {len(s.skipped_leaves)}]"
                 details.append(f"PASS  {label}{suffix}")
             else:
                 failed += 1
-                details.append(f"FAIL  {label} — last: {s['last_reason']}")
-            for leaf in s["skipped_leaves"]:
+                details.append(f"FAIL  {label} — last: {s.last_reason}")
+            for leaf in s.skipped_leaves:
                 details.append(f"      SKIP leaf: {leaf}")
+        last_refresh_ms = probe.last_refresh_ms()
         with probe.lock:
             details.append(
                 f"summary: {passed} passed, {failed} failed, {skipped} skipped "
                 f"(state={probe.conn_state}, restartLayer1={probe.restart_layer1}, "
-                f"fallback={probe.fallback_active}, lastRefreshMs={probe.last_refresh_ms})"
+                f"fallback={probe.fallback_active}, lastRefreshMs={last_refresh_ms})"
             )
         return passed, failed, details
 
@@ -710,6 +700,7 @@ def _load_runs() -> List[tuple[Path, Dict[str, Any]]]:
             continue
         scenario = yaml.safe_load(f.read_text())
         for run in scenario.get("tests") or []:
+            validate_expectations(run, f.name)
             out.append((f, run))
     return out
 
