@@ -4,6 +4,8 @@
 
 ### Upgrade notes
 
+- SSE reconnect backoff caps at 30s, not 60s, matching the other SDKs
+  (patch, qfg-q8lb).
 - **UPGRADE: retry cadence and log levels change after a rejected
   401/403/404/410 fetch cycle; a revoked key logs one config ERROR (minor,
   qfg-goi1.10.25).** The cross-SDK auth-failure rule (plan
