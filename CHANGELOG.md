@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Upgrade notes
+
+- **UPGRADE: SSE reports `connected` at the first frame, not at the 200
+  response (minor, qfg-goi1.10.9 / qfg-goi1.10.44).** A stream connection now
+  counts as connected, for `connection_state()`,
+  `on_sse_connection_state_change`, the reconnect backoff and the fallback
+  poller, only after it delivers its first valid frame: a config envelope or a
+  keepalive. Before, it counted as soon as the 200 response headers arrived.
+  - Against Quonfig's servers the headers and the first frame arrive together,
+    so you should see no difference.
+  - Behind a proxy or server that sends 200 headers early, `connected` is
+    reported when the first frame arrives: at most one keepalive interval
+    (30 s) later.
+  - A connection that closes before any frame is now a failed attempt. The
+    reconnect delay grows, `on_sse_connection_state_change` receives `error`,
+    the client reports `disconnected`, and the fallback poller takes over after
+    its usual threshold (at once if the stream never delivered a frame since
+    boot).
+  - After a connection that delivered a frame ends cleanly (a load-balancer
+    recycle), `connected` is still held across the reconnect with no state
+    edge, but only for one connection: if that connection ends with no frame,
+    `error` is reported at once.
+  - `connection_state()` no longer reports `connected` from the initial HTTP
+    fetch alone while a stream is configured: it reads `initializing` until the
+    stream's first frame (datadir mode is unchanged).
+
+  Before this change, a server that answered 200 and closed at once made the
+  SDK reconnect in a tight loop and keep stale config indefinitely.
+
+### Changed (minor)
+
+- SSE: own `text/event-stream` parser, so keepalive comments are seen (they
+  mark a connection connected) and a lone keepalive on a non-chunked stream is
+  read as soon as it lands. The `sseclient-py` dependency is removed.
+
+### Tests
+
+- Supervisor contract Test 9 (a)-(d) and the Test 2 reset rule against a local
+  server (`tests/unit/test_supervisor.py`). integration-test-data pin in
+  `test.yaml` bumped to v2026.10.16.4 (the `get_or_raise` init-timeout cases
+  now target `http://192.0.2.1:1`; both green).
+
 ## 1.8.0 - 2026-10-16
 
 ### Upgrade notes

@@ -62,11 +62,7 @@ def test_sse_client_subscribes_to_stream_host_not_api_host() -> None:
         shutdown.set()
         return _FakeResponse()
 
-    with (
-        patch("quonfig.sse.requests.get", side_effect=fake_get),
-        patch("quonfig.sse.sseclient.SSEClient") as mock_sse_lib,
-    ):
-        mock_sse_lib.return_value.events.return_value = iter(())
+    with patch("quonfig.sse.requests.get", side_effect=fake_get):
         # _loop is a blocking method but shutdown is already set, so it exits fast
         shutdown.clear()
         sse_client._thread = threading.Thread(target=sse_client._loop, daemon=True)

@@ -2064,8 +2064,12 @@ class Quonfig:
         """
         # Record the latest SSE state so `connection_state()` can derive the
         # customer-visible enum without re-reading transport internals.
-        with self._health_lock:
-            self._last_sse_state = state
+        # ``connecting`` is not recorded: between an attempt's start and its
+        # first valid frame the client keeps the state it had before the
+        # attempt (supervisor contract Rule, qfg-goi1.10.44).
+        if state != "connecting":
+            with self._health_lock:
+                self._last_sse_state = state
 
         # Fan out to caller's observability callback first; the chaos harness
         # and OpenFeature provider both rely on this edge stream.
@@ -2416,9 +2420,11 @@ class Quonfig:
             return "connected"
         if last in ("error", "disconnected"):
             return "disconnected"
-        # `last` is None or "connecting" — no SSE established yet.
-        if last_refresh is not None:
-            # Datadir mode, or an HTTP install completed before SSE wired up.
+        # No SSE state yet. With a stream configured, an HTTP install alone is
+        # not "connected": that waits for the stream's first valid frame
+        # (supervisor contract Rule, qfg-goi1.10.44).
+        if last_refresh is not None and self._transport is None:
+            # Datadir mode: no stream, an installed envelope is the good state.
             return "connected"
         return "initializing"
 

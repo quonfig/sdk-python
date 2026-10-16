@@ -2,13 +2,13 @@
 
 In chaos scenario 01 baseline (no toxics), sdk-python's chaos probe recorded
 2 ``connected -> connecting`` edges over 30 wall-clock seconds. The cause is
-``sseclient-py.SSEClient.events()`` returning cleanly mid-stream (clean EOF
+the stream ending cleanly mid-session (clean EOF
 from the underlying ``requests.Response`` iterator) — our ``_loop`` then fell
 through to ``_emit('connecting')`` on the next iteration, registering a
 spurious Layer 1 restart even though the customer-visible config and
 ``connection_state()`` were never disturbed.
 
-The fix: treat a clean iterator exit as a **transparent reconnect** — do not
+The fix: treat a clean exit after a frame as a **transparent reconnect** — do not
 emit ``connecting`` again, just re-attempt. If the new attempt succeeds the
 state stays ``connected``. If it fails with a real exception, the existing
 ``error`` path runs as before.
@@ -31,12 +31,19 @@ class _FakeResponse:
     def raise_for_status(self) -> None:
         return None
 
+    def __init__(self, on_read: Any = None) -> None:
+        self._on_read = on_read
+
     def iter_content(self, *_a: Any, **_k: Any) -> Iterator[bytes]:
-        return iter(())
+        # One keepalive frame, then a clean EOF: a session that delivered a
+        # frame (qfg-goi1.10.44), so the reconnect is transparent.
+        if self._on_read is not None:
+            self._on_read()
+        return iter([b": keepalive\n\n"])
 
 
 def test_clean_eof_mid_stream_does_not_flip_state_to_connecting() -> None:
-    """sseclient.events() returning cleanly must NOT trip a connected->connecting
+    """A stream ending cleanly after a frame must NOT trip a connected->connecting
     edge. Only the *initial* connecting emission is allowed — every subsequent
     iteration that ends in a clean EOF is a transparent reconnect."""
     transport = Transport(api_urls=["http://localhost:6550"], sdk_key="sk")
@@ -51,12 +58,11 @@ def test_clean_eof_mid_stream_does_not_flip_state_to_connecting() -> None:
     events_calls = {"n": 0}
     events_done = threading.Event()
 
-    def mock_events() -> Iterator[Any]:
+    def on_read() -> None:
         events_calls["n"] += 1
         if events_calls["n"] >= 3:
             shutdown.set()
             events_done.set()
-        return iter(())
 
     def state_listener(s: str) -> None:
         with state_lock:
@@ -64,11 +70,7 @@ def test_clean_eof_mid_stream_does_not_flip_state_to_connecting() -> None:
 
     sse_client = SSEClient(transport, store, shutdown, state_listener=state_listener)
 
-    with (
-        patch("quonfig.sse.requests.get", return_value=_FakeResponse()),
-        patch("quonfig.sse.sseclient.SSEClient") as mock_sse_lib,
-    ):
-        mock_sse_lib.return_value.events.side_effect = mock_events
+    with patch("quonfig.sse.requests.get", side_effect=lambda *a, **k: _FakeResponse(on_read)):
         t = threading.Thread(target=sse_client._loop, daemon=True)
         t.start()
         events_done.wait(timeout=3.0)
@@ -80,7 +82,7 @@ def test_clean_eof_mid_stream_does_not_flip_state_to_connecting() -> None:
     # do NOT flip state.
     connecting_count = sum(1 for s in states if s == "connecting")
     assert connecting_count == 1, (
-        "clean sseclient EOF must reconnect transparently — got "
+        "a clean EOF after a frame must reconnect transparently — got "
         f"{connecting_count} 'connecting' emissions; full sequence: {states}"
     )
     # And we should still have at least one 'connected' emission so the
@@ -108,11 +110,6 @@ def test_exception_path_still_flips_state_to_error() -> None:
         # Second attempt: raise so we can observe the error path.
         raise ConnectionError("simulated network failure")
 
-    def mock_events() -> Iterator[Any]:
-        # First attempt: events() yields nothing (clean EOF). Loop iterates,
-        # second attempt's fake_get raises.
-        return iter(())
-
     def state_listener(s: str) -> None:
         with state_lock:
             states.append(s)
@@ -122,11 +119,7 @@ def test_exception_path_still_flips_state_to_error() -> None:
 
     sse_client = SSEClient(transport, store, shutdown, state_listener=state_listener)
 
-    with (
-        patch("quonfig.sse.requests.get", side_effect=fake_get),
-        patch("quonfig.sse.sseclient.SSEClient") as mock_sse_lib,
-    ):
-        mock_sse_lib.return_value.events.side_effect = mock_events
+    with patch("quonfig.sse.requests.get", side_effect=fake_get):
         t = threading.Thread(target=sse_client._loop, daemon=True)
         t.start()
         t.join(timeout=3.0)

@@ -334,16 +334,17 @@ def test_qfg_serve_only_client_keeps_installing_unversioned_payloads() -> None:
 class _FakeResponse:
     status_code = 200
 
+    def __init__(self, body: Iterator[bytes]) -> None:
+        self._body = body
+
     def raise_for_status(self) -> None:
         return None
 
     def iter_content(self, *_a: Any, **_k: Any) -> Iterator[bytes]:
-        return iter(())
+        return self._body
 
-
-class _FakeEvent:
-    def __init__(self, data: str) -> None:
-        self.data = data
+    def close(self) -> None:
+        return None
 
 
 def test_sse_drops_non_envelope_events() -> None:
@@ -359,19 +360,15 @@ def test_sse_drops_non_envelope_events() -> None:
         installed.append(env)
         return True
 
-    def mock_events() -> Iterator[Any]:
-        yield _FakeEvent("{}")
-        yield _FakeEvent('{"error":"x"}')
-        yield _FakeEvent(_envelope_json(None, ["served"], version="serve-sha").decode())
+    def body() -> Iterator[bytes]:
+        yield b"data: {}\n\n"
+        yield b'data: {"error":"x"}\n\n'
+        yield b"data: " + _envelope_json(None, ["served"], version="serve-sha") + b"\n\n"
         shutdown.set()
         done.set()
 
     sse = SSEClient(transport, store, shutdown, install=install)
-    with (
-        patch("quonfig.sse.requests.get", return_value=_FakeResponse()),
-        patch("quonfig.sse.sseclient.SSEClient") as mock_lib,
-    ):
-        mock_lib.return_value.events.side_effect = mock_events
+    with patch("quonfig.sse.requests.get", return_value=_FakeResponse(body())):
         t = threading.Thread(target=sse._loop, daemon=True)
         t.start()
         done.wait(timeout=3.0)

@@ -4,10 +4,9 @@ import json
 import logging
 import random
 import threading
-from typing import Callable, Optional
+from typing import Callable, Iterable, Iterator, List, Optional
 
 import requests  # type: ignore[import-untyped]
-import sseclient  # type: ignore
 
 from .store import ConfigStore
 from .transport import Transport
@@ -31,6 +30,36 @@ _CLEAN_EOF_RECONNECT_DELAY_S = 0.5
 # MaxDelay) and sdk-node (SSE_RECONNECT_MAX_DELAY_MS): 30 s, so the first
 # attempt after a long outage clears lands within 30 s (qfg-q8lb).
 _SSE_RECONNECT_MAX_DELAY_S = 30.0
+
+
+# Upper bound for one read of the stream body. ``read1`` returns whatever has
+# arrived (up to this), so a 13-byte keepalive is seen the moment it lands.
+_READ_CHUNK_BYTES = 65536
+
+
+def _iter_body(response: requests.Response) -> Iterator[bytes]:
+    """Yield the stream body as it arrives.
+
+    ``iter_content(n)`` on a close-delimited (non-chunked) response blocks
+    until ``n`` bytes or EOF, so a lone keepalive could sit unread for many
+    keepalive intervals. urllib3 2.x's ``read1`` returns as soon as any bytes
+    are available, chunked or not; older urllib3 falls back to
+    ``iter_content`` (chunked streams still yield per chunk there)."""
+    raw = getattr(response, "raw", None)
+    read1 = getattr(raw, "read1", None)
+    if not callable(read1):
+        yield from response.iter_content(chunk_size=128)
+        return
+    while True:
+        chunk = read1(_READ_CHUNK_BYTES, decode_content=True)
+        if not chunk:
+            return
+        yield chunk
+
+
+class _FramelessStreamError(Exception):
+    """A 200 stream that ended before its first valid frame: a failed attempt
+    (qfg-goi1.10.44), handled exactly like a connect error."""
 
 
 def _clean_eof_reconnect_sleep() -> float:
@@ -141,14 +170,132 @@ class SSEClient:
             return transport_override
         return f"{self.transport._current_stream_url()}/api/v2/sse/config"
 
+    def _parse_stream(self, chunks: Iterable[bytes], announce: bool) -> bool:
+        """Parse one connection's ``text/event-stream`` body and return whether
+        it delivered a valid frame (qfg-goi1.10.44).
+
+        A frame is a complete block (ended by a blank line) that is either
+        comment-only (the server's ``: keepalive``) or a ``data:`` block that
+        decodes and validates as a config envelope. 200 headers alone, a block
+        cut off by EOF, malformed data, a non-envelope payload and a block of
+        other fields only are not frames. sseclient-py could not be used here:
+        its ``events()`` never dispatches a block with no data, so a keepalive
+        was invisible.
+
+        At the first frame the connection counts as connected: the caller's
+        backoff resets (it reads the return value) and, if ``announce``, the
+        ``connected`` edge is emitted, before that frame's envelope installs.
+        """
+        frame_seen = False
+        buf = b""
+        data_lines: List[str] = []
+        saw_comment = False
+        saw_field = False
+
+        def on_frame() -> None:
+            nonlocal frame_seen
+            if frame_seen:
+                return
+            frame_seen = True
+            if announce:
+                self._emit("connected")
+
+        def end_block() -> None:
+            nonlocal saw_comment, saw_field
+            data = "\n".join(data_lines) if data_lines else None
+            comment_only = saw_comment and not saw_field
+            data_lines.clear()
+            saw_comment = saw_field = False
+            if data is not None:
+                self._handle_data(data, on_frame)
+            elif comment_only:
+                on_frame()
+
+        for chunk in chunks:
+            if self.shutdown_event.is_set():
+                break
+            if not chunk:
+                continue
+            buf += chunk
+            lines = buf.splitlines(keepends=True)
+            buf = b""
+            # Carry a tail with no LF to the next chunk: it is unterminated, or
+            # it ends in a CR whose LF may still be coming. (A CR-only stream
+            # therefore lags one line; api-delivery sends LF.)
+            if lines and not lines[-1].endswith(b"\n"):
+                buf = lines.pop()
+            for raw in lines:
+                line = raw.rstrip(b"\r\n").decode("utf-8", errors="replace")
+                if line == "":
+                    end_block()
+                elif line.startswith(":"):
+                    saw_comment = True
+                else:
+                    saw_field = True
+                    name, _, value = line.partition(":")
+                    if value.startswith(" "):
+                        value = value[1:]
+                    if name == "data":
+                        data_lines.append(value)
+        # Anything still buffered was cut off by EOF: not a frame.
+        return frame_seen
+
+    def _handle_data(self, data: str, on_frame: Callable[[], None]) -> None:
+        try:
+            # from_wire rejects non-envelopes ({} / {"error": ..}), dropped
+            # below like malformed JSON (qfg-9dxb.3).
+            envelope = ConfigEnvelope.from_wire(json.loads(data))
+        except Exception as e:
+            _LOG.warning(
+                "Quonfig SSE: dropping malformed event: %s: %s",
+                type(e).__name__,
+                e,
+            )
+            return
+        # A valid envelope is a frame: connected before it installs.
+        on_frame()
+        try:
+            if self._install is not None:
+                installed = self._install(envelope)
+            else:
+                installed = self.store.update(envelope)
+        except Exception as e:
+            _LOG.warning(
+                "Quonfig SSE: dropping event that failed to install: %s: %s",
+                type(e).__name__,
+                e,
+            )
+            return
+        # Reject-older guard dropped a same-or-older snapshot: the held config
+        # is unchanged, so do not fire the update callback (no flap). But the
+        # message WAS received and processed, so the stream proved live and the
+        # held config current: advance the liveness stamp (qfg-41nh.11).
+        if not installed:
+            if self._record_refresh is not None:
+                self._record_refresh()
+            return
+        if self._on_config_update is not None:
+            try:
+                self._on_config_update()
+            except Exception as e:  # noqa: BLE001 — supervisor MUST catch
+                _LOG.error(
+                    "Quonfig SSE: onConfigUpdate callback threw: "
+                    "%s: %s — supervisor caught, continuing",
+                    type(e).__name__,
+                    e,
+                )
+
     def _loop(self) -> None:
         backoff = 1.0
-        # Transparent-reconnect flag: when sseclient.events() exits cleanly
-        # mid-stream (e.g. server clean FIN, sseclient-py internal EOF after
-        # an event batch), we re-attempt without flipping public state. The
-        # connection drop is real but the cached config is unchanged, so a
-        # connected->connecting edge would be a lie that costs chaos probes
-        # a spurious Layer 1 restart count (qfg-47c2.31).
+        # Bounded transparent reconnect (qfg-47c2.31, bounded by qfg-goi1.10.44
+        # per the supervisor contract Rule). After a connection that delivered
+        # a frame ends with a clean EOF (server FIN, LB recycle), the next
+        # attempt runs without a public state edge: the cached config is
+        # unchanged, so a connected->connecting edge would be a lie that costs
+        # chaos probes a spurious Layer 1 restart count. The hold lasts one
+        # connection: it must deliver a frame (still connected, no edge) or it
+        # is a failed attempt and reports ``error`` at once. ``connected`` is
+        # never held across two frameless connections.
         transparent_reconnect = False
         while not self.shutdown_event.is_set():
             # On a transparent reconnect the public state is still
@@ -175,59 +322,25 @@ class SSEClient:
                     # this response, so close it here.
                     break
                 response.raise_for_status()
-                client = sseclient.SSEClient(response)  # type: ignore[arg-type]
-                backoff = 1.0  # Reset on successful connection
-                if not silent:
-                    self._emit("connected")
-                for event in client.events():
-                    if self.shutdown_event.is_set():
-                        break
-                    if event.data:
-                        try:
-                            # from_wire rejects non-envelopes ({} / {"error": ..}),
-                            # dropped below like malformed JSON (qfg-9dxb.3).
-                            envelope = ConfigEnvelope.from_wire(json.loads(event.data))
-                            if self._install is not None:
-                                installed = self._install(envelope)
-                            else:
-                                installed = self.store.update(envelope)
-                        except Exception as e:
-                            _LOG.warning(
-                                "Quonfig SSE: dropping malformed event: %s: %s",
-                                type(e).__name__,
-                                e,
-                            )
-                            continue
-                        # Reject-older guard dropped a same-or-older snapshot —
-                        # the held config is unchanged, so do not fire the
-                        # update callback (no flap). But the message WAS
-                        # received and processed, so the stream proved live and
-                        # the held config current: advance the liveness stamp
-                        # (qfg-41nh.11).
-                        if not installed:
-                            if self._record_refresh is not None:
-                                self._record_refresh()
-                            continue
-                        if self._on_config_update is not None:
-                            try:
-                                self._on_config_update()
-                            except Exception as e:  # noqa: BLE001 — supervisor MUST catch
-                                _LOG.error(
-                                    "Quonfig SSE: onConfigUpdate callback threw: "
-                                    "%s: %s — supervisor caught, continuing",
-                                    type(e).__name__,
-                                    e,
-                                )
-                # The events() generator returned without raising. That means
-                # sseclient saw a clean EOF on the underlying response — the
-                # server-side stream is closed but our cached config is
-                # intact. Reconnect transparently (no "connecting" edge).
-                if not self.shutdown_event.is_set():
-                    _LOG.debug(
-                        "Quonfig SSE: stream ended cleanly mid-session, reconnecting transparently"
-                    )
-                    transparent_reconnect = True
-                    self._sleep(_clean_eof_reconnect_sleep())
+                # 200 headers alone are not "connected": that waits for the
+                # first valid frame (qfg-goi1.10.44). Between the headers and
+                # the frame the public state stays what it was.
+                frame_seen = False
+                try:
+                    frame_seen = self._parse_stream(_iter_body(response), announce=not silent)
+                finally:
+                    if frame_seen:
+                        backoff = 1.0  # a frame made this a successful run
+                if self.shutdown_event.is_set():
+                    break
+                if not frame_seen:
+                    raise _FramelessStreamError("stream ended before its first frame")
+                # Clean EOF after a frame: reconnect transparently (no edge).
+                _LOG.debug(
+                    "Quonfig SSE: stream ended cleanly mid-session, reconnecting transparently"
+                )
+                transparent_reconnect = True
+                self._sleep(_clean_eof_reconnect_sleep())
             except Exception as e:
                 if self.shutdown_event.is_set():
                     break

@@ -10,7 +10,6 @@ packages = [{include = "quonfig"}]
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
 requests = ">=2.33.0"
-sseclient-py = "^1.7.2"
 mmh3 = ">=3.0.0,<6.0.0"
 # >=48.0.1 floors out GHSA-537c-gmf6-5ccf (bundled OpenSSL CVE in the 48.0.0
 # wheel); pip-audit in CI fails on anything below. cryptography is transitive

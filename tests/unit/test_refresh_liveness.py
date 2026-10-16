@@ -214,16 +214,17 @@ def test_not_stamped_on_error() -> None:
 class _FakeResponse:
     status_code = 200
 
+    def __init__(self, body: Iterator[bytes]) -> None:
+        self._body = body
+
     def raise_for_status(self) -> None:
         return None
 
     def iter_content(self, *_a: Any, **_k: Any) -> Iterator[bytes]:
-        return iter(())
+        return self._body
 
-
-class _FakeEvent:
-    def __init__(self, data: str) -> None:
-        self.data = data
+    def close(self) -> None:
+        return None
 
 
 def test_sse_message_stamps_on_install_and_on_guard_no_op() -> None:
@@ -248,10 +249,10 @@ def test_sse_message_stamps_on_install_and_on_guard_no_op() -> None:
     def install(_env: object) -> bool:
         return next(install_outcomes)
 
-    def mock_events() -> Iterator[Any]:
-        payload = _envelope_json(42).decode()
-        yield _FakeEvent(payload)  # installs → on_config_update
-        yield _FakeEvent(payload)  # guard no-op → record_refresh
+    def body() -> Iterator[bytes]:
+        payload = _envelope_json(42)
+        yield b"data: " + payload + b"\n\n"  # installs → on_config_update
+        yield b"data: " + payload + b"\n\n"  # guard no-op → record_refresh
         shutdown.set()
         done.set()
 
@@ -264,11 +265,7 @@ def test_sse_message_stamps_on_install_and_on_guard_no_op() -> None:
         record_refresh=lambda: refresh_calls.__setitem__("n", refresh_calls["n"] + 1),
     )
 
-    with (
-        patch("quonfig.sse.requests.get", return_value=_FakeResponse()),
-        patch("quonfig.sse.sseclient.SSEClient") as mock_lib,
-    ):
-        mock_lib.return_value.events.side_effect = mock_events
+    with patch("quonfig.sse.requests.get", return_value=_FakeResponse(body())):
         t = threading.Thread(target=sse._loop, daemon=True)
         t.start()
         done.wait(timeout=3.0)
