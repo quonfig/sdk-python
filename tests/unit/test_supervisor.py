@@ -998,6 +998,75 @@ def test_first_frame_test2_reset_only_on_a_frame() -> None:
             srv.server_close()
 
 
+def _sse_reset(h: BaseHTTPRequestHandler) -> None:
+    """Abort the connection with a TCP RST (SO_LINGER 0), mid chunked body."""
+    import socket
+    import struct
+
+    h.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    h.connection.close()
+    h.close_connection = True
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [b": keepalive\n\n", b"data: " + t9_envelope(2, "v2") + b"\n\n"],
+    ids=["keepalive", "envelope"],
+)
+def test_first_frame_test2_reset_after_a_frame_then_io_error(frame: bytes) -> None:
+    """Test 2 Reset (contract supervisor-test-contract.md:205-208): a worker
+    run that delivered a frame resets the backoff even when the connection
+    then dies with an IO error (here a TCP reset mid chunked body), not only
+    on a clean EOF. Every connection does frame-then-reset, so every requested
+    reconnect sleep must be the 1s base; before the fix it ratcheted
+    1 -> 2 -> 4 -> ... -> 30s (sdk-go sse_client.go:239-246)."""
+    from quonfig.sse import SSEClient
+    from quonfig.store import ConfigStore
+    from quonfig.transport import Transport
+
+    rig = Rig(sse_status=200)
+    lock = threading.Lock()
+    sleeps: List[float] = []
+    done = threading.Event()
+
+    def handle(h: BaseHTTPRequestHandler) -> None:
+        sse_open(h)
+        sse_write(h, frame)
+        time.sleep(0.05)  # let the client read the frame before the reset
+        _sse_reset(h)
+
+    url = rig._serve(handle)
+    shutdown = threading.Event()
+
+    def wait_hook(kind: str, s: float) -> float:
+        with lock:
+            sleeps.append(s)
+            if len(sleeps) >= 6:
+                done.set()
+        return 0.001
+
+    sse = SSEClient(
+        Transport([url], "sk"),
+        ConfigStore(),
+        shutdown,
+        install=lambda env: True,
+        wait_hook=wait_hook,
+    )
+    sse._stream_url_override = url + "/api/v2/sse/config"
+    sse.start()
+    try:
+        assert done.wait(15), f"never reached 6 reconnects; sleeps={sleeps}"
+        with lock:
+            s = list(sleeps)
+        assert all(x == pytest.approx(SSE_BASE) for x in s), s
+    finally:
+        sse.stop()
+        sse.join(2)
+        for srv in rig.servers:
+            srv.shutdown()
+            srv.server_close()
+
+
 class _NullTransport:
     pass
 
