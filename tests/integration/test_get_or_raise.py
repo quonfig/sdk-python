@@ -85,6 +85,56 @@ def test_raises_an_error_if_an_env_var_provided_config_cannot_be_coerced_to_conf
         c.get_int("provided.not.a.number")
 
 
+# coercion error for an int env var names the variable and never its value
+def test_coercion_error_for_an_int_env_var_names_the_variable_and_never_its_value() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_SECRET_ENV"] = os.environ.get("QUONFIG_ITD_SECRET_ENV")
+    os.environ["QUONFIG_ITD_SECRET_ENV"] = "postgres://admin:hunter2@db"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigKeyNotFoundError) as excinfo:
+            c.get_int("provided.secret.not.an.int")
+        message = str(excinfo.value)
+        assert (
+            'environment variable "QUONFIG_ITD_SECRET_ENV" cannot be converted to int for config "provided.secret.not.an.int"'
+            in message
+        )
+        assert "hunter2" not in message
+        assert "postgres://" not in message
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# coercion error for a double env var names the variable and never its value
+def test_coercion_error_for_a_double_env_var_names_the_variable_and_never_its_value() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_SECRET_ENV"] = os.environ.get("QUONFIG_ITD_SECRET_ENV")
+    os.environ["QUONFIG_ITD_SECRET_ENV"] = "postgres://admin:hunter2@db"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigKeyNotFoundError) as excinfo:
+            c.get_float("provided.secret.not.a.double")
+        message = str(excinfo.value)
+        assert (
+            'environment variable "QUONFIG_ITD_SECRET_ENV" cannot be converted to double for config "provided.secret.not.a.double"'
+            in message
+        )
+        assert "hunter2" not in message
+        assert "postgres://" not in message
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 # raises an error for decryption failure
 def test_raises_an_error_for_decryption_failure() -> None:
     c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")

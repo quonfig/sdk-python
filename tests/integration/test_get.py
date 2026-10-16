@@ -103,6 +103,13 @@ def test_can_decrypt_and_return_a_secret_value_with_decryption_key_in_in_env_var
     assert result == "hello.world"
 
 
+# decrypts a secret whose key config has an environment rule
+def test_decrypts_a_secret_whose_key_config_has_an_environment_rule(config_client) -> None:
+    c = config_client
+    result = c.get_string("env.scoped.secret")
+    assert result == "hello.world"
+
+
 # duration 200 ms
 def test_duration_200_ms(config_client) -> None:
     c = config_client
