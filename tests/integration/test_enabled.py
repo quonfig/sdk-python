@@ -891,13 +891,13 @@ def test_returns_false_for_prop_semver_equal_rule_when_the_given_prop_does_not_e
     assert result is False
 
 
-# returns false for PROP_SEMVER_EQUAL rule when the given prop is not a valid semver
-def test_returns_false_for_prop_semver_equal_rule_when_the_given_prop_is_not_a_valid_semver(
+# returns true for PROP_SEMVER_EQUAL rule when the given prop is an abbreviated major.minor version
+def test_returns_true_for_prop_semver_equal_rule_when_the_given_prop_is_an_abbreviated_major_minor_version(
     config_client,
 ) -> None:
     c = config_client
     result = c.is_feature_enabled("feature-flag.semver-equal", contexts={"app": {"version": "2.0"}})
-    assert result is False
+    assert result is True
 
 
 # returns true for PROP_SEMVER_LESS_THAN rule when the given prop is less than 2.0.0
@@ -963,4 +963,342 @@ def test_returns_false_for_prop_semver_equal_rule_when_the_given_prop_is_less_th
     result = c.is_feature_enabled(
         "feature-flag.semver-greater-than", contexts={"app": {"version": "0.0.5"}}
     )
+    assert result is False
+
+
+# returns true for PROP_IS_ONE_OF ["true"] when the context value is boolean true
+def test_returns_true_for_prop_is_one_of_true_when_the_context_value_is_boolean_true(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-one-of.bool", contexts={"user": {"beta": True}})
+    assert result is True
+
+
+# returns false for PROP_IS_ONE_OF ["true"] when the context value is boolean false
+def test_returns_false_for_prop_is_one_of_true_when_the_context_value_is_boolean_false(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-one-of.bool", contexts={"user": {"beta": False}})
+    assert result is False
+
+
+# returns true for PROP_IS_ONE_OF ["true"] when the context value is the string "true"
+def test_returns_true_for_prop_is_one_of_true_when_the_context_value_is_the_string_true(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.is-one-of.bool", contexts={"user": {"beta": "true"}}
+    )
+    assert result is True
+
+
+# returns false for PROP_IS_NOT_ONE_OF ["true"] when the context value is boolean true
+def test_returns_false_for_prop_is_not_one_of_true_when_the_context_value_is_boolean_true(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.is-not-one-of.bool", contexts={"user": {"beta": True}}
+    )
+    assert result is False
+
+
+# returns true for PROP_IS_ONE_OF number strings when the context value is the integer 1
+def test_returns_true_for_prop_is_one_of_number_strings_when_the_context_value_is_the_integer_1(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-one-of.number", contexts={"user": {"n": 1}})
+    assert result is True
+
+
+# returns true for PROP_IS_ONE_OF number strings when the context value is the number 1.5
+def test_returns_true_for_prop_is_one_of_number_strings_when_the_context_value_is_the_number_1_5(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-one-of.number", contexts={"user": {"n": 1.5}})
+    assert result is True
+
+
+# returns true for PROP_IS_ONE_OF number strings when the context value is the integer 1234567
+def test_returns_true_for_prop_is_one_of_number_strings_when_the_context_value_is_the_integer_1234567(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.is-one-of.number", contexts={"user": {"n": 1234567}}
+    )
+    assert result is True
+
+
+# returns false for PROP_IS_ONE_OF number strings when the context value is the integer 2
+def test_returns_false_for_prop_is_one_of_number_strings_when_the_context_value_is_the_integer_2(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.is-one-of.number", contexts={"user": {"n": 2}})
+    assert result is False
+
+
+# returns true for PROP_ENDS_WITH_ONE_OF ["3"] when the context value is the integer 123
+def test_returns_true_for_prop_ends_with_one_of_3_when_the_context_value_is_the_integer_123(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.ends-with-one-of.number", contexts={"user": {"n": 123}}
+    )
+    assert result is True
+
+
+# returns false for PROP_ENDS_WITH_ONE_OF ["3"] when the context value is the integer 124
+def test_returns_false_for_prop_ends_with_one_of_3_when_the_context_value_is_the_integer_124(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.ends-with-one-of.number", contexts={"user": {"n": 124}}
+    )
+    assert result is False
+
+
+# returns true for IN_INT_RANGE [0, 10) when the context value is the start bound 0
+def test_returns_true_for_in_int_range_0_10_when_the_context_value_is_the_start_bound_0(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.in-int-range", contexts={"user": {"n": 0}})
+    assert result is True
+
+
+# returns true for IN_INT_RANGE [0, 10) when the context value is 9
+def test_returns_true_for_in_int_range_0_10_when_the_context_value_is_9(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.in-int-range", contexts={"user": {"n": 9}})
+    assert result is True
+
+
+# returns false for IN_INT_RANGE [0, 10) when the context value is the end bound 10
+def test_returns_false_for_in_int_range_0_10_when_the_context_value_is_the_end_bound_10(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.in-int-range", contexts={"user": {"n": 10}})
+    assert result is False
+
+
+# returns false for IN_INT_RANGE [0, 10) when the context value is -1
+def test_returns_false_for_in_int_range_0_10_when_the_context_value_is_1(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.in-int-range", contexts={"user": {"n": -1}})
+    assert result is False
+
+
+# returns true for IN_INT_RANGE with no end when the context value is 5000000000
+def test_returns_true_for_in_int_range_with_no_end_when_the_context_value_is_5000000000(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.in-int-range.open-end", contexts={"user": {"n": 5000000000}}
+    )
+    assert result is True
+
+
+# returns true for IN_INT_RANGE with no start when the context value is -5
+def test_returns_true_for_in_int_range_with_no_start_when_the_context_value_is_5(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.in-int-range.open-start", contexts={"user": {"n": -5}}
+    )
+    assert result is True
+
+
+# returns false for PROP_SEMVER_EQUAL 2.0.0 when the given prop is the prerelease 2.0.0-beta.1
+def test_returns_false_for_prop_semver_equal_2_0_0_when_the_given_prop_is_the_prerelease_2_0_0_beta_1(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.semver-equal", contexts={"app": {"version": "2.0.0-beta.1"}}
+    )
+    assert result is False
+
+
+# returns true for PROP_SEMVER_LESS_THAN 2.0.0 when the given prop is the prerelease 2.0.0-beta.1
+def test_returns_true_for_prop_semver_less_than_2_0_0_when_the_given_prop_is_the_prerelease_2_0_0_beta_1(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.semver-less-than", contexts={"app": {"version": "2.0.0-beta.1"}}
+    )
+    assert result is True
+
+
+# returns false for PROP_SEMVER_GREATER_THAN 2.0.0 when the given prop is the prerelease 2.0.0-beta.1
+def test_returns_false_for_prop_semver_greater_than_2_0_0_when_the_given_prop_is_the_prerelease_2_0_0_beta_1(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.semver-greater-than", contexts={"app": {"version": "2.0.0-beta.1"}}
+    )
+    assert result is False
+
+
+# returns true for PROP_SEMVER_EQUAL 2.0.0 when the given prop differs only by build metadata
+def test_returns_true_for_prop_semver_equal_2_0_0_when_the_given_prop_differs_only_by_build_metadata(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.semver-equal", contexts={"app": {"version": "2.0.0+build.5"}}
+    )
+    assert result is True
+
+
+# returns true for PROP_SEMVER_LESS_THAN 2.0.0-beta when the given prop is the prerelease 2.0.0-alpha
+def test_returns_true_for_prop_semver_less_than_2_0_0_beta_when_the_given_prop_is_the_prerelease_2_0_0_alpha(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.semver-less-than.prerelease", contexts={"app": {"version": "2.0.0-alpha"}}
+    )
+    assert result is True
+
+
+# returns true for PROP_SEMVER_EQUAL 2.0.0 when the given prop is the abbreviated major version 2
+def test_returns_true_for_prop_semver_equal_2_0_0_when_the_given_prop_is_the_abbreviated_major_version_2(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.semver-equal", contexts={"app": {"version": "2"}})
+    assert result is True
+
+
+# returns false for PROP_SEMVER_EQUAL 2.0.0 when the given prop has a v prefix
+def test_returns_false_for_prop_semver_equal_2_0_0_when_the_given_prop_has_a_v_prefix(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.semver-equal", contexts={"app": {"version": "v2.0.0"}}
+    )
+    assert result is False
+
+
+# returns false for PROP_BEFORE when the given prop is a date-only string
+def test_returns_false_for_prop_before_when_the_given_prop_is_a_date_only_string(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.before", contexts={"user": {"creation_date": "2024-11-01"}}
+    )
+    assert result is False
+
+
+# returns false for PROP_BEFORE when the given prop is an RFC3339 string without an offset
+def test_returns_false_for_prop_before_when_the_given_prop_is_an_rfc3339_string_without_an_offset(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.before", contexts={"user": {"creation_date": "2024-11-01T00:00:00"}}
+    )
+    assert result is False
+
+
+# returns false for PROP_BEFORE when the given prop is a free-form date string
+def test_returns_false_for_prop_before_when_the_given_prop_is_a_free_form_date_string(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.before", contexts={"user": {"creation_date": "Nov 1 2024"}}
+    )
+    assert result is False
+
+
+# returns true for PROP_BEFORE when the given prop is an RFC3339 string with a numeric offset
+def test_returns_true_for_prop_before_when_the_given_prop_is_an_rfc3339_string_with_a_numeric_offset(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.before", contexts={"user": {"creation_date": "2024-11-01T02:00:00+02:00"}}
+    )
+    assert result is True
+
+
+# returns true for PROP_BEFORE when the given prop is an all-digit epoch-ms string
+def test_returns_true_for_prop_before_when_the_given_prop_is_an_all_digit_epoch_ms_string(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.before", contexts={"user": {"creation_date": "1730419200000"}}
+    )
+    assert result is True
+
+
+# returns true for PROP_BEFORE an RFC3339 criterion when the given prop is an earlier epoch-ms number
+def test_returns_true_for_prop_before_an_rfc3339_criterion_when_the_given_prop_is_an_earlier_epoch_ms_number(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.before.rfc3339-criterion", contexts={"user": {"creation_date": 1730419200000}}
+    )
+    assert result is True
+
+
+# returns false for PROP_BEFORE an RFC3339 criterion when the given prop is a later RFC3339 string
+def test_returns_false_for_prop_before_an_rfc3339_criterion_when_the_given_prop_is_a_later_rfc3339_string(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.before.rfc3339-criterion",
+        contexts={"user": {"creation_date": "2025-01-01T00:00:00Z"}},
+    )
+    assert result is False
+
+
+# returns false for PROP_AFTER an all-digit criterion "999" when the given prop is 500
+def test_returns_false_for_prop_after_an_all_digit_criterion_999_when_the_given_prop_is_500(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.after.numeric-string-criterion", contexts={"user": {"creation_date": 500}}
+    )
+    assert result is False
+
+
+# returns true for PROP_AFTER an all-digit criterion "999" when the given prop is 1000
+def test_returns_true_for_prop_after_an_all_digit_criterion_999_when_the_given_prop_is_1000(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.after.numeric-string-criterion", contexts={"user": {"creation_date": 1000}}
+    )
+    assert result is True
+
+
+# returns false for PROP_GREATER_THAN 30 when the given prop is a numeric string above the threshold
+def test_returns_false_for_prop_greater_than_30_when_the_given_prop_is_a_numeric_string_above_the_threshold(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.greater-than", contexts={"user": {"age": "35"}})
     assert result is False

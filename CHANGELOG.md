@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **UPGRADE: may change who matches a targeting rule. One set of rule-operator
+  semantics across the SDKs (minor, qfg-goi1.5.4).** Pinned by
+  integration-test-data v2026.10.16.1 (OPERATOR EDGES block); matches sdk-go
+  and the other backend SDKs. Spec: project/plans/2026-10-07-sdk-operator-semantics.md.
+  - **Dates: pass epoch milliseconds (a number or an all-digit string) or an
+    ISO 8601 / RFC3339 string with `Z` or a numeric offset**, such as
+    `2025-01-01T00:00:00Z` or `2025-01-01T09:00:00+09:00`. `PROP_BEFORE` /
+    `PROP_AFTER` use that one grammar on both the context value and the rule
+    value. A date-only string (`"2024-11-01"`) or an offset-less one
+    (`"2024-11-01T00:00:00"`, which was read as host local time) no longer
+    matches; an all-digit string context value (`"1730419200000"`) and an
+    RFC3339 rule value (as written by `qfg migrate` from LaunchDarkly) now
+    match. Python `datetime` / `date` objects are unchanged (a tz-naive
+    datetime is still host local time).
+  - **Booleans compare as `"true"` / `"false"`.** `is one of ["true"]` on a
+    `True` context value now matches (it compared as `"True"` before); a
+    rule written as `["True"]` to work around that stops matching.
+  - **Whole-number numbers compare as plain digits** whatever their runtime
+    type: `1.0` is `"1"`, `1234567.0` is `"1234567"`, `5e9` is
+    `"5000000000"`.
+  - **String operators (starts with / ends with / contains, hierarchical
+    match) stringify a non-string context value** with the rules above
+    instead of never matching: ends-with `["3"]` on `123` matches.
+  - **`IN_INT_RANGE` is `[start, end)`**: the end bound is now exclusive, and
+    a missing `start` or `end` is unbounded (it was read as 0). The `low` /
+    `high` keys and the `[start, end]` list shape are no longer read.
+  - **Semantic versions use SemVer 2.0 precedence**: `1.0.0-beta.1` is less
+    than `1.0.0` and no longer equal to it; build metadata is ignored.
+  - **Abbreviated versions `"2"` / `"2.1"` are read as `2.0.0` / `2.1.0`** on
+    either side, so `semver equal 2.0.0` now matches `"2.0"`. A `v` prefix is
+    still not a version.
+
 - **ENV_VAR coercion error text follows the cross-SDK template (patch).** A
   malformed ENV_VAR value now raises/logs
   `environment variable "<NAME>" cannot be converted to <type> for config "<key>"`

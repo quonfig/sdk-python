@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import math
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
 
 from .types import Contexts
@@ -31,6 +32,40 @@ def _to_float_strict(v: Any) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+_MAX_SAFE_INTEGER = 2**53
+
+
+def _canonical_str(v: Any) -> str:
+    """The one cross-SDK string form of a value (qfg-goi1.5 R1).
+
+    Strings are used as-is; bools are ``"true"``/``"false"``; a number whose
+    value is integral and below 2^53 in magnitude is plain base-10 digits
+    whatever its runtime type (so ``1.0`` -> ``"1"`` and ``1234567.0`` ->
+    ``"1234567"``, never ``"1.0"`` or an exponent form); other finite floats
+    use Python's shortest round-trip repr (``1.5`` -> ``"1.5"``).
+    """
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if math.isfinite(v) and v.is_integer() and abs(v) < _MAX_SAFE_INTEGER:
+            return str(int(v))
+        return repr(v)
+    return str(v)
+
+
+def _string_operand(v: Any) -> Optional[str]:
+    """Context value for the string operators (R2): strings, bools and
+    numbers are stringified with :func:`_canonical_str`; anything else
+    (missing, lists, dicts) cannot match."""
+    if isinstance(v, (str, bool, int, float)):
+        return _canonical_str(v)
+    return None
 
 
 def _ensure_list(value: Any) -> list:
@@ -64,7 +99,8 @@ def prop_is_one_of(
 ) -> bool:
     criterion_values = _ensure_list(criterion_value)
     prop_values = _ensure_list(prop_value)
-    return any(str(v1) == str(v2) for v1 in criterion_values for v2 in prop_values)
+    criterion_strings = {_canonical_str(v) for v in criterion_values}
+    return any(_canonical_str(v) in criterion_strings for v in prop_values)
 
 
 def prop_is_not_one_of(
@@ -76,28 +112,31 @@ def prop_is_not_one_of(
 def prop_ends_with_one_of(
     prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
 ) -> bool:
-    if not isinstance(prop_value, str):
+    s = _string_operand(prop_value)
+    if s is None:
         return False
     criterion_values = _ensure_list(criterion_value)
-    return any(prop_value.endswith(str(v)) for v in criterion_values)
+    return any(s.endswith(_canonical_str(v)) for v in criterion_values)
 
 
 def prop_starts_with_one_of(
     prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
 ) -> bool:
-    if not isinstance(prop_value, str):
+    s = _string_operand(prop_value)
+    if s is None:
         return False
     criterion_values = _ensure_list(criterion_value)
-    return any(prop_value.startswith(str(v)) for v in criterion_values)
+    return any(s.startswith(_canonical_str(v)) for v in criterion_values)
 
 
 def prop_contains_one_of(
     prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
 ) -> bool:
-    if not isinstance(prop_value, str):
+    s = _string_operand(prop_value)
+    if s is None:
         return False
     criterion_values = _ensure_list(criterion_value)
-    return any(str(v) in prop_value for v in criterion_values)
+    return any(_canonical_str(v) in s for v in criterion_values)
 
 
 def prop_matches(
@@ -169,21 +208,23 @@ def in_int_range(
     prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
 ) -> bool:
     """
-    criterion_value should be a dict with "start" and "end" (inclusive).
-    Or a list [start, end].
+    criterion_value is ``{"start": int, "end": int}``: the range is
+    ``[start, end)`` (start inclusive, end exclusive) and a missing bound is
+    unbounded (qfg-goi1.5 R3, the Prefab proto definition).
     """
+    if isinstance(prop_value, bool):
+        return False
     a = _to_float(prop_value)
-    if a is None:
+    if a is None or not isinstance(criterion_value, dict):
         return False
     try:
-        if isinstance(criterion_value, dict):
-            start = float(criterion_value.get("start", criterion_value.get("low", 0)) or 0)
-            end = float(criterion_value.get("end", criterion_value.get("high", 0)) or 0)
-        elif isinstance(criterion_value, (list, tuple)) and len(criterion_value) >= 2:
-            start, end = float(criterion_value[0]), float(criterion_value[1])
-        else:
+        start = criterion_value.get("start")
+        end = criterion_value.get("end")
+        if start is not None and a < float(start):
             return False
-        return start <= a <= end
+        if end is not None and a >= float(end):
+            return False
+        return True
     except (TypeError, ValueError):
         return False
 
@@ -236,25 +277,68 @@ def not_in_seg(
     return not in_seg(prop_value, criterion_value, contexts, store, seg_path)
 
 
+_SEMVER_NUM = r"(?:0|[1-9]\d*)"
+_SEMVER_PRE_ID = r"(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+_SEMVER_BUILD_ID = r"[0-9a-zA-Z-]+"
 _SEMVER_PATTERN = re.compile(
-    r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
-    r"(?:-(?P<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
-    r"(?:\+(?P<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+    rf"^(?P<major>{_SEMVER_NUM})"
+    rf"(?:\.(?P<minor>{_SEMVER_NUM})"
+    rf"(?:\.(?P<patch>{_SEMVER_NUM})"
+    rf"(?:-(?P<prerelease>{_SEMVER_PRE_ID}(?:\.{_SEMVER_PRE_ID})*))?"
+    rf"(?:\+(?P<buildmetadata>{_SEMVER_BUILD_ID}(?:\.{_SEMVER_BUILD_ID})*))?"
+    r")?)?$",
+    re.ASCII,
 )
 
 
-def _parse_semver(v: Any) -> Optional[tuple]:
-    """Parse a strict semver string (major.minor.patch) into a comparable tuple.
-    Returns None if invalid."""
+class _SemVer:
+    """A parsed version ordered by SemVer 2.0 precedence (qfg-goi1.5 R4):
+    a prerelease sorts before its release, prerelease identifiers compare
+    numerically when all-digit and lexically otherwise, and build metadata
+    is ignored."""
+
+    __slots__ = ("core", "prerelease")
+
+    def __init__(self, core: Tuple[int, int, int], prerelease: Tuple[str, ...]):
+        self.core = core
+        self.prerelease = prerelease
+
+    def compare(self, other: "_SemVer") -> int:
+        if self.core != other.core:
+            return -1 if self.core < other.core else 1
+        a, b = self.prerelease, other.prerelease
+        if a == b:
+            return 0
+        if not a:
+            return 1
+        if not b:
+            return -1
+        for x, y in zip(a, b):
+            if x == y:
+                continue
+            x_num, y_num = x.isdigit(), y.isdigit()
+            if x_num and y_num:
+                return -1 if int(x) < int(y) else 1
+            if x_num:
+                return -1
+            if y_num:
+                return 1
+            return -1 if x < y else 1
+        return -1 if len(a) < len(b) else 1
+
+
+def _parse_semver(v: Any) -> Optional[_SemVer]:
+    """Parse a SemVer 2.0 string, or the abbreviated ``"x"`` / ``"x.y"``
+    forms read as ``x.0.0`` / ``x.y.0`` (qfg-goi1.5 Q5). A ``v`` prefix is
+    not a version. Returns None if invalid."""
     if not isinstance(v, str):
         return None
-    m = _SEMVER_PATTERN.match(v)
+    m = _SEMVER_PATTERN.fullmatch(v)
     if not m:
         return None
-    major = int(m.group("major"))
-    minor = int(m.group("minor"))
-    patch = int(m.group("patch"))
-    return (major, minor, patch)
+    core = (int(m.group("major")), int(m.group("minor") or 0), int(m.group("patch") or 0))
+    pre = m.group("prerelease")
+    return _SemVer(core, tuple(pre.split(".")) if pre else ())
 
 
 def prop_semver_less_than(
@@ -264,7 +348,7 @@ def prop_semver_less_than(
     b = _parse_semver(criterion_value)
     if a is None or b is None:
         return False
-    return a < b
+    return a.compare(b) < 0
 
 
 def prop_semver_equal(
@@ -274,7 +358,7 @@ def prop_semver_equal(
     b = _parse_semver(criterion_value)
     if a is None or b is None:
         return False
-    return a == b
+    return a.compare(b) == 0
 
 
 def prop_semver_greater_than(
@@ -284,25 +368,77 @@ def prop_semver_greater_than(
     b = _parse_semver(criterion_value)
     if a is None or b is None:
         return False
-    return a > b
+    return a.compare(b) > 0
+
+
+_DIGITS_PATTERN = re.compile(r"^-?[0-9]+$", re.ASCII)
+_RFC3339_PATTERN = re.compile(
+    r"^(?P<y>[0-9]{4})-(?P<mo>[0-9]{2})-(?P<d>[0-9]{2})"
+    r"T(?P<h>[0-9]{2}):(?P<mi>[0-9]{2}):(?P<s>[0-9]{2})(?:\.(?P<frac>[0-9]+))?"
+    r"(?:(?P<z>Z)|(?P<sign>[+-])(?P<oh>[0-9]{2}):(?P<om>[0-9]{2}))$",
+    re.ASCII,
+)
+
+
+def _rfc3339_to_millis(value: str) -> Optional[int]:
+    m = _RFC3339_PATTERN.fullmatch(value)
+    if not m:
+        return None
+    if m.group("z"):
+        tz = timezone.utc
+    else:
+        oh, om = int(m.group("oh")), int(m.group("om"))
+        if oh > 23 or om > 59:
+            return None
+        offset = timedelta(hours=oh, minutes=om)
+        tz = timezone(-offset if m.group("sign") == "-" else offset)
+    frac = (m.group("frac") or "")[:6].ljust(6, "0")
+    try:
+        dt = datetime(
+            int(m.group("y")),
+            int(m.group("mo")),
+            int(m.group("d")),
+            int(m.group("h")),
+            int(m.group("mi")),
+            int(m.group("s")),
+            int(frac),
+            tzinfo=tz,
+        )
+    except ValueError:
+        return None
+    delta = dt - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return delta.days * 86_400_000 + delta.seconds * 1000 + delta.microseconds // 1000
 
 
 def _to_millis(value: Any) -> Optional[int]:
-    """Convert various date/time representations to milliseconds since epoch."""
+    """Read a timestamp as milliseconds since the epoch (qfg-goi1.5 R5).
+
+    The same grammar applies to the context value and the criterion: a
+    number (epoch ms, truncated), an all-digit string (epoch ms), or an
+    RFC3339 string with ``Z`` or a numeric offset (fractional seconds
+    allowed). Date-only, offset-less and free-form strings are not
+    timestamps. Python ``datetime``/``date`` objects keep their historical
+    handling (a tz-naive datetime is host local time; a date is UTC
+    midnight).
+    """
     try:
+        if isinstance(value, bool):
+            return None
         if isinstance(value, str):
-            if value.endswith("Z"):
-                value = value[:-1] + "+00:00"
-            dt = datetime.fromisoformat(value)
-            return int(dt.timestamp() * 1000)
-        elif isinstance(value, datetime):
+            if _DIGITS_PATTERN.fullmatch(value):
+                return int(value)
+            return _rfc3339_to_millis(value)
+        if isinstance(value, datetime):
             return int(value.timestamp() * 1000)
-        elif isinstance(value, date):
+        if isinstance(value, date):
             dt = datetime.combine(value, datetime.min.time(), timezone.utc)
             return int(dt.timestamp() * 1000)
-        else:
-            return int(float(value))
-    except (ValueError, TypeError, OSError):
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+            return int(value)
+        return None
+    except (ValueError, TypeError, OSError, OverflowError):
         return None
 
 
@@ -310,11 +446,8 @@ def prop_before(
     prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
 ) -> bool:
     context_millis = _to_millis(prop_value)
-    if context_millis is None:
-        return False
-    try:
-        criterion_millis = int(float(criterion_value))
-    except (TypeError, ValueError):
+    criterion_millis = _to_millis(criterion_value)
+    if context_millis is None or criterion_millis is None:
         return False
     return context_millis < criterion_millis
 
@@ -323,11 +456,8 @@ def prop_after(
     prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
 ) -> bool:
     context_millis = _to_millis(prop_value)
-    if context_millis is None:
-        return False
-    try:
-        criterion_millis = int(float(criterion_value))
-    except (TypeError, ValueError):
+    criterion_millis = _to_millis(criterion_value)
+    if context_millis is None or criterion_millis is None:
         return False
     return context_millis > criterion_millis
 
@@ -335,11 +465,10 @@ def prop_after(
 def hierarchical_match(
     prop_value: Any, criterion_value: Any, contexts: Contexts, store: "ConfigStore"
 ) -> bool:
-    if not isinstance(prop_value, str):
+    s = _string_operand(prop_value)
+    if s is None or not isinstance(criterion_value, str):
         return False
-    if not isinstance(criterion_value, str):
-        return False
-    return prop_value.startswith(criterion_value)
+    return s.startswith(criterion_value)
 
 
 def is_present(
