@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import queue
+import random
 import threading
 import time
 from dataclasses import dataclass
@@ -135,6 +136,41 @@ def _decode_envelope(body: bytes) -> ConfigEnvelope:
     return ConfigEnvelope.from_wire(data)
 
 
+# Auth-failure rule (qfg-goi1.4, plan project/plans/2026-10-07-sdk-auth-failure-rule.md
+# R1-R6; ITD chaos/supervisor-test-contract.md Test 8). R1: these statuses on a
+# config fetch leg are the auth class. Every other status keeps its transient
+# handling.
+AUTH_CLASS_STATUSES = frozenset({401, 403, 404, 410})
+
+# R3: while auth-failed, one probe cycle per period T, drawn uniform in
+# [min, max] each time. No doubling, no give-up. Internal only, never a
+# customer option.
+AUTH_PROBE_MIN_SECONDS = 150.0
+AUTH_PROBE_MAX_SECONDS = 300.0
+
+
+def is_auth_class_status(status: int) -> bool:
+    return status in AUTH_CLASS_STATUSES
+
+
+@dataclass
+class CycleOutcome:
+    """What one hedged config-fetch cycle produced, as the auth-failure rule
+    reads it.
+
+    ``answered`` is True when any leg returned a 304 or a 200 with a valid
+    envelope (installed or dropped by the reject-older guard). ``auth_status``
+    is the primary leg's status when the cycle is a rejecting one (R2: no leg
+    answered and the primary returned an auth-class status), else 0;
+    ``auth_host`` is then the primary's host[:port], never the key.
+    """
+
+    installed: bool = False
+    answered: bool = False
+    auth_status: int = 0
+    auth_host: str = ""
+
+
 @dataclass
 class LegResult:
     """One hedged leg's outcome. Exactly one LegResult is emitted per fired leg;
@@ -149,6 +185,10 @@ class LegResult:
     envelope: Optional[ConfigEnvelope] = None
     not_changed: bool = False
     error: Optional[Exception] = None
+    # HTTP status the leg answered with, or 0 when no response came back
+    # (connection error, timeout). The auth-failure rule reads the primary
+    # leg's status (qfg-goi1.10.25).
+    status: int = 0
 
 
 class Transport:
@@ -312,6 +352,7 @@ class Transport:
         if etag:
             headers["If-None-Match"] = etag
 
+        status = 0
         try:
             url = f"{base_url}/api/v2/configs"
             # ``abort`` is a WALL-CLOCK deadline over the whole leg — connect +
@@ -321,10 +362,11 @@ class Transport:
             # deadline (qfg-41nh.10).
             deadline = time.monotonic() + abort
             response = self._session.get(url, headers=headers, timeout=abort, stream=True)
+            status = response.status_code
             try:
                 if response.status_code == 304:
                     self.last_fetch_index = idx
-                    return LegResult(source_index=idx, not_changed=True)
+                    return LegResult(source_index=idx, not_changed=True, status=status)
                 response.raise_for_status()
                 new_etag = response.headers.get("ETag")
                 body = _read_body_within_deadline(response, deadline)
@@ -342,7 +384,7 @@ class Transport:
                 with self._etag_lock:
                     self._etags[base_url] = new_etag
             self.last_fetch_index = idx
-            return LegResult(source_index=idx, envelope=envelope)
+            return LegResult(source_index=idx, envelope=envelope, status=status)
         except Exception as e:  # noqa: BLE001
             # Every failure of a leg is a leg error, including urllib3 errors
             # raised mid-body by ``raw.read1`` (truncated/reset body ->
@@ -350,7 +392,7 @@ class Transport:
             # not wrap. Letting one escape killed the leg thread before it put a
             # result, so the hedge waited out its whole drain budget
             # (qfg-goi1.2.13).
-            return LegResult(source_index=idx, error=e)
+            return LegResult(source_index=idx, error=e, status=status)
 
     def fetch_hedged(
         self,
@@ -505,8 +547,30 @@ class FallbackPoller:
         on_config_update: Optional[Callable[[], None]] = None,
         install: Optional[Callable[["ConfigEnvelope"], bool]] = None,
         refresh: Optional[Callable[[], bool]] = None,
+        wait_hook: Optional[Callable[[str, float], float]] = None,
+        cycle: Optional[Callable[[], CycleOutcome]] = None,
+        on_auth_failed: Optional[Callable[[int, str], None]] = None,
+        on_auth_recovered: Optional[Callable[[], None]] = None,
+        polling_mode: bool = False,
     ) -> None:
         self._transport = transport
+        # Test seam (supervisor contract Test 8): maps each requested wait to
+        # the duration actually waited. ``None`` in production.
+        self._wait_hook = wait_hook
+        # Auth-failure rule (qfg-goi1.10.25, R2-R6). ``cycle`` runs one hedged
+        # fetch cycle and reports how the legs answered; it supersedes
+        # ``refresh`` when wired. A cycle with no 200/304 on any leg and an
+        # auth-class status on the primary puts the poller in the auth-failed
+        # regime: ``on_auth_failed(status, host)`` stops SSE and logs the one
+        # ERROR, the poller then sends one probe cycle per T in [150s, 300s]
+        # (``max(T, interval)`` in ``polling_mode``) until a leg answers, then
+        # ``on_auth_recovered()`` restarts SSE. The flag lives here, on the
+        # poller, and is never latched.
+        self._cycle = cycle
+        self._on_auth_failed = on_auth_failed
+        self._on_auth_recovered = on_auth_recovered
+        self._polling_mode = polling_mode
+        self._auth_failed = False
         self._store = store
         self._interval = interval_seconds
         self._shutdown = shutdown_event
@@ -535,8 +599,17 @@ class FallbackPoller:
         return self._interval
 
     def is_active(self) -> bool:
+        """True while the poller is polling. False while auth-failed: the
+        poller does not run then, only the slow probe does (R3, R6)."""
         with self._lock:
+            if self._auth_failed:
+                return False
             return self._thread is not None and self._thread.is_alive()
+
+    def auth_failed(self) -> bool:
+        """True while the client is in the auth-failed regime (R2-R4)."""
+        with self._lock:
+            return self._auth_failed
 
     def engage(self, reason: str) -> bool:
         """Start polling. No-op (returns False) if already running."""
@@ -580,22 +653,85 @@ class FallbackPoller:
         # SSE-loss at grace + interval (~180s) vs ~120s in sdk-go. The engage-
         # right-after-init case is harmless: the leg ETags turn it into a 304.
         while not stop_event.is_set() and not self._shutdown.is_set():
-            self._poll_once()
+            outcome = self._poll_once()
+            if outcome is not None and outcome.auth_status:
+                if not self._run_auth_failed(stop_event, outcome):
+                    return
+                # Polling mode: resume at the interval, no immediate fetch.
             # Wait the interval AFTER the fetch; lets disengage() short-circuit
             # a sleeping cycle.
-            if stop_event.wait(self._interval):
+            if stop_event.wait(self._requested_wait("poll", self._interval)):
                 return
             if self._shutdown.is_set():
                 return
 
-    def _poll_once(self) -> None:
+    def _run_auth_failed(self, stop_event: threading.Event, entering: CycleOutcome) -> bool:
+        """Auth-failed regime (R3-R5), run on the poller thread. Returns True
+        to keep polling on this thread (polling mode, after exit) and False
+        when the thread must end (stopped, closed, or SSE mode after exit, where
+        SSE is restarted and the poller goes back to its normal engage rule)."""
+        with self._lock:
+            self._auth_failed = True
+        if self._on_auth_failed is not None:
+            try:
+                self._on_auth_failed(entering.auth_status, entering.auth_host)
+            except Exception as e:  # noqa: BLE001 — must not kill the probe loop
+                _LOG.debug("auth-failed entry hook raised: %s: %s", type(e).__name__, e)
         try:
+            while True:
+                period = random.uniform(AUTH_PROBE_MIN_SECONDS, AUTH_PROBE_MAX_SECONDS)
+                if self._polling_mode:
+                    period = max(period, self._interval)
+                if stop_event.wait(self._requested_wait("probe", period)):
+                    return False
+                if self._shutdown.is_set():
+                    return False
+                outcome = self._poll_once()
+                if outcome is not None and outcome.answered:
+                    break
+                _LOG.debug(
+                    "[quonfig] auth-failed probe rejected (HTTP %s); next probe in %d-%ds",
+                    outcome.auth_status if outcome is not None and outcome.auth_status else "error",
+                    int(AUTH_PROBE_MIN_SECONDS),
+                    int(AUTH_PROBE_MAX_SECONDS),
+                )
+        finally:
+            with self._lock:
+                self._auth_failed = False
+                if not self._polling_mode and self._stop_event is stop_event:
+                    # SSE mode: release the slot before SSE restarts, so the
+                    # restarted stream's state edges can engage a new poller.
+                    self._stop_event = None
+                    self._thread = None
+        if self._polling_mode:
+            _LOG.info("[quonfig] config fetch accepted; leaving auth-failed and resuming polling")
+            return True
+        _LOG.info(
+            "[quonfig] config fetch accepted; leaving auth-failed and resuming streaming "
+            "and polling"
+        )
+        if self._on_auth_recovered is not None:
+            try:
+                self._on_auth_recovered()
+            except Exception as e:  # noqa: BLE001
+                _LOG.debug("auth-failed exit hook raised: %s: %s", type(e).__name__, e)
+        return False
+
+    def _requested_wait(self, kind: str, seconds: float) -> float:
+        if self._wait_hook is not None:
+            return self._wait_hook(kind, seconds)
+        return seconds
+
+    def _poll_once(self) -> Optional[CycleOutcome]:
+        try:
+            if self._cycle is not None:
+                return self._cycle()
             if self._refresh is not None:
                 # Hedged path (qfg-7h5d.1.14): the refresh callable installs
                 # through the reject-older guard and fires on_config_update
                 # itself, so there is nothing more to do here.
                 self._refresh()
-                return
+                return None
             etag = self._store.get_etag()
             envelope = self._transport.fetch(etag=etag)
             if envelope is not None:
@@ -620,3 +756,4 @@ class FallbackPoller:
                 type(e).__name__,
                 e,
             )
+        return None

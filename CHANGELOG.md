@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **UPGRADE: retry cadence and log levels change after a rejected
+  401/403/404/410 fetch cycle; a revoked key logs one config ERROR (minor,
+  qfg-goi1.10.25).** Release note for Jeff: ship in a release of its own. The
+  cross-SDK auth-failure rule (plan
+  project/plans/2026-10-07-sdk-auth-failure-rule.md R1-R6; supervisor contract
+  Test 8 in integration-test-data v2026.10.16), matching sdk-go.
+  - A fallback-poll cycle (or a poll with `enable_sse=False`) in which no leg
+    returned 200/304 and the primary leg returned 401, 403, 404 or 410 puts the
+    client in an internal auth-failed regime. Primary 401 + secondary 503 or
+    timeout enters; primary 503 + secondary 401 does not. The init fetch,
+    `refresh()` and SSE never enter it, and SSE behaves as before until then.
+  - While auth-failed, SSE is stopped and the fallback poller does not run.
+    One probe cycle across every leg runs every 150-300s (re-drawn each time,
+    `max(T, fallback_poll_interval_ms)` with SSE disabled), for as long as the
+    process lives: no doubling, no latch. Before, the poller kept fetching every
+    60s (~2-3 requests/min with SSE retries) with failures at DEBUG.
+  - The entering cycle logs one ERROR naming the status and the primary host
+    (never the key); each rejected probe logs DEBUG. The first probe with a
+    valid 200 or a 304 on any leg installs, logs one INFO and restarts SSE from
+    its base backoff.
+  - `connection_state()` is `disconnected` while auth-failed (never
+    `falling_back`) and `fallback_poller_active()` is `False`. No new state
+    value or getter.
+
 - **UPGRADE: may change who matches a targeting rule. One set of rule-operator
   semantics across the SDKs (minor, qfg-goi1.5.4).** Pinned by
   integration-test-data v2026.10.16.1 (OPERATOR EDGES block); matches sdk-go
