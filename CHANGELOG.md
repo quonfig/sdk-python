@@ -31,6 +31,21 @@
   Before this change, a server that answered 200 and closed at once made the
   SDK reconnect in a tight loop and keep stale config indefinitely.
 
+### Fixed (patch)
+
+- SSE: the reconnect backoff resets after a connection that delivered a frame
+  even when that connection then dies with an IO error (a reset, a truncated
+  chunk, a read timeout), not only after a clean end. Before this fix, which
+  only affected the unreleased parser above, each such blip doubled the delay
+  until every reconnect waited 30 s (qfg-y0lf; supervisor contract Test 2).
+- Dependencies: declare `urllib3 >= 2.3`. It was already pulled in through
+  `requests`, which accepts urllib3 1.21.1 and up, but the SSE parser needs
+  urllib3 2.2's `read1` to see a lone keepalive at once, and `close()` needs
+  2.3's `shutdown()` to close the live SSE connection. On older urllib3,
+  `close()` left the SSE socket open until the next keepalive or the 60 s
+  read timeout. If another dependency pins urllib3 below 2.3, the resolver
+  now reports the conflict (qfg-pfmi).
+
 ### Changed (minor)
 
 - SSE: own `text/event-stream` parser, so keepalive comments are seen (they

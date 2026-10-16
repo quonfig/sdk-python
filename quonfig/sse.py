@@ -42,9 +42,10 @@ def _iter_body(response: requests.Response) -> Iterator[bytes]:
 
     ``iter_content(n)`` on a close-delimited (non-chunked) response blocks
     until ``n`` bytes or EOF, so a lone keepalive could sit unread for many
-    keepalive intervals. urllib3 2.x's ``read1`` returns as soon as any bytes
-    are available, chunked or not; older urllib3 falls back to
-    ``iter_content`` (chunked streams still yield per chunk there)."""
+    keepalive intervals. urllib3's ``read1`` (2.2+; the declared floor is
+    2.3) returns as soon as any bytes are available, chunked or not. The
+    ``iter_content`` branch is only for response objects without a urllib3
+    ``raw`` (test doubles); it is not an old-urllib3 path."""
     raw = getattr(response, "raw", None)
     read1 = getattr(raw, "read1", None)
     if not callable(read1):
@@ -69,8 +70,9 @@ def _clean_eof_reconnect_sleep() -> float:
 
 def _close_response(response: requests.Response) -> None:
     """Close a streaming response, first unblocking any thread parked in its
-    read (urllib3 >= 2.3 ``HTTPResponse.shutdown``; a plain close does not
-    reliably wake a blocked ``recv`` on Linux)."""
+    read (``HTTPResponse.shutdown``, urllib3 2.3+, the declared floor; a
+    plain close does not reliably wake a blocked ``recv`` on Linux). The
+    ``getattr`` guard only tolerates test doubles without a ``raw``."""
     try:
         shutdown = getattr(getattr(response, "raw", None), "shutdown", None)
         if callable(shutdown):
@@ -124,6 +126,13 @@ class SSEClient:
         # the 60 s read timeout (qfg-goi1.2.13).
         self._response: Optional[requests.Response] = None
         self._response_lock = threading.Lock()
+        # Whether the current connection has delivered a valid frame. Set as a
+        # side effect by ``_parse_stream`` (not only via its return value), so
+        # a stream that delivered frames and then died with an IO error (a
+        # reset, a truncated chunk, a read timeout) still counts as a
+        # successful run and resets the backoff (supervisor contract
+        # Test 2 Reset; sdk-go sse_client.go connectOnce).
+        self._frame_seen = False
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, daemon=True, name="quonfig-sse")
@@ -182,9 +191,11 @@ class SSEClient:
         its ``events()`` never dispatches a block with no data, so a keepalive
         was invisible.
 
-        At the first frame the connection counts as connected: the caller's
-        backoff resets (it reads the return value) and, if ``announce``, the
-        ``connected`` edge is emitted, before that frame's envelope installs.
+        At the first frame the connection counts as connected: it sets
+        ``self._frame_seen`` (so the caller's backoff resets even if the stream
+        later dies with an IO error, which never returns here) and, if
+        ``announce``, the ``connected`` edge is emitted, before that frame's
+        envelope installs.
         """
         frame_seen = False
         buf = b""
@@ -197,6 +208,7 @@ class SSEClient:
             if frame_seen:
                 return
             frame_seen = True
+            self._frame_seen = True
             if announce:
                 self._emit("connected")
 
@@ -325,15 +337,17 @@ class SSEClient:
                 # 200 headers alone are not "connected": that waits for the
                 # first valid frame (qfg-goi1.10.44). Between the headers and
                 # the frame the public state stays what it was.
-                frame_seen = False
+                self._frame_seen = False
                 try:
-                    frame_seen = self._parse_stream(_iter_body(response), announce=not silent)
+                    self._parse_stream(_iter_body(response), announce=not silent)
                 finally:
-                    if frame_seen:
-                        backoff = 1.0  # a frame made this a successful run
+                    # A frame made this a successful run, however the stream
+                    # then ended (clean EOF or IO error).
+                    if self._frame_seen:
+                        backoff = 1.0
                 if self.shutdown_event.is_set():
                     break
-                if not frame_seen:
+                if not self._frame_seen:
                     raise _FramelessStreamError("stream ended before its first frame")
                 # Clean EOF after a frame: reconnect transparently (no edge).
                 _LOG.debug(

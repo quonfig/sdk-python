@@ -10,6 +10,10 @@ packages = [{include = "quonfig"}]
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
 requests = ">=2.33.0"
+# urllib3 is transitive (via requests, which accepts >=1.21.1), but the SSE
+# parser needs HTTPResponse.read1 (2.2+) to see a lone keepalive at once, and
+# close() needs HTTPResponse.shutdown() (2.3+) to wake the blocked SSE read.
+urllib3 = ">=2.3"
 mmh3 = ">=3.0.0,<6.0.0"
 # >=48.0.1 floors out GHSA-537c-gmf6-5ccf (bundled OpenSSL CVE in the 48.0.0
 # wheel); pip-audit in CI fails on anything below. cryptography is transitive
