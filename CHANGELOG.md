@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased
+## 1.8.0 - 2026-10-16
+
+### Upgrade notes
 
 - **UPGRADE: retry cadence and log levels change after a rejected
   401/403/404/410 fetch cycle; a revoked key logs one config ERROR (minor,
-  qfg-goi1.10.25).** Release note for Jeff: ship in a release of its own. The
-  cross-SDK auth-failure rule (plan
+  qfg-goi1.10.25).** The cross-SDK auth-failure rule (plan
   project/plans/2026-10-07-sdk-auth-failure-rule.md R1-R6; supervisor contract
   Test 8 in integration-test-data v2026.10.16), matching sdk-go.
   - A fallback-poll cycle (or a poll with `enable_sse=False`) in which no leg
@@ -58,16 +59,9 @@
     either side, so `semver equal 2.0.0` now matches `"2.0"`. A `v` prefix is
     still not a version.
 
-- **ENV_VAR coercion error text follows the cross-SDK template (patch).** A
-  malformed ENV_VAR value now raises/logs
-  `environment variable "<NAME>" cannot be converted to <type> for config "<key>"`
-  (was `Environment-variable value for '<key>' could not be coerced to <type>`).
-  The env value itself is still never included. Pinned by
-  integration-test-data v2026.10.12 (qfg-goi1.10.22).
 - **UPGRADE: may change returned values. An ENV_VAR inside a weighted
-  variant is coerced to the config's value type (minor).** Release note for
-  Jeff: ship in a release of its own, separate from the patch entries and the
-  WS8 rule set. A weighted rollout whose selected variant is
+  variant is coerced to the config's value type (minor).** A weighted
+  rollout whose selected variant is
   `{"type": "provided", "source": "ENV_VAR"}` returned the raw env string,
   so `get("flag")` on an `int` config returned `"42"` and on a `bool` config
   returned `"false"` (truthy). It is now coerced like a non-weighted ENV_VAR
@@ -76,9 +70,7 @@
 
 - **UPGRADE: may change returned values. Skip one bad config instead of the
   whole envelope; validate weights at decode; `get_json` returns a copy
-  (minor, WS8).** Release note for Jeff: this is the WS8 rule set; ship it in
-  a release of its own, not bundled with the patch entries below (confirm at
-  publish time whether copy-on-return goes out separately, per Q3b).
+  (minor, WS8).**
   - A config in an HTTP or SSE payload that fails to decode is now skipped
     with a WARN naming its key, and the rest of the payload installs. Before,
     one bad config rejected the whole payload, which blocked init or froze the
@@ -96,6 +88,15 @@
     call now returns a new object (`is` identity differs between calls), and
     each read pays for the copy, which is noticeable on very large JSON
     values. Matches sdk-go 543ee9c (qfg-goi1.10.5).
+
+### Other changes
+
+- **ENV_VAR coercion error text follows the cross-SDK template (patch).** A
+  malformed ENV_VAR value now raises/logs
+  `environment variable "<NAME>" cannot be converted to <type> for config "<key>"`
+  (was `Environment-variable value for '<key>' could not be coerced to <type>`).
+  The env value itself is still never included. Pinned by
+  integration-test-data v2026.10.12 (qfg-goi1.10.22).
 
 - **Fix: `Quonfig()` no longer raises when the home directory cannot be
   determined (patch).** With no `HOME` and no password-database entry (some
