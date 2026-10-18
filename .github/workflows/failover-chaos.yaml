@@ -112,7 +112,7 @@ jobs:
 
       - name: Install Poetry
         if: env.HAS_REPO_TOKEN == 'true'
-        uses: snok/install-poetry@76e04a911780d5b312d89783f7b1cd627778900a  # v1
+        uses: snok/install-poetry@a783c322200f0519c7926aa6faa857c4e23e9263  # v1
         with:
           version: "1.8.3"
           virtualenvs-create: true
@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload chaos logs on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: failover-chaos-logs-${{ github.run_id }}
           path: |
