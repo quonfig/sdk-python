@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A fast boot failure now honors `on_init_failure="raise"` (patch,
+  qfg-9p4i.1).** When every delivery leg failed fast at boot (connection
+  refused, DNS failure, 401, 5xx), init latched with an empty store and the
+  default `on_init_failure="raise"` silently served code defaults. Getters now
+  raise `QuonfigInitTimeoutError` (the existing init error) at once, without
+  waiting out `init_timeout_ms`, and keep raising until a config loads. The
+  client keeps retrying in the background over SSE / the fallback poller; once
+  a config installs, getters serve it. One ERROR is logged naming each leg's
+  host and error (never the SDK key). `on_init_failure="return"` /
+  `"return_zero_value"` is unchanged: it still starts on code defaults.
+
 ## 1.9.0 - 2026-10-20
 
 ### Upgrade notes

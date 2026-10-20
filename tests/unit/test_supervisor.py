@@ -256,15 +256,26 @@ def index(ev: List[Event], start: int, kind: str, nth: int = 1) -> int:
     return -1
 
 
+# The init-failure ERROR (qfg-9p4i.1) is the init contract, not the auth-failure
+# rule these tests pin. In polling mode the initial fetch and the poller's first
+# tick race for the rig's cycle-1 200, so whether the init fetch logs it is
+# timing-dependent; the auth-rule log assertions ignore it.
+_INIT_FAILED_PREFIX = "[quonfig] init FAILED"
+
+
+def _rule_log(e: Event, level: int) -> bool:
+    return e.kind == "log" and e.level == level and not e.msg.startswith(_INIT_FAILED_PREFIX)
+
+
 def log_index(ev: List[Event], start: int, level: int) -> int:
     for i in range(max(start, 0), len(ev)):
-        if ev[i].kind == "log" and ev[i].level == level:
+        if _rule_log(ev[i], level):
             return i
     return -1
 
 
 def logs(ev: List[Event], level: int) -> List[str]:
-    return [e.msg for e in ev if e.kind == "log" and e.level == level]
+    return [e.msg for e in ev if _rule_log(e, level)]
 
 
 def waits(ev: List[Event], kind: str) -> List[float]:
