@@ -5,6 +5,7 @@ import datetime
 import logging
 import os
 import threading
+import time
 import uuid
 import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
@@ -383,6 +384,13 @@ class Quonfig:
         self._shutdown = threading.Event()
         self._initialized = threading.Event()
         self._init_error: Optional[Exception] = None
+        # The initial HTTP fetch finished with nothing installed (every leg
+        # failed fast: refused, DNS, 401, 5xx). Under on_init_failure="raise"
+        # getters raise until a config installs, instead of silently serving
+        # code defaults (qfg-9p4i.1). ``_init_leg_errors`` is the
+        # ``primary=<host>: <error>; secondary=...`` summary for the message.
+        self._init_failed = False
+        self._init_leg_errors = ""
         # ``init()`` has been called at least once. Read by the at-fork hook:
         # a client that was constructed but never started has no background
         # components to rebuild, and must not be started behind the caller's
@@ -1093,11 +1101,14 @@ class Quonfig:
         answered = False
         primary_status = 0
         fired = 0
+        leg_errors: List[str] = []
         for lr in self._transport.fetch_hedged():
             fired += 1
             if lr.source_index == 0:
                 primary_status = lr.status
             if lr.error is not None:
+                if initial:
+                    leg_errors.append(self._describe_leg_error(lr))
                 continue
             answered = True
             if lr.not_changed:
@@ -1128,11 +1139,28 @@ class Quonfig:
         # payload won the guard. Mirrors sdk-go's `fired > 1` check.
         if fired > 1 and self._telemetry is not None:
             self._telemetry.record_hedge_fired()
+        if initial:
+            self._init_leg_errors = "; ".join(leg_errors)
         outcome = CycleOutcome(installed=installed_once, answered=answered)
         if not answered and is_auth_class_status(primary_status):
             outcome.auth_status = primary_status
             outcome.auth_host = _host_of(self._transport.api_urls[0])
         return outcome
+
+    def _describe_leg_error(self, lr: Any) -> str:
+        """``<leg>=<host>: <error>`` for the init-failure log and error
+        message. Hosts only; the SDK key is sent in a header and never logged."""
+        name = {0: "primary", 1: "secondary"}.get(lr.source_index, f"leg{lr.source_index}")
+        host = "?"
+        if self._transport is not None and lr.source_index < len(self._transport.api_urls):
+            host = _host_of(self._transport.api_urls[lr.source_index])
+        if lr.status:
+            detail = f"HTTP {lr.status}"
+        else:
+            detail = f"{type(lr.error).__name__}: {lr.error}"
+            if len(detail) > 200:
+                detail = detail[:197] + "..."
+        return f"{name}={host}: {detail}"
 
     def _start_sse(self) -> None:
         """Start a new SSE stream. Each stream gets its own stop event, so
@@ -1273,8 +1301,12 @@ class Quonfig:
         ``_wait_initialized`` would never see an unset event.
         """
         assert self._transport is not None
+        self._init_failed = False
+        self._init_leg_errors = ""
+        init_started = time.monotonic()
 
         def _initial_fetch() -> None:
+            installed = False
             try:
                 # Parallel-failover hedge (qfg-7h5d.1.14): fire the primary first
                 # and, only if it is slow past hedge_delay OR errors fast, also
@@ -1284,8 +1316,9 @@ class Quonfig:
                 # both-legs-fail path nothing installs and the finally below
                 # latches init so on_init_failure applies — preserving the
                 # init-failure contract for the both-fail case.
-                self._fetch_and_install_hedged(initial=True)
+                installed = self._fetch_and_install_hedged(initial=True)
             except Exception as e:
+                self._init_leg_errors = f"{type(e).__name__}: {e}"
                 # The update channel is started regardless (see below) so a
                 # client that missed its initial fetch can still heal forward.
                 logger.warning(
@@ -1294,6 +1327,20 @@ class Quonfig:
                     "SSE" if self._enable_sse else "HTTP poll",
                 )
             finally:
+                # Every leg failed fast and nothing installed meanwhile (a
+                # background channel may have healed first). Mark the failure
+                # BEFORE latching init so a getter woken by the latch sees it.
+                if not installed and self._store.install_count() == 0:
+                    self._init_failed = True
+                    if self._on_init_failure == "raise":
+                        logger.error(
+                            "[quonfig] init FAILED: no config after %.1fs. %s. "
+                            "on_init_failure=raise: getters raise QuonfigInitTimeoutError "
+                            "until a config loads; retrying in the background. Options: "
+                            'on_init_failure="return" to start on code defaults.',
+                            time.monotonic() - init_started,
+                            self._init_leg_errors or "no delivery leg answered",
+                        )
                 self._finish_init()
 
         threading.Thread(target=_initial_fetch, daemon=True, name="quonfig-init").start()
@@ -1366,6 +1413,19 @@ class Quonfig:
                     )
                 # return_zero_value: best effort with partial data
                 self._finish_init()
+        if (
+            self._init_failed
+            and self._on_init_failure == "raise"
+            and self._store.install_count() == 0
+        ):
+            # Fast total failure at boot (qfg-9p4i.1): raise now rather than
+            # serve code defaults. The client keeps retrying in the background
+            # (SSE / fallback poller); once a config installs this stops.
+            raise QuonfigInitTimeoutError(
+                "Quonfig failed to initialize: no config could be loaded "
+                f"({self._init_leg_errors or 'no delivery leg answered'}). "
+                "Retrying in the background."
+            )
 
     # ------------------------------------------------------------------
     # Context helpers
