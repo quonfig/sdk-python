@@ -460,7 +460,7 @@ def _run_rig_scenario(
             sdk_key="test-backend-key",
             api_urls=[primary_url, secondary_url],
             init_timeout_ms=RIG_INIT_TIMEOUT_MS,
-            on_init_failure="return_zero_value",
+            on_init_failure="continue",
             collect_evaluation_summaries=False,
             context_upload_mode="none",
             # Ordering rig: a short fallback-poll interval models ongoing config

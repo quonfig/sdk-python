@@ -74,8 +74,11 @@ def _make_client(**overrides: Any) -> Quonfig:
         context_upload_mode="none",
         fallback_poll_enabled=True,
         fallback_poll_interval_ms=60000,
-        init_timeout_ms=8000,
-        on_init_failure="return_zero_value",
+        # 2.0.0: init() blocks until a config loads or the timeout passes
+        # (qfg-9p4i.8). Most stubs below install nothing, so keep the
+        # continue window short.
+        init_timeout_ms=300,
+        on_init_failure="continue",
     )
     kwargs.update(overrides)
     return Quonfig(**kwargs)

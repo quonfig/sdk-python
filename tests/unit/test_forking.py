@@ -1117,6 +1117,10 @@ def test_r3_child_rebuilds_once_on_first_use_and_serves_its_own_fetch() -> None:
             # First evaluation: blocks on the child's own init + fetch.
             value = client.get_string("no.such.key", default="fallback")
             client.get_string("no.such.key", default="fallback")
+            # The poller engages when init() resolves (qfg-9p4i.8), so its
+            # engage-time tick lands just after the first use; let it reach the
+            # server before this child exits.
+            time.sleep(0.5)
             send(
                 f"{before} value={value} gen={client.held_generation()} "
                 f"installs={client.config_install_count()} "
@@ -1494,10 +1498,10 @@ def test_p4_close_racing_the_first_use_rebuild_leaves_no_live_threads() -> None:
             original_rebuild = client._rebuild_in_child
             rebuild_started = threading.Event()
 
-            def slow_rebuild() -> None:
+            def slow_rebuild(**kwargs: Any) -> None:
                 rebuild_started.set()
                 time.sleep(0.3)  # close() lands in this window
-                original_rebuild()
+                original_rebuild(**kwargs)
 
             client._rebuild_in_child = slow_rebuild  # type: ignore[method-assign]
             result: dict = {}

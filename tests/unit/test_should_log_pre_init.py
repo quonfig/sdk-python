@@ -3,8 +3,10 @@ flight (qfg-goi1.2.30).
 
 The stdlib filter and structlog processor call it on every log record; it used
 to wait up to ``init_timeout_ms`` for init. Before init it now returns
-"no opinion" (allow) immediately; typed getters keep blocking. Matches sdk-java
-f8282de (getLogLevel returns empty before init).
+"no opinion" (allow) immediately. Matches sdk-java f8282de (getLogLevel returns
+empty before init). Since 2.0.0 (qfg-9p4i.8) ``init()`` itself blocks, so these
+tests run it on a background thread and log from another one while it is in
+flight.
 """
 
 from __future__ import annotations
@@ -93,7 +95,12 @@ def _client(url: str) -> Quonfig:
         context_upload_mode="none",
         collect_evaluation_summaries=False,
     )
-    client.init()
+    # init() blocks until the slow first fetch lands; run it off-thread so the
+    # test can call into the client while init is genuinely in flight.
+    threading.Thread(target=client.init, daemon=True, name="test-init").start()
+    deadline = time.monotonic() + 2.0
+    while not client._started and time.monotonic() < deadline:
+        time.sleep(0.005)
     return client
 
 
@@ -112,7 +119,8 @@ def test_should_log_logger_path_does_not_block_before_init(slow_server: str) -> 
         assert elapsed < 0.5, f"should_log blocked {elapsed:.2f}s while init was in flight"
         assert allowed is True
 
-        # Typed getters keep their blocking contract and init completes.
+        # Init completes once the slow fetch lands.
+        assert client.wait_for_ready(timeout_ms=10_000)
         assert client.get_string("plain") == "ok"
         # After init the configured level (ERROR) applies.
         assert client.should_log(logger_path="a.b", desired_level="INFO") is False

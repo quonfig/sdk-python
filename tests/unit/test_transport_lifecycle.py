@@ -7,8 +7,8 @@ Two bugs caught in code review:
 
 2. ``init_timeout_ms`` capped the per-request HTTP timeout. With a sub-second
    init timeout this surfaced as a generic ``requests.Timeout`` from the
-   background fetch (silently swallowed) instead of letting
-   ``_wait_initialized`` raise ``QuonfigInitTimeoutError``.
+   background fetch (silently swallowed) instead of letting ``init()`` raise
+   ``QuonfigInitTimeoutError``.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 from quonfig import Quonfig
-from quonfig.exceptions import QuonfigInitTimeoutError
 from quonfig.transport import Transport
 
 
@@ -46,7 +45,7 @@ def test_init_timeout_does_not_cap_request_timeout() -> None:
     )
     assert client._transport is not None
     # Request timeout stays at the per-URL config-fetch default (~3s, qfg-7h5d.1.8);
-    # the init-timeout is enforced by `_wait_initialized`, not by the per-request
+    # the init-timeout is enforced by `init()`, not by the per-request
     # timeout, so a tiny init_timeout_ms does NOT cap the request timeout.
     assert client._transport.timeout == 3.0
 
@@ -79,18 +78,15 @@ class _SlowServer:
         self._server.shutdown()
 
 
-def test_close_racing_an_in_flight_initial_fetch_still_raises() -> None:
-    """``close()`` on a NEVER-FORKED client must not latch init (qfg-b8kw).
+def test_close_during_a_blocking_init_returns_init_promptly_without_latching_ready() -> None:
+    """``close()`` on a NEVER-FORKED client whose init is still in flight
+    (qfg-b8kw, restated for 2.0.0 / qfg-9p4i.8).
 
-    1.4.0 added ``if not self._initialized.is_set(): self._finish_init()`` to
-    ``close()`` so a forked child closed before its first use answers defaults
-    instantly (covered by ``test_forking.py::test_p3_...``). That branch ran on
-    EVERY close, so on a live client with ``on_init_failure="raise"`` whose
-    initial fetch was still in flight, a getter blocked in ``_wait_initialized``
-    on another thread unblocked and returned its default instead of blocking to
-    ``init_timeout_ms`` and raising ``QuonfigInitTimeoutError``. The latch is
-    now scoped to the forked-child path, restoring the pre-1.4.0 semantics
-    here.
+    ``init()`` now blocks until a config loads or ``init_timeout_ms`` passes.
+    A ``close()`` from another thread during that wait must end the wait at
+    once: ``init()`` returns (the caller closed the client, so there is no
+    failure to report) instead of hanging on the slow fetch, and the client is
+    NOT reported ready, because nothing was installed.
     """
     server = _SlowServer()
     client = Quonfig(
@@ -98,37 +94,35 @@ def test_close_racing_an_in_flight_initial_fetch_still_raises() -> None:
         api_urls=[server.url],
         enable_sse=False,
         fallback_poll_enabled=False,
-        init_timeout_ms=1000,
-        on_init_failure="raise",
+        init_timeout_ms=10_000,
+        on_init_failure="fail",
         collect_evaluation_summaries=False,
         context_upload_mode="none",
     )
     outcome: list[str] = []
-    started = threading.Event()
 
-    def getter() -> None:
-        started.set()
+    def run_init() -> None:
         try:
-            outcome.append(f"value={client.get_string('k', default='D')}")
-        except QuonfigInitTimeoutError:
-            outcome.append("raised=QuonfigInitTimeoutError")
+            client.init()
+            outcome.append("returned")
         except BaseException as exc:  # noqa: BLE001 — reported, not raised
-            outcome.append(f"other={type(exc).__name__}")
+            outcome.append(f"raised={type(exc).__name__}")
 
     try:
-        client.init()
-        thread = threading.Thread(target=getter, daemon=True)
+        thread = threading.Thread(target=run_init, daemon=True)
         thread.start()
-        assert started.wait(timeout=5)
-        # Land close() well inside the 1000ms init window, while the getter is
-        # parked in _wait_initialized and the fetch is still in flight.
-        time.sleep(0.1)
+        # Land close() well inside the 10s init window, while the fetch is
+        # still in flight and init() is blocked on it.
+        time.sleep(0.3)
+        assert thread.is_alive(), "init() returned before the fetch settled"
+        start = time.monotonic()
         client.close()
-        thread.join(timeout=10)
-        assert not thread.is_alive(), "the getter never returned"
-        assert outcome == ["raised=QuonfigInitTimeoutError"], (
-            f"close() latched init on a never-forked client: {outcome}"
-        )
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "init() kept blocking after close()"
+        assert time.monotonic() - start < 2.0
+        assert outcome == ["returned"], outcome
+        assert client.is_ready() is False
+        assert client.get_string("k", default="D") == "D"
     finally:
         client.close()
         server.close()
