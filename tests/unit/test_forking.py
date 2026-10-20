@@ -1117,6 +1117,10 @@ def test_r3_child_rebuilds_once_on_first_use_and_serves_its_own_fetch() -> None:
             # First evaluation: blocks on the child's own init + fetch.
             value = client.get_string("no.such.key", default="fallback")
             client.get_string("no.such.key", default="fallback")
+            # The poller engages when init() resolves (qfg-9p4i.8), so its
+            # engage-time tick lands just after the first use; let it reach the
+            # server before this child exits.
+            time.sleep(0.5)
             send(
                 f"{before} value={value} gen={client.held_generation()} "
                 f"installs={client.config_install_count()} "

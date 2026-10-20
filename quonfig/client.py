@@ -445,6 +445,8 @@ class Quonfig:
         self._reset_init_state(ready=False)
         # Getter-before-init() WARN, once per client.
         self._warned_get_before_init = False
+        # Polling mode: engage the poller when init() resolves.
+        self._poll_engage_pending = False
         # ``init()`` has been called at least once. Read by the at-fork hook:
         # a client that was constructed but never started has no background
         # components to rebuild, and must not be started behind the caller's
@@ -1458,6 +1460,7 @@ class Quonfig:
         assert self._transport is not None
         ready = self._store.install_count() > 0
         self._reset_init_state(ready=ready)
+        self._poll_engage_pending = False
         self._init_started_at = time.monotonic()
         logger.debug(
             "[quonfig] init: fetching config (init_timeout_ms=%d, on_init_failure=%s)",
@@ -1523,13 +1526,14 @@ class Quonfig:
             # disengage on recovery) — see `_handle_sse_state_change`.
             self._start_sse()
         elif self._fallback_poller is not None:
-            # SSE is off, so the Layer 2 poller is the ONLY update channel —
-            # engage it now rather than waiting on `_handle_sse_state_change`,
-            # which can never fire without an SSE client (qfg-0xj3.1). Mirrors
-            # sdk-node's `engageFallbackPoller("sse-disabled")`. The poller
-            # fetches immediately on engage; that first tick racing the initial
-            # fetch is harmless (per-leg ETags + the reject-older guard).
-            self._fallback_poller.engage("sse-disabled")
+            # SSE is off, so the Layer 2 poller is the ONLY update channel. It
+            # is engaged when init() resolves (``_engage_polling_after_init``)
+            # rather than here: ``_handle_sse_state_change`` can never fire
+            # without an SSE client (qfg-0xj3.1), and an engage-time fetch
+            # racing the init loop could hand the init attempt a different
+            # answer than the poller got (qfg-9p4i.8). Mirrors sdk-node's
+            # `engageFallbackPoller("sse-disabled")`.
+            self._poll_engage_pending = True
 
         # Start telemetry
         if self._telemetry is not None:
@@ -1568,9 +1572,25 @@ class Quonfig:
         self._evaluator = Evaluator(self._store, self._environment)
         self._initialized.set()
 
+    def _engage_polling_after_init(self) -> None:
+        """Polling mode (``enable_sse=False``): engage the poller once init()
+        resolves, whatever the outcome. Its engage-time fetch is a 304 after a
+        successful init, and the retry channel after a failed one."""
+        if not self._poll_engage_pending:
+            return
+        self._poll_engage_pending = False
+        if self._fallback_poller is not None and not self._shutdown.is_set():
+            self._fallback_poller.engage("sse-disabled")
+
     def _await_init(self) -> None:
         """Block the ``init()`` caller until a config loads, or until
         ``on_init_failure`` resolves the wait (design sections B.3 and C)."""
+        try:
+            self._await_init_inner()
+        finally:
+            self._engage_polling_after_init()
+
+    def _await_init_inner(self) -> None:
         started = self._init_started_at or time.monotonic()
         timeout_s = max(self._init_timeout_ms, 0) / 1000.0
         deadline = started + timeout_s
@@ -1633,6 +1653,11 @@ class Quonfig:
     def _resolve_init_unready(self, *, auth: bool) -> None:
         """init() ends with no config under ``fail`` or ``continue``: log the
         contract line, keep the client retrying, and raise under ``fail``."""
+        if self._ready.is_set():
+            # Another channel installed a config while this attempt failed.
+            self._init_loop_stop.set()
+            self._finish_init()
+            return
         elapsed = time.monotonic() - (self._init_started_at or time.monotonic())
         errs = self._init_leg_errors or "no delivery leg answered"
         mode = self._on_init_failure
