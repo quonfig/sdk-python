@@ -29,3 +29,20 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # Runtime dependencies of the published package (main group, not dev).
+      # Our constraint is the floor customers must install, so a major bump
+      # here forces every customer onto that major. Raise these floors
+      # deliberately in a release, not via Dependabot.
+      - dependency-name: "requests"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "urllib3"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "mmh3"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "cryptography"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "watchfiles"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "structlog"
+        update-types: ["version-update:semver-major"]
