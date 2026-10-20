@@ -373,7 +373,7 @@ Details, if you need them:
   rebuilt.
 - A client you **closed** before forking stays closed in the child. Calling
   `close()` in a child before its first use is instant, and getters after it
-  return their defaults immediately instead of blocking `init_timeout_ms`.
+  return their defaults immediately.
 - A client you **constructed but never `init()`ed** is not started behind your
   back — but you can start it yourself. Construct it in the master and call
   `init()` in the child (Gunicorn's `post_fork`, Celery's `worker_process_init`)
@@ -526,6 +526,39 @@ rate-limit map, and the 2MB retained queue.
 
 `None` or a non-positive value means the default.
 
+## Init failure
+
+`init()` blocks until the first config loads, retrying for up to
+`init_timeout_ms` (default 10s). If no config loads by then,
+`on_init_failure` decides what happens:
+
+| `on_init_failure` | At the timeout | 401/403 from every leg |
+|---|---|---|
+| `"fail"` (default) | raises `QuonfigInitError` (`QuonfigInitTimeoutError` if no leg answered) | raises at once (`reason="unauthorized"`) |
+| `"wait"` | keeps blocking and retrying | logs an ERROR and keeps retrying |
+| `"continue"` | returns; getters serve code defaults | returns at once |
+
+```python
+from quonfig import Quonfig, QuonfigInitError
+
+client = Quonfig(sdk_key="sdk-...", on_init_failure="fail", init_timeout_ms=10_000)
+try:
+    client.init()
+except QuonfigInitError as e:
+    print(e.reason)  # "unavailable" | "unauthorized" | "timeout"
+    raise
+```
+
+Getters never block on init. Before the first config they return your default
+(or apply `on_no_default`). A client you keep after a caught
+`QuonfigInitError` keeps retrying in the background and heals on its own:
+check `client.is_ready()` or block on `client.wait_for_ready(timeout_ms=...)`.
+Under `"wait"` or `"continue"`, wire your readiness probe to `is_ready()`.
+
+The 1.x spellings `"raise"` (= `"fail"`) and `"return"` /
+`"return_zero_value"` (= `"continue"`) still work and log a one-time
+deprecation WARN.
+
 ## Configuration
 
 | Param | Env var | Default |
@@ -536,7 +569,7 @@ rate-limit map, and the 2MB retained queue.
 | `environment` | `QUONFIG_ENVIRONMENT` | `""` |
 | `datadir` | `QUONFIG_DIR` | `None` |
 | `init_timeout_ms` | -- | `10_000` |
-| `on_init_failure` | -- | `"raise"` |
+| `on_init_failure` | -- | `"fail"` (see [Init failure](#init-failure)) |
 | `on_no_default` | -- | `"error"` |
 | `logger_key` | -- | `None` |
 | `enable_sse` | -- | `True` |

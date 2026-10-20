@@ -4,12 +4,15 @@ import contextlib
 import datetime
 import logging
 import os
+import random
 import threading
 import time
 import uuid
 import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from urllib.parse import urlsplit
+
+import requests
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -29,6 +32,7 @@ from .exceptions import (
     QuonfigDecryptionError,
     QuonfigEnvVarCoerceError,
     QuonfigEnvVarNotSetError,
+    QuonfigInitError,
     QuonfigInitTimeoutError,
     QuonfigKeyNotFoundError,
 )
@@ -107,6 +111,57 @@ def _coerce_value(value: Any, expected_type: str) -> tuple[Any, bool]:
 _DEFAULT_DOMAIN = "quonfig.com"
 
 
+# on_init_failure (qfg-9p4i.8, 2.0.0). Spec:
+# project/plans/2026-10-05-init-failure-design.md sections B.1-B.3.
+_INIT_FAILURE_MODES = ("fail", "wait", "continue")
+# Deprecated 1.x spellings, accepted with a one-time WARN (B.2).
+_INIT_FAILURE_ALIASES = {"raise": "fail", "return": "continue", "return_zero_value": "continue"}
+# Aliases already warned about in this process (one WARN each, not per client).
+_WARNED_INIT_ALIASES: Set[str] = set()
+_WARNED_INIT_ALIASES_LOCK = threading.Lock()
+
+
+def _normalize_on_init_failure(value: Optional[str]) -> str:
+    """Canonical mode for an ``on_init_failure`` spelling. A leading ``:``
+    (the old YAML / Ruby-symbol form) and case are ignored. Unknown values
+    raise ``ValueError`` so a typo cannot silently select a mode."""
+    raw = "fail" if value is None else str(value)
+    spelled = raw.lstrip(":").strip().lower()
+    if spelled in _INIT_FAILURE_MODES:
+        return spelled
+    if spelled in _INIT_FAILURE_ALIASES:
+        canonical = _INIT_FAILURE_ALIASES[spelled]
+        with _WARNED_INIT_ALIASES_LOCK:
+            first = spelled not in _WARNED_INIT_ALIASES
+            _WARNED_INIT_ALIASES.add(spelled)
+        if first:
+            logger.warning(
+                '[quonfig] on_init_failure="%s" is deprecated; use "%s"',
+                spelled,
+                canonical,
+                extra={"quonfig_event": "quonfig.init.deprecated_option"},
+            )
+        return canonical
+    raise ValueError(
+        f"on_init_failure must be one of fail, wait, continue (got {value!r}); "
+        "raise, return and return_zero_value are deprecated aliases"
+    )
+
+
+def _fmt_seconds(ms: int) -> str:
+    """``10000`` -> ``10s``, ``500`` -> ``0.5s`` (log-line timeout rendering)."""
+    secs = ms / 1000.0
+    return f"{secs:.0f}s" if secs == int(secs) else f"{secs:g}s"
+
+
+def _fmt_since(seconds: float) -> str:
+    """``42`` -> ``42s``, ``330`` -> ``5m30s``."""
+    whole = int(seconds)
+    if whole < 60:
+        return f"{whole}s"
+    return f"{whole // 60}m{whole % 60:02d}s"
+
+
 def _host_of(url: str) -> str:
     """host[:port] of a base URL (no userinfo, path or query), for log lines."""
     parts = urlsplit(url)
@@ -159,7 +214,12 @@ class Quonfig:
         init_timeout_ms: int = 10_000,
         init_timeout: Optional[float] = None,
         initialization_timeout_sec: Optional[float] = None,
-        on_init_failure: str = "raise",  # "raise" | "return" | "return_zero_value"
+        # What init() does when no config loads within init_timeout_ms
+        # (qfg-9p4i.8, 2.0.0): "fail" (default) raises QuonfigInitError,
+        # "wait" keeps blocking, "continue" starts on code defaults. The 1.x
+        # spellings "raise" / "return" / "return_zero_value" are deprecated
+        # aliases of fail / continue.
+        on_init_failure: str = "fail",
         global_context: Optional[Contexts] = None,
         environment: Optional[str] = None,
         telemetry_url: Optional[str] = None,
@@ -351,13 +411,7 @@ class Quonfig:
         else:
             self._init_timeout_ms = int(init_timeout_ms)
 
-        # Accept the YAML keyword form (`:return`) and the cross-SDK
-        # short alias (`return`) on top of the historical
-        # `return_zero_value`.
-        normalized_on_init = (on_init_failure or "raise").lstrip(":").lower()
-        if normalized_on_init == "return":
-            normalized_on_init = "return_zero_value"
-        self._on_init_failure = normalized_on_init
+        self._on_init_failure = _normalize_on_init_failure(on_init_failure)
         self._on_no_default = on_no_default
         # Dev-context injection (qfg-jopa): mirror sdk-node/go/ruby behavior.
         # Customer-supplied `global_context` wins on collision because it
@@ -384,13 +438,13 @@ class Quonfig:
         self._shutdown = threading.Event()
         self._initialized = threading.Event()
         self._init_error: Optional[Exception] = None
-        # The initial HTTP fetch finished with nothing installed (every leg
-        # failed fast: refused, DNS, 401, 5xx). Under on_init_failure="raise"
-        # getters raise until a config installs, instead of silently serving
-        # code defaults (qfg-9p4i.1). ``_init_leg_errors`` is the
-        # ``primary=<host>: <error>; secondary=...`` summary for the message.
-        self._init_failed = False
-        self._init_leg_errors = ""
+        # Blocking init (qfg-9p4i.8). ``_ready`` is set by the first config
+        # install on any path; ``_init_wake`` wakes the init() caller when the
+        # retry loop learns something; ``_init_loop_stop`` ends the init retry
+        # loop once init() resolves and an update channel takes over.
+        self._reset_init_state(ready=False)
+        # Getter-before-init() WARN, once per client.
+        self._warned_get_before_init = False
         # ``init()`` has been called at least once. Read by the at-fork hook:
         # a client that was constructed but never started has no background
         # components to rebuild, and must not be started behind the caller's
@@ -444,7 +498,7 @@ class Quonfig:
         # The request timeout is intentionally independent of
         # init_timeout_ms: capping it at a sub-second init-timeout would
         # surface a tiny init as a generic `requests.Timeout` from the
-        # background fetch instead of letting `_wait_initialized` raise
+        # background fetch instead of letting `init()` raise
         # `QuonfigInitTimeoutError`.
         self._config_fetch_timeout_ms = config_fetch_timeout_ms
         # Parallel-failover hedge timings (qfg-7h5d.1.14). The per-leg hedge
@@ -651,21 +705,33 @@ class Quonfig:
 
     def init(self) -> "Quonfig":
         """
-        Kick off the first config load.
+        Load the first config. This is the only call that waits for config.
 
-        For datadir mode the load is synchronous and ``init()`` returns
-        once the store is populated. For HTTP mode the fetch runs on a
-        background thread so a tiny ``init_timeout_ms`` can be enforced
-        lazily by ``_wait_initialized`` on the first getter call —
-        raising ``QuonfigInitTimeoutError`` when ``on_init_failure``
-        is ``"raise"``.
+        Datadir mode loads synchronously. HTTP mode blocks and retries (hedged
+        primary + secondary fetches, jittered backoff) until a config loads or
+        ``init_timeout_ms`` passes, then applies ``on_init_failure``:
+
+        * ``"fail"`` (default): raises ``QuonfigInitError`` (reason
+          ``unavailable``), or its ``QuonfigInitTimeoutError`` subclass when no
+          leg answered at all (reason ``timeout``). 401/403 from every leg
+          raises at once (reason ``unauthorized``).
+        * ``"wait"``: keeps blocking and retrying until a config loads.
+        * ``"continue"``: returns; getters serve code defaults until a config
+          loads.
+
+        In every mode the client keeps retrying in the background, so an
+        object kept after a caught ``QuonfigInitError`` heals once delivery
+        answers (``is_ready()`` / ``wait_for_ready()``). Getters never block on
+        init; before the first config they return the caller's default.
         """
         # In a forked child the at-fork handler dropped the transport, poller
         # and telemetry reporter, so a bare ``init()`` here would stand up an
         # empty client. Route through the rebuild path, which rebuilds those
-        # components and calls back into ``init()`` with the flag cleared.
+        # components and calls back into ``init()`` with the flag cleared. An
+        # explicit ``init()`` in the child applies on_init_failure exactly as a
+        # fresh boot would, so a ``fail`` raises here.
         if self._needs_rebuild_after_fork:
-            self._ensure_rebuilt_after_fork()
+            self._ensure_rebuilt_after_fork(raise_init_error=True)
             return self
 
         # A client that was constructed but never ``init()``ed before a fork is
@@ -687,6 +753,7 @@ class Quonfig:
             self._load_from_datadir()
         elif self._transport:
             self._load_from_api()
+            self._await_init()
         else:
             # No data source configured — mark initialized with empty store
             self._finish_init()
@@ -803,6 +870,7 @@ class Quonfig:
             self._initialized = threading.Event()
             if was_initialized:
                 self._initialized.set()
+            self._reset_init_state(ready=self._store.install_count() > 0)
             self._needs_rebuild_after_fork = False
             return
 
@@ -811,6 +879,7 @@ class Quonfig:
         self._resolver = Resolver(self._store)
         self._evaluator = None
         self._initialized = threading.Event()
+        self._reset_init_state(ready=False)
         self._init_error = None
         self._started = False
         if not pending:
@@ -850,7 +919,7 @@ class Quonfig:
         if self._transport is not None and self._fallback_poll_enabled:
             self._fallback_poller = self._build_fallback_poller()
 
-    def _ensure_rebuilt_after_fork(self) -> None:
+    def _ensure_rebuilt_after_fork(self, raise_init_error: bool = False) -> None:
         """Re-initialize this client if it came out of a fork — the LAZY half
         of the fork handling, and a no-op (one boolean read) otherwise.
 
@@ -869,9 +938,9 @@ class Quonfig:
             # ``init()`` cannot recurse, and a rebuild that raises is not
             # retried on every subsequent call.
             self._needs_rebuild_after_fork = False
-            self._rebuild_in_child()
+            self._rebuild_in_child(raise_init_error=raise_init_error)
 
-    def _rebuild_in_child(self) -> None:
+    def _rebuild_in_child(self, raise_init_error: bool = False) -> None:
         """Stand the client back up in a forked child: fresh transport (fresh
         ``requests.Session``, so a child never reuses a parent's pooled
         socket), fresh telemetry reporter with EMPTY buffers (the parent
@@ -880,11 +949,22 @@ class Quonfig:
         channel, by running the normal ``init()`` path.
 
         Datadir mode re-reads from disk here, exactly as a fresh client would.
+
+        The child's ``init()`` applies the same ``on_init_failure`` as a fresh
+        boot (it blocks; ``wait`` keeps blocking). A ``QuonfigInitError`` from
+        it propagates only from an explicit ``init()`` call
+        (``raise_init_error``); a LAZY rebuild runs inside whatever public call
+        the child made first — possibly a logging filter's ``should_log`` — so
+        there it is logged (init already logged the ERROR) and the caller gets
+        defaults while the client keeps retrying.
         """
         self._build_components_after_fork()
 
+        init_error: Optional[QuonfigInitError] = None
         try:
             self.init()
+        except QuonfigInitError as e:
+            init_error = e
         except Exception as e:  # noqa: BLE001 — a lazy rebuild must not break the caller
             logger.error(
                 "[quonfig] re-initializing the SDK client after fork failed in pid %d: %s: %s",
@@ -909,6 +989,9 @@ class Quonfig:
             )
             self.close()
             return
+
+        if init_error is not None and raise_init_error:
+            raise init_error
 
         components = []
         if self._transport is not None:
@@ -1066,7 +1149,37 @@ class Quonfig:
         ):
             self._transport.forget_etag(source_index)
 
+        if accepted:
+            if not from_http:
+                via = "SSE stream"
+            else:
+                leg_idx = source_index
+                if leg_idx is None and self._transport is not None:
+                    leg_idx = self._transport.last_fetch_index
+                via = "primary" if not leg_idx else "secondary"
+            self._mark_ready(via=via, version=envelope.meta.version)
+
         return accepted
+
+    def _mark_ready(self, *, via: str, version: Any) -> None:
+        """First config installed (any path): flip readiness, wake a blocked
+        ``init()``, and log the heal when an init problem was logged earlier,
+        at WARN so the filter level that saw the failure also sees the
+        recovery (logging contract, section C)."""
+        with self._ready_lock:
+            first = not self._ready.is_set()
+            self._ready.set()
+        self._init_wake.set()
+        if first and self._init_problem_logged:
+            started = self._init_started_at or time.monotonic()
+            logger.warning(
+                "[quonfig] init recovered: config loaded after %.1fs via %s (version %s). "
+                "Now serving live config.",
+                time.monotonic() - started,
+                via,
+                version,
+                extra={"quonfig_event": "quonfig.init.recovered"},
+            )
 
     def _fetch_and_install_hedged(self, *, initial: bool) -> bool:
         """Drive ONE hedged config-fetch cycle and install whatever arrives
@@ -1102,6 +1215,8 @@ class Quonfig:
         primary_status = 0
         fired = 0
         leg_errors: List[str] = []
+        leg_statuses: List[int] = []
+        all_timeouts = True
         for lr in self._transport.fetch_hedged():
             fired += 1
             if lr.source_index == 0:
@@ -1109,6 +1224,9 @@ class Quonfig:
             if lr.error is not None:
                 if initial:
                     leg_errors.append(self._describe_leg_error(lr))
+                    leg_statuses.append(lr.status)
+                    if lr.status or not isinstance(lr.error, (requests.Timeout, TimeoutError)):
+                        all_timeouts = False
                 continue
             answered = True
             if lr.not_changed:
@@ -1124,10 +1242,7 @@ class Quonfig:
             )
             if accepted:
                 self._fire_on_config_update()
-                if not installed_once:
-                    installed_once = True
-                    if initial:
-                        self._finish_init()
+                installed_once = True
             else:
                 # 200 dropped by the reject-older guard (equal-or-older
                 # payload): the fetch itself succeeded, so liveness advances —
@@ -1141,6 +1256,20 @@ class Quonfig:
             self._telemetry.record_hedge_fired()
         if initial:
             self._init_leg_errors = "; ".join(leg_errors)
+            self._init_all_timeouts = not answered and all_timeouts
+            # 401/403 from EVERY leg the transport can fire (primary and, with
+            # failover on, secondary): the SDK key is rejected, so fail fails
+            # at once rather than waiting out the timeout (B.3).
+            expected_legs = min(len(self._transport.api_urls), 2)
+            if (
+                not answered
+                and len(leg_statuses) >= expected_legs
+                and all(st in (401, 403) for st in leg_statuses)
+            ):
+                self._init_auth_status = leg_statuses[0]
+                self._init_auth_legs = " and ".join(["primary", "secondary"][: len(leg_statuses)])
+            else:
+                self._init_auth_status = 0
         outcome = CycleOutcome(installed=installed_once, answered=answered)
         if not answered and is_auth_class_status(primary_status):
             outcome.auth_status = primary_status
@@ -1227,6 +1356,7 @@ class Quonfig:
         try:
             envelope = load_datadir(self._datadir or "", self._environment)
             self._store.update(envelope)
+            self._ready.set()
             self._fire_on_config_update()
         except Exception as e:
             self._init_error = e
@@ -1292,58 +1422,95 @@ class Quonfig:
         self._store.update(envelope)
         self._fire_on_config_update()
 
-    def _load_from_api(self) -> None:
-        """Run the initial fetch on a background thread.
+    def _reset_init_state(self, *, ready: bool) -> None:
+        """Fresh init/readiness state: at construction, at the start of each
+        ``init()``, and in a forked child (an inherited ``Event``'s lock is not
+        reinitialized by ``threading``'s own after-fork hook)."""
+        self._ready = threading.Event()
+        if ready:
+            self._ready.set()
+        self._ready_lock = threading.Lock()
+        self._init_wake = threading.Event()
+        self._init_loop_stop = threading.Event()
+        self._init_started_at: Optional[float] = None
+        # ``primary=<host>: <error>; secondary=...`` from the latest attempt.
+        self._init_leg_errors = ""
+        self._init_attempts = 0
+        # Latest attempt had no answer and every leg error was a timeout.
+        self._init_all_timeouts = True
+        # Latest attempt: 401/403 from every leg (the status), and which legs.
+        self._init_auth_status = 0
+        self._init_auth_legs = ""
+        # An init WARN/ERROR was logged, so the heal is logged too.
+        self._init_problem_logged = False
 
-        Doing the fetch off the calling thread is what lets a small
-        ``init_timeout_ms`` actually surface as ``QuonfigInitTimeoutError``
-        — otherwise ``init()`` would block on ``Transport.fetch`` and
-        ``_wait_initialized`` would never see an unset event.
+    def _has_update_channel(self) -> bool:
+        return self._enable_sse or self._fallback_poller is not None
+
+    def _load_from_api(self) -> None:
+        """Start the init retry loop and the update channel.
+
+        The loop runs on a background thread; ``init()`` then blocks in
+        ``_await_init`` until a config loads or ``on_init_failure`` resolves
+        the wait. Each attempt is one hedged primary+secondary fetch; between
+        attempts it backs off with jitter (0.5s, 1s, 2s, ... capped at 30s).
         """
         assert self._transport is not None
-        self._init_failed = False
-        self._init_leg_errors = ""
-        init_started = time.monotonic()
+        ready = self._store.install_count() > 0
+        self._reset_init_state(ready=ready)
+        self._init_started_at = time.monotonic()
+        logger.debug(
+            "[quonfig] init: fetching config (init_timeout_ms=%d, on_init_failure=%s)",
+            self._init_timeout_ms,
+            self._on_init_failure,
+            extra={"quonfig_event": "quonfig.init.start"},
+        )
+        stop = self._init_loop_stop
 
-        def _initial_fetch() -> None:
-            installed = False
-            try:
-                # Parallel-failover hedge (qfg-7h5d.1.14): fire the primary first
-                # and, only if it is slow past hedge_delay OR errors fast, also
-                # fire the secondary in parallel. Readiness latches on the first
-                # accepted install (inside _fetch_and_install_hedged); a late
-                # newer leg heals forward, a late older leg is rejected. On the
-                # both-legs-fail path nothing installs and the finally below
-                # latches init so on_init_failure applies — preserving the
-                # init-failure contract for the both-fail case.
-                installed = self._fetch_and_install_hedged(initial=True)
-            except Exception as e:
-                self._init_leg_errors = f"{type(e).__name__}: {e}"
-                # The update channel is started regardless (see below) so a
-                # client that missed its initial fetch can still heal forward.
-                logger.warning(
-                    "Initial fetch failed: %s — starting the %s update channel anyway",
-                    e,
-                    "SSE" if self._enable_sse else "HTTP poll",
-                )
-            finally:
-                # Every leg failed fast and nothing installed meanwhile (a
-                # background channel may have healed first). Mark the failure
-                # BEFORE latching init so a getter woken by the latch sees it.
-                if not installed and self._store.install_count() == 0:
-                    self._init_failed = True
-                    if self._on_init_failure == "raise":
+        def _init_loop() -> None:
+            backoff = 0.5
+            attempt = 0
+            auth_logged = False
+            while not (self._shutdown.is_set() or stop.is_set() or self._ready.is_set()):
+                attempt += 1
+                installed = False
+                try:
+                    installed = self._fetch_and_install_hedged(initial=True)
+                except Exception as e:  # noqa: BLE001 — keep retrying
+                    self._init_leg_errors = f"{type(e).__name__}: {e}"
+                    self._init_all_timeouts = False
+                    self._init_auth_status = 0
+                self._init_attempts = attempt
+                if installed or self._ready.is_set() or self._shutdown.is_set() or stop.is_set():
+                    break
+                if self._init_auth_status:
+                    if self._on_init_failure == "wait" and not auth_logged:
+                        auth_logged = True
+                        self._init_problem_logged = True
                         logger.error(
-                            "[quonfig] init FAILED: no config after %.1fs. %s. "
-                            "on_init_failure=raise: getters raise QuonfigInitTimeoutError "
-                            "until a config loads; retrying in the background. Options: "
-                            'on_init_failure="return" to start on code defaults.',
-                            time.monotonic() - init_started,
-                            self._init_leg_errors or "no delivery leg answered",
+                            "[quonfig] init: SDK key rejected (%d) by %s. Check the key and "
+                            "environment. on_init_failure=wait: still blocking startup and "
+                            "retrying.",
+                            self._init_auth_status,
+                            self._init_auth_legs,
+                            extra={"quonfig_event": "quonfig.init.unauthorized"},
                         )
-                self._finish_init()
+                elif attempt == 1:
+                    self._init_problem_logged = True
+                    logger.warning(
+                        "[quonfig] init: config not loaded yet, retrying until "
+                        "init_timeout_ms (%s). %s",
+                        _fmt_seconds(self._init_timeout_ms),
+                        self._init_leg_errors or "no delivery leg answered",
+                        extra={"quonfig_event": "quonfig.init.retrying"},
+                    )
+                self._init_wake.set()
+                delay = backoff / 2 + random.uniform(0, backoff / 2)
+                backoff = min(backoff * 2, 30.0)
+                if stop.wait(delay):
+                    break
 
-        threading.Thread(target=_initial_fetch, daemon=True, name="quonfig-init").start()
+        threading.Thread(target=_init_loop, daemon=True, name="quonfig-init").start()
 
         # Announce the chosen update channel once, before wiring it up, so a
         # deployer can see from the logs which one is live. Mirrors sdk-node's
@@ -1401,30 +1568,178 @@ class Quonfig:
         self._evaluator = Evaluator(self._store, self._environment)
         self._initialized.set()
 
-    def _wait_initialized(self) -> None:
-        self._ensure_rebuilt_after_fork()
-        if not self._initialized.is_set():
-            # threading.Event.wait takes seconds; init timeout is stored in ms.
-            ok = self._initialized.wait(timeout=self._init_timeout_ms / 1000.0)
-            if not ok:
-                if self._on_init_failure == "raise":
-                    raise QuonfigInitTimeoutError(
-                        f"Quonfig did not initialize within {self._init_timeout_ms}ms"
-                    )
-                # return_zero_value: best effort with partial data
+    def _await_init(self) -> None:
+        """Block the ``init()`` caller until a config loads, or until
+        ``on_init_failure`` resolves the wait (design sections B.3 and C)."""
+        started = self._init_started_at or time.monotonic()
+        timeout_s = max(self._init_timeout_ms, 0) / 1000.0
+        deadline = started + timeout_s
+        next_progress = started + 5.0
+        timed_out = False
+        while True:
+            # Clear BEFORE reading the flags: every waker sets its flag first,
+            # so nothing set after this line is missed.
+            self._init_wake.clear()
+            if self._ready.is_set() or self._shutdown.is_set():
+                # A close() during the wait returns quietly: the caller closed it.
+                self._init_loop_stop.set()
                 self._finish_init()
-        if (
-            self._init_failed
-            and self._on_init_failure == "raise"
-            and self._store.install_count() == 0
-        ):
-            # Fast total failure at boot (qfg-9p4i.1): raise now rather than
-            # serve code defaults. The client keeps retrying in the background
-            # (SSE / fallback poller); once a config installs this stops.
-            raise QuonfigInitTimeoutError(
-                "Quonfig failed to initialize: no config could be loaded "
-                f"({self._init_leg_errors or 'no delivery leg answered'}). "
-                "Retrying in the background."
+                return
+            if self._init_auth_status and self._on_init_failure != "wait":
+                self._resolve_init_unready(auth=True)
+                return
+            now = time.monotonic()
+            if not timed_out and now >= deadline:
+                if self._on_init_failure != "wait":
+                    self._resolve_init_unready(auth=False)
+                    return
+                timed_out = True
+                self._init_problem_logged = True
+                logger.warning(
+                    "[quonfig] init: no config after %.1fs. on_init_failure=wait: still "
+                    "blocking startup and retrying indefinitely. %s. Use "
+                    'on_init_failure="fail" or "continue" to bound startup.',
+                    now - started,
+                    self._init_leg_errors or "no delivery leg answered",
+                    extra={"quonfig_event": "quonfig.init.wait_timeout"},
+                )
+                next_progress = now + 30.0
+            elif now >= next_progress:
+                self._init_problem_logged = True
+                if timed_out:
+                    logger.warning(
+                        "[quonfig] init: still blocked waiting for config (%s elapsed, "
+                        "attempt %d). %s",
+                        _fmt_since(now - started),
+                        self._init_attempts,
+                        self._init_leg_errors or "no delivery leg answered",
+                        extra={"quonfig_event": "quonfig.init.wait_progress"},
+                    )
+                    next_progress += 30.0
+                else:
+                    logger.warning(
+                        "[quonfig] init: still waiting for config (%.1fs elapsed of %s, "
+                        "attempt %d). %s",
+                        now - started,
+                        _fmt_seconds(self._init_timeout_ms),
+                        self._init_attempts,
+                        self._init_leg_errors or "no delivery leg answered",
+                        extra={"quonfig_event": "quonfig.init.waiting"},
+                    )
+                    next_progress += 5.0
+            wake_at = next_progress if timed_out else min(deadline, next_progress)
+            self._init_wake.wait(max(0.0, min(wake_at - time.monotonic(), 1.0)))
+
+    def _resolve_init_unready(self, *, auth: bool) -> None:
+        """init() ends with no config under ``fail`` or ``continue``: log the
+        contract line, keep the client retrying, and raise under ``fail``."""
+        elapsed = time.monotonic() - (self._init_started_at or time.monotonic())
+        errs = self._init_leg_errors or "no delivery leg answered"
+        mode = self._on_init_failure
+        self._init_problem_logged = True
+        # The update channel (SSE / fallback poller) takes over the retrying.
+        # With neither configured the init loop itself keeps going, so no
+        # client is ever permanently dead.
+        if self._has_update_channel():
+            self._init_loop_stop.set()
+        self._finish_init()
+        self._start_not_ready_reporter()
+
+        if auth:
+            status, legs = self._init_auth_status, self._init_auth_legs
+            if mode == "fail":
+                logger.error(
+                    "[quonfig] init FAILED: SDK key rejected (%d) by %s. Check the key and "
+                    "environment. on_init_failure=fail: raising now.",
+                    status,
+                    legs,
+                    extra={"quonfig_event": "quonfig.init.unauthorized"},
+                )
+                raise QuonfigInitError(
+                    f"Quonfig init failed: the SDK key was rejected (HTTP {status}) by {legs} "
+                    f"({errs}). Check the key and environment.",
+                    reason="unauthorized",
+                    leg_errors=errs,
+                )
+            logger.error(
+                "[quonfig] init FAILED: SDK key rejected (%d) by %s. Check the key and "
+                "environment. on_init_failure=continue: STARTING ON CODE DEFAULTS. "
+                "Retrying in background.",
+                status,
+                legs,
+                extra={"quonfig_event": "quonfig.init.unauthorized"},
+            )
+            return
+
+        if mode == "fail":
+            timeout = self._init_attempts == 0 or self._init_all_timeouts
+            err_cls = QuonfigInitTimeoutError if timeout else QuonfigInitError
+            logger.error(
+                "[quonfig] init FAILED: no config after %.1fs. %s. on_init_failure=fail: "
+                'raising %s. Options: on_init_failure="wait" to keep waiting, '
+                'on_init_failure="continue" to start on code defaults, or raise '
+                "init_timeout_ms.",
+                elapsed,
+                errs,
+                err_cls.__name__,
+                extra={"quonfig_event": "quonfig.init.failed"},
+            )
+            if timeout:
+                raise QuonfigInitTimeoutError(
+                    f"Quonfig did not initialize within {self._init_timeout_ms}ms ({errs}). "
+                    "The client keeps retrying in the background.",
+                    leg_errors=errs,
+                )
+            raise QuonfigInitError(
+                f"Quonfig init failed: no config after {elapsed:.1f}s ({errs}). "
+                "The client keeps retrying in the background.",
+                reason="unavailable",
+                leg_errors=errs,
+            )
+        logger.error(
+            "[quonfig] init: no config after %.1fs. on_init_failure=continue: STARTING ON "
+            "CODE DEFAULTS. This instance may disagree with the rest of your fleet. "
+            "Retrying in background. %s",
+            elapsed,
+            errs,
+            extra={"quonfig_event": "quonfig.init.continue"},
+        )
+
+    def _start_not_ready_reporter(self) -> None:
+        """While a client that finished init() without config stays unready:
+        WARN every 30s for 5 minutes, then every 5 minutes (section C)."""
+        shutdown = self._shutdown
+        ready = self._ready
+        started = self._init_started_at or time.monotonic()
+
+        def _run() -> None:
+            resolved_at = time.monotonic()
+            while True:
+                interval = 30.0 if time.monotonic() - resolved_at < 300.0 else 300.0
+                if shutdown.wait(interval) or ready.is_set():
+                    return
+                logger.warning(
+                    "[quonfig] still not connected to Quonfig delivery (%s since start); "
+                    "serving defaults. %s",
+                    _fmt_since(time.monotonic() - started),
+                    self._init_leg_errors or "no delivery leg answered",
+                    extra={"quonfig_event": "quonfig.init.not_connected"},
+                )
+
+        threading.Thread(target=_run, daemon=True, name="quonfig-init-watch").start()
+
+    def _wait_initialized(self) -> None:
+        """Prepare a read. Getters never block on init (2.0.0, design B.3):
+        ``init()`` is the only gate. Before the first config a getter answers
+        from the empty store, so the caller's default (or ``on_no_default``)."""
+        self._ensure_rebuilt_after_fork()
+        if self._evaluator is None:
+            self._evaluator = Evaluator(self._store, self._environment)
+        if not self._started and not self._warned_get_before_init:
+            self._warned_get_before_init = True
+            logger.warning(
+                "[quonfig] a getter was called before init(); serving defaults. "
+                "Call client.init() at startup."
             )
 
     # ------------------------------------------------------------------
@@ -1531,6 +1846,17 @@ class Quonfig:
         try:
             self._wait_initialized()
             assert self._evaluator is not None
+            if self._transport is not None and not self._ready.is_set():
+                # Network mode with no config yet (init still running, or a
+                # caught fail / continue still healing): design B.3.
+                return EvaluationDetails(
+                    value=None,
+                    reason="ERROR",
+                    error_code="PROVIDER_NOT_READY",
+                    error_message="Quonfig has not loaded a config yet",
+                    variant=self._build_variant("ERROR", None, None),
+                    flag_metadata=self._build_flag_metadata(None, None, None, None, None),
+                )
             merged = self._effective_contexts(contexts)
             result = self._evaluator.evaluate(key, merged)
             if result.hash_property_missing:
@@ -2005,13 +2331,13 @@ class Quonfig:
                     'Quonfig constructor. Pass `logger_key="log-level.<your-app>"` or '
                     "use the `config_key=...` form instead."
                 )
-            # Before init completes, return "no opinion" (allow) instead of
-            # waiting up to init_timeout_ms: the logging filter and structlog
+            # Before the first config loads, return "no opinion" (allow)
+            # instead of waiting up to init_timeout_ms: the logging filter and structlog
             # processor call this on every record, so waiting stalled every
-            # thread that logged during startup (qfg-goi1.2.30). Typed getters
-            # and the config_key form keep blocking. Matches sdk-java.
+            # thread that logged during startup (qfg-goi1.2.30). Matches
+            # sdk-java. (Since 2.0.0 no getter blocks on init.)
             self._ensure_rebuilt_after_fork()
-            if not self._initialized.is_set():
+            if not self._ready.is_set():
                 return True
             resolved_config_key: str = self._logger_key
             logger_ctx: Contexts = {
@@ -2350,13 +2676,38 @@ class Quonfig:
     # to introspect which leg served the held config and at what generation.
     # ------------------------------------------------------------------
 
-    def ready(self) -> bool:
-        """``True`` once the client has initialized AND installed at least one
-        config envelope — i.e. it can actually serve resolved values.
+    def is_ready(self) -> bool:
+        """``True`` once at least one config envelope is installed, i.e. the
+        client serves real config rather than code defaults. Wire a readiness
+        probe to this under ``on_init_failure="wait"`` / ``"continue"``.
 
         Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
         """
-        return self._initialized.is_set() and self._store.install_count() > 0
+        return self._store.install_count() > 0
+
+    def ready(self) -> bool:
+        """Alias of :meth:`is_ready`, kept for 1.x callers."""
+        return self.is_ready()
+
+    def wait_for_ready(self, timeout_ms: Optional[int] = None) -> bool:
+        """Block until a config is installed; ``True`` when ready, ``False``
+        if ``timeout_ms`` passed (``None`` waits indefinitely) or the client
+        was closed first. Unlike ``init()`` it never raises, and it is the
+        explicit way to wait for a client kept after a caught
+        ``QuonfigInitError`` to heal."""
+        self._ensure_rebuilt_after_fork()
+        deadline = None if timeout_ms is None else time.monotonic() + max(timeout_ms, 0) / 1000.0
+        while not self.is_ready():
+            if self._shutdown.is_set():
+                return False
+            slice_s = 0.25
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                slice_s = min(slice_s, remaining)
+            self._ready.wait(slice_s)
+        return True
 
     def resolved_from(self) -> str:
         """Which configured upstream leg produced the config the client is
@@ -2542,21 +2893,17 @@ class Quonfig:
                 # initialized in a child, the uninitialized ``Event`` is the
                 # fresh one the at-fork handler installed, and clearing the
                 # rebuild flag above means nothing will ever set it. Latch it
-                # now so later getters answer immediately from what the client
-                # holds (defaults, for an empty store) instead of blocking the
-                # whole ``init_timeout_ms`` and then raising
-                # ``QuonfigInitTimeoutError``. A closed client returning
-                # defaults instantly is the only sane semantic there.
+                # now so the client reads as initialized (it answers from what
+                # it holds: defaults, for an empty store).
                 #
-                # A never-forked client is deliberately left alone: its
-                # uninitialized event means an initial fetch is genuinely in
-                # flight, and latching it would silently convert the
-                # documented ``on_init_failure="raise"`` timeout into a default
-                # for any getter parked in ``_wait_initialized`` on another
-                # thread. That getter keeps its pre-1.4.0 semantics — wait out
-                # ``init_timeout_ms``, then raise.
+                # A never-forked client is left alone: an ``init()`` blocked on
+                # its in-flight fetch is woken below and finishes itself
+                # (qfg-9p4i.8).
                 self._finish_init()
             self._shutdown.set()
+            # Stop the init retry loop and wake an init() blocked on it.
+            self._init_loop_stop.set()
+            self._init_wake.set()
             # Close the live SSE response so the stream's blocked read returns
             # now, not at the next heartbeat / read timeout (qfg-goi1.2.13).
             if self._sse is not None:

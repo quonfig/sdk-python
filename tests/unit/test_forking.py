@@ -1494,10 +1494,10 @@ def test_p4_close_racing_the_first_use_rebuild_leaves_no_live_threads() -> None:
             original_rebuild = client._rebuild_in_child
             rebuild_started = threading.Event()
 
-            def slow_rebuild() -> None:
+            def slow_rebuild(**kwargs: Any) -> None:
                 rebuild_started.set()
                 time.sleep(0.3)  # close() lands in this window
-                original_rebuild()
+                original_rebuild(**kwargs)
 
             client._rebuild_in_child = slow_rebuild  # type: ignore[method-assign]
             result: dict = {}

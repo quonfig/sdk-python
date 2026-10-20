@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+### Breaking changes (2.0.0)
+
+- **BREAKING / UPGRADE: `init()` now blocks, and fails by default when no
+  config loads (major, qfg-9p4i.8).** Spec:
+  `project/plans/2026-10-05-init-failure-design.md` (sections A.3, B, C).
+  - `init()` blocks until the first config loads, retrying (hedged primary +
+    secondary, jittered backoff 0.5s, 1s, 2s, ... capped at 30s) for up to
+    `init_timeout_ms` (default 10s). A healthy boot now waits for the first
+    config (typically 100-300 ms) before `init()` returns.
+  - `on_init_failure` takes `"fail"` (the new default), `"wait"` or
+    `"continue"`:
+    - `"fail"`: `init()` raises `QuonfigInitError` at the timeout
+      (`reason="unavailable"`), or its subclass `QuonfigInitTimeoutError` when
+      no leg answered at all (`reason="timeout"`). If every leg rejects the SDK
+      key (401/403), it raises at once with `reason="unauthorized"`.
+    - `"wait"`: `init()` keeps blocking and retrying until a config loads.
+    - `"continue"`: `init()` returns at the timeout; getters serve code
+      defaults until a config loads.
+  - In 1.x, `init()` returned at once and the default `"raise"` raised lazily
+    from the first getter. **If you relied on `init()` never raising, either
+    catch `QuonfigInitError` around `init()` or pass
+    `on_init_failure="continue"`.** In every mode a client you keep after a
+    caught `QuonfigInitError` keeps retrying in the background (SSE / the
+    fallback poller) and heals when delivery answers.
+  - **Getters never block on init.** `init()` is the only gate. A getter that
+    runs before the first config (on another thread during `init()`, or after
+    a caught failure) returns the caller's default at once, or applies
+    `on_no_default` when there is none. `*_details` getters report
+    `reason="ERROR"`, `error_code="PROVIDER_NOT_READY"`. Getters no longer
+    raise `QuonfigInitTimeoutError`.
+  - The 1.x spellings are deprecated aliases that log one WARN per process:
+    `"raise"` means `"fail"`; `"return"` and `"return_zero_value"` mean
+    `"continue"`. An unknown `on_init_failure` value now raises `ValueError`
+    instead of silently selecting a mode.
+  - New readiness API: `is_ready()` (a config is installed) and
+    `wait_for_ready(timeout_ms=None) -> bool`. `ready()` stays as an alias of
+    `is_ready()`. Under `"wait"` or `"continue"`, wire your readiness probe to
+    `is_ready()`.
+  - New `QuonfigInitError` base class (with `.reason` and `.leg_errors`);
+    `QuonfigInitTimeoutError` now subclasses it, so existing `except
+    QuonfigInitTimeoutError` blocks still catch the timeout case.
+  - Logging follows the cross-SDK contract: a healthy boot logs only DEBUG;
+    the first failed attempt logs one WARN, then a WARN every 5s until the
+    timeout; the failure logs one ERROR naming each leg's host and error
+    (never the SDK key); a client still unready after init logs a WARN every
+    30s for 5 minutes, then every 5 minutes; the recovery logs a WARN. Records
+    carry `quonfig_event="quonfig.init.<name>"` in `extra`.
+  - A forked child's first fetch applies the same `on_init_failure`. An
+    explicit `init()` in the child raises like a fresh boot; the lazy rebuild
+    triggered by a first getter logs the failure and serves defaults instead,
+    so a logging filter never raises.
+  - Superseded: the 1.x getter-side raise from qfg-9p4i.1 below.
+- **Tests:** integration-test-data pin bumped to `v2026.10.20` (init-failure
+  cases); generated tests regenerated.
+
 ### Fixed
 
 - **A fast boot failure now honors `on_init_failure="raise"` (patch,
