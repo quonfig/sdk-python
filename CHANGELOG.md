@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.9.0 - 2026-10-20
 
 ### Upgrade notes
 
@@ -90,6 +90,7 @@
   semantics across the SDKs (minor, qfg-goi1.5.4).** Pinned by
   integration-test-data v2026.10.16.1 (OPERATOR EDGES block); matches sdk-go
   and the other backend SDKs. Spec: project/plans/2026-10-07-sdk-operator-semantics.md.
+  Approved as a minor under Decision 1 (qfg-goi1.5, 2026-10-09).
   - **Dates: pass epoch milliseconds (a number or an all-digit string) or an
     ISO 8601 / RFC3339 string with `Z` or a numeric offset**, such as
     `2025-01-01T00:00:00Z` or `2025-01-01T09:00:00+09:00`. `PROP_BEFORE` /
