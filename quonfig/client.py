@@ -5,6 +5,7 @@ import datetime
 import logging
 import os
 import random
+import re
 import threading
 import time
 import uuid
@@ -139,7 +140,7 @@ def _normalize_on_init_failure(value: Optional[str]) -> str:
                 '[quonfig] on_init_failure="%s" is deprecated; use "%s"',
                 spelled,
                 canonical,
-                extra={"quonfig_event": "quonfig.init.deprecated_option"},
+                extra={"event": "quonfig.init.deprecated_option"},
             )
         return canonical
     raise ValueError(
@@ -168,6 +169,15 @@ def _host_of(url: str) -> str:
     if not parts.hostname:
         return url
     return f"{parts.hostname}:{parts.port}" if parts.port is not None else parts.hostname
+
+
+_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
+
+
+def _redact_userinfo(text: str) -> str:
+    """Strip ``user:pass@`` from any URL in ``text`` (init log lines and the
+    init error carry hosts only; design Decision 9)."""
+    return _USERINFO_RE.sub(r"\1", text)
 
 
 def _derive_defaults(domain: str) -> tuple[List[str], str]:
@@ -211,6 +221,9 @@ class Quonfig:
         # minor cycle — each emits a `DeprecationWarning` and is forwarded
         # as `value * 1000` into `_init_timeout_ms`. The canonical kwarg
         # wins when more than one is passed.
+        # A value <= 0 runs exactly ONE fetch attempt (bounded by the per-leg
+        # hedge abort), then applies on_init_failure: it is never "no
+        # deadline" and never decides before an attempt completes.
         init_timeout_ms: int = 10_000,
         init_timeout: Optional[float] = None,
         initialization_timeout_sec: Optional[float] = None,
@@ -715,11 +728,18 @@ class Quonfig:
 
         * ``"fail"`` (default): raises ``QuonfigInitError`` (reason
           ``unavailable``), or its ``QuonfigInitTimeoutError`` subclass when no
-          leg answered at all (reason ``timeout``). 401/403 from every leg
-          raises at once (reason ``unauthorized``).
+          leg answered at all (reason ``timeout``). An auth-class status from
+          every leg raises at once (reason ``unauthorized``).
         * ``"wait"``: keeps blocking and retrying until a config loads.
         * ``"continue"``: returns; getters serve code defaults until a config
           loads.
+
+        The auth class is 401/403/404/410 and must come from every configured
+        leg. ``init_timeout_ms <= 0`` runs exactly one attempt and then applies
+        ``on_init_failure``. Calling ``init()`` again on a started client joins
+        the running background retry (it starts no second stream or loop):
+        it returns at once when config is loaded, else waits up to
+        ``init_timeout_ms`` and applies ``on_init_failure`` again.
 
         In every mode the client keeps retrying in the background, so an
         object kept after a caught ``QuonfigInitError`` heals once delivery
@@ -749,6 +769,20 @@ class Quonfig:
         # a poll thread on one.
         if self._transport is None and self._fork_had_transport and not self._shutdown.is_set():
             self._build_components_after_fork()
+
+        if (
+            self._started
+            and self._transport is not None
+            and not self._datadir
+            and not self._shutdown.is_set()
+        ):
+            # Already started: a second init() (say, after a caught
+            # QuonfigInitError) joins the running background retry instead of
+            # standing up a second init loop, SSE stream and reporter that
+            # close() would not stop (qfg-9p4i.17, I5). It blocks and applies
+            # on_init_failure again, measured from this call.
+            self._join_init()
+            return self
 
         self._started = True
         if self._datadir:
@@ -1158,7 +1192,8 @@ class Quonfig:
                 leg_idx = source_index
                 if leg_idx is None and self._transport is not None:
                     leg_idx = self._transport.last_fetch_index
-                via = "primary" if not leg_idx else "secondary"
+                # Unknown (None / -1) maps to primary, as in sdk-go.
+                via = "secondary" if leg_idx is not None and leg_idx >= 1 else "primary"
             self._mark_ready(via=via, version=envelope.meta.version)
 
         return accepted
@@ -1168,20 +1203,22 @@ class Quonfig:
         ``init()``, and log the heal when an init problem was logged earlier,
         at WARN so the filter level that saw the failure also sees the
         recovery (logging contract, section C)."""
+        # The heal line is logged BEFORE readiness flips, so a caller woken by
+        # wait_for_ready() / init() already sees it.
         with self._ready_lock:
             first = not self._ready.is_set()
+            if first and self._init_problem_logged:
+                started = self._init_started_at or time.monotonic()
+                logger.warning(
+                    "[quonfig] init recovered: config loaded after %.1fs via %s (version %s). "
+                    "Now serving live config.",
+                    time.monotonic() - started,
+                    via,
+                    version,
+                    extra={"event": "quonfig.init.recovered"},
+                )
             self._ready.set()
         self._init_wake.set()
-        if first and self._init_problem_logged:
-            started = self._init_started_at or time.monotonic()
-            logger.warning(
-                "[quonfig] init recovered: config loaded after %.1fs via %s (version %s). "
-                "Now serving live config.",
-                time.monotonic() - started,
-                via,
-                version,
-                extra={"quonfig_event": "quonfig.init.recovered"},
-            )
 
     def _fetch_and_install_hedged(self, *, initial: bool) -> bool:
         """Drive ONE hedged config-fetch cycle and install whatever arrives
@@ -1217,7 +1254,7 @@ class Quonfig:
         primary_status = 0
         fired = 0
         leg_errors: List[str] = []
-        leg_statuses: List[int] = []
+        leg_statuses: Dict[int, int] = {}
         all_timeouts = True
         for lr in self._transport.fetch_hedged():
             fired += 1
@@ -1226,7 +1263,7 @@ class Quonfig:
             if lr.error is not None:
                 if initial:
                     leg_errors.append(self._describe_leg_error(lr))
-                    leg_statuses.append(lr.status)
+                    leg_statuses[lr.source_index] = lr.status
                     if lr.status or not isinstance(lr.error, (requests.Timeout, TimeoutError)):
                         all_timeouts = False
                 continue
@@ -1259,16 +1296,19 @@ class Quonfig:
         if initial:
             self._init_leg_errors = "; ".join(leg_errors)
             self._init_all_timeouts = not answered and all_timeouts
-            # 401/403 from EVERY leg the transport can fire (primary and, with
-            # failover on, secondary): the SDK key is rejected, so fail fails
-            # at once rather than waiting out the timeout (B.3).
+            # An auth-class status (401/403/404/410, go's isAuthClassStatus)
+            # from EVERY leg the transport can fire (primary and, with failover
+            # on, secondary): the SDK key is rejected, so fail fails at once
+            # rather than waiting out the timeout. Never decided from the
+            # primary alone (design Decision 6). The reported status is the
+            # primary's, whichever leg arrived first.
             expected_legs = min(len(self._transport.api_urls), 2)
             if (
                 not answered
                 and len(leg_statuses) >= expected_legs
-                and all(st in (401, 403) for st in leg_statuses)
+                and all(is_auth_class_status(st) for st in leg_statuses.values())
             ):
-                self._init_auth_status = leg_statuses[0]
+                self._init_auth_status = leg_statuses.get(0) or next(iter(leg_statuses.values()))
                 self._init_auth_legs = " and ".join(["primary", "secondary"][: len(leg_statuses)])
             else:
                 self._init_auth_status = 0
@@ -1288,7 +1328,7 @@ class Quonfig:
         if lr.status:
             detail = f"HTTP {lr.status}"
         else:
-            detail = f"{type(lr.error).__name__}: {lr.error}"
+            detail = _redact_userinfo(f"{type(lr.error).__name__}: {lr.error}")
             if len(detail) > 200:
                 detail = detail[:197] + "..."
         return f"{name}={host}: {detail}"
@@ -1445,6 +1485,8 @@ class Quonfig:
         self._init_auth_legs = ""
         # An init WARN/ERROR was logged, so the heal is logged too.
         self._init_problem_logged = False
+        # One not-ready reporter per init, however many init() calls join it.
+        self._not_ready_reporter_started = False
 
     def _has_update_channel(self) -> bool:
         return self._enable_sse or self._fallback_poller is not None
@@ -1466,7 +1508,7 @@ class Quonfig:
             "[quonfig] init: fetching config (init_timeout_ms=%d, on_init_failure=%s)",
             self._init_timeout_ms,
             self._on_init_failure,
-            extra={"quonfig_event": "quonfig.init.start"},
+            extra={"event": "quonfig.init.start"},
         )
         stop = self._init_loop_stop
 
@@ -1480,7 +1522,7 @@ class Quonfig:
                 try:
                     installed = self._fetch_and_install_hedged(initial=True)
                 except Exception as e:  # noqa: BLE001 — keep retrying
-                    self._init_leg_errors = f"{type(e).__name__}: {e}"
+                    self._init_leg_errors = _redact_userinfo(f"{type(e).__name__}: {e}")
                     self._init_all_timeouts = False
                     self._init_auth_status = 0
                 self._init_attempts = attempt
@@ -1496,16 +1538,18 @@ class Quonfig:
                             "retrying.",
                             self._init_auth_status,
                             self._init_auth_legs,
-                            extra={"quonfig_event": "quonfig.init.unauthorized"},
+                            extra={"event": "quonfig.init.unauthorized"},
                         )
-                elif attempt == 1:
+                elif attempt == 1 and self._init_timeout_ms > 0:
+                    # With init_timeout_ms <= 0 there is no retry window: the
+                    # policy line follows this single attempt directly.
                     self._init_problem_logged = True
                     logger.warning(
                         "[quonfig] init: config not loaded yet, retrying until "
                         "init_timeout_ms (%s). %s",
                         _fmt_seconds(self._init_timeout_ms),
                         self._init_leg_errors or "no delivery leg answered",
-                        extra={"quonfig_event": "quonfig.init.retrying"},
+                        extra={"event": "quonfig.init.retrying"},
                     )
                 self._init_wake.set()
                 delay = backoff / 2 + random.uniform(0, backoff / 2)
@@ -1590,8 +1634,23 @@ class Quonfig:
         finally:
             self._engage_polling_after_init()
 
-    def _await_init_inner(self) -> None:
-        started = self._init_started_at or time.monotonic()
+    def _join_init(self) -> None:
+        """A repeat ``init()`` on a started client: return at once when config
+        is loaded, else wait on the existing retry and apply
+        ``on_init_failure`` again, without starting anything new."""
+        if self._ready.is_set():
+            if not self._initialized.is_set():
+                self._finish_init()
+            return
+        self._await_init_inner(started=time.monotonic())
+
+    def _await_init_inner(self, started: Optional[float] = None) -> None:
+        if started is None:
+            started = self._init_started_at or time.monotonic()
+        # init_timeout_ms <= 0: no window, but never decide before an attempt
+        # has completed. Exactly one attempt runs, then on_init_failure applies
+        # (design Decision 8).
+        one_attempt = self._init_timeout_ms <= 0
         timeout_s = max(self._init_timeout_ms, 0) / 1000.0
         deadline = started + timeout_s
         next_progress = started + 5.0
@@ -1609,6 +1668,11 @@ class Quonfig:
                 self._resolve_init_unready(auth=True)
                 return
             now = time.monotonic()
+            if one_attempt and self._init_attempts == 0:
+                # The first attempt is still in flight; the init loop sets
+                # _init_wake when it completes.
+                self._init_wake.wait(1.0)
+                continue
             if not timed_out and now >= deadline:
                 if self._on_init_failure != "wait":
                     self._resolve_init_unready(auth=False)
@@ -1621,7 +1685,7 @@ class Quonfig:
                     'on_init_failure="fail" or "continue" to bound startup.',
                     now - started,
                     self._init_leg_errors or "no delivery leg answered",
-                    extra={"quonfig_event": "quonfig.init.wait_timeout"},
+                    extra={"event": "quonfig.init.wait_timeout"},
                 )
                 next_progress = now + 30.0
             elif now >= next_progress:
@@ -1633,7 +1697,7 @@ class Quonfig:
                         _fmt_since(now - started),
                         self._init_attempts,
                         self._init_leg_errors or "no delivery leg answered",
-                        extra={"quonfig_event": "quonfig.init.wait_progress"},
+                        extra={"event": "quonfig.init.wait_progress"},
                     )
                     next_progress += 30.0
                 else:
@@ -1644,7 +1708,7 @@ class Quonfig:
                         _fmt_seconds(self._init_timeout_ms),
                         self._init_attempts,
                         self._init_leg_errors or "no delivery leg answered",
-                        extra={"quonfig_event": "quonfig.init.waiting"},
+                        extra={"event": "quonfig.init.waiting"},
                     )
                     next_progress += 5.0
             wake_at = next_progress if timed_out else min(deadline, next_progress)
@@ -1668,7 +1732,9 @@ class Quonfig:
         if self._has_update_channel():
             self._init_loop_stop.set()
         self._finish_init()
-        self._start_not_ready_reporter()
+        if not self._not_ready_reporter_started:
+            self._not_ready_reporter_started = True
+            self._start_not_ready_reporter()
 
         if auth:
             status, legs = self._init_auth_status, self._init_auth_legs
@@ -1678,7 +1744,7 @@ class Quonfig:
                     "environment. on_init_failure=fail: raising now.",
                     status,
                     legs,
-                    extra={"quonfig_event": "quonfig.init.unauthorized"},
+                    extra={"event": "quonfig.init.unauthorized"},
                 )
                 raise QuonfigInitError(
                     f"Quonfig init failed: the SDK key was rejected (HTTP {status}) by {legs} "
@@ -1692,7 +1758,7 @@ class Quonfig:
                 "Retrying in background.",
                 status,
                 legs,
-                extra={"quonfig_event": "quonfig.init.unauthorized"},
+                extra={"event": "quonfig.init.unauthorized"},
             )
             return
 
@@ -1707,7 +1773,7 @@ class Quonfig:
                 elapsed,
                 errs,
                 err_cls.__name__,
-                extra={"quonfig_event": "quonfig.init.failed"},
+                extra={"event": "quonfig.init.failed"},
             )
             if timeout:
                 raise QuonfigInitTimeoutError(
@@ -1727,7 +1793,7 @@ class Quonfig:
             "Retrying in background. %s",
             elapsed,
             errs,
-            extra={"quonfig_event": "quonfig.init.continue"},
+            extra={"event": "quonfig.init.continue"},
         )
 
     def _start_not_ready_reporter(self) -> None:
@@ -1748,7 +1814,7 @@ class Quonfig:
                     "serving defaults. %s",
                     _fmt_since(time.monotonic() - started),
                     self._init_leg_errors or "no delivery leg answered",
-                    extra={"quonfig_event": "quonfig.init.not_connected"},
+                    extra={"event": "quonfig.init.not_connected"},
                 )
 
         threading.Thread(target=_run, daemon=True, name="quonfig-init-watch").start()

@@ -47,12 +47,18 @@ class _Upstream:
     """Answers every GET with ``status`` (200 serves an empty envelope).
     ``status`` can be switched at runtime to model an outage healing."""
 
-    def __init__(self, status: int) -> None:
+    def __init__(self, status: int, delay: float = 0.0) -> None:
         self.status = status
+        self.delay = delay
+        self.hits = 0
         outer = self
 
         class _Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
+                if "/api/v2/configs" in self.path:
+                    outer.hits += 1
+                if outer.delay:
+                    time.sleep(outer.delay)
                 if outer.status == 200:
                     body = _envelope_json()
                     self.send_response(200)
@@ -406,3 +412,209 @@ def test_401_logs_the_key_rejected_error(caplog: pytest.LogCaptureFixture) -> No
         client.close()
         a.close()
         b.close()
+
+
+# ---------------------------------------------------------------------------
+# Cross-SDK conformance (qfg-9p4i.17, Decisions 6-9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [403, 404, 410])
+def test_every_auth_class_status_from_every_leg_fails_at_once(status: int) -> None:
+    # Decision 6: the init auth set is 401/403/404/410 (go's isAuthClassStatus).
+    a, b = _Upstream(status), _Upstream(status)
+    client = _client([a.url, b.url], init_timeout_ms=8000)
+    try:
+        err, elapsed = _timed_init(client)
+        assert isinstance(err, QuonfigInitError), repr(err)
+        assert err.reason == "unauthorized"
+        assert f"HTTP {status}" in str(err)
+        assert elapsed < 3.0, f"waited {elapsed:.2f}s on a rejected key"
+    finally:
+        client.close()
+        a.close()
+        b.close()
+
+
+def test_auth_class_from_the_primary_alone_does_not_decide_unauthorized() -> None:
+    a, b = _Upstream(404), _Upstream(503)
+    client = _client([a.url, b.url], init_timeout_ms=500)
+    try:
+        err, _ = _timed_init(client)
+        assert isinstance(err, QuonfigInitError), repr(err)
+        assert err.reason == "unavailable"
+    finally:
+        client.close()
+        a.close()
+        b.close()
+
+
+def test_unauthorized_line_reports_the_primary_status_not_the_first_to_arrive(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The secondary (403) answers before the slow primary (401).
+    a, b = _Upstream(401, delay=0.6), _Upstream(403)
+    client = _client([a.url, b.url], init_timeout_ms=8000, hedge_delay_ms=50)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="quonfig"):
+            err, _ = _timed_init(client)
+        assert isinstance(err, QuonfigInitError) and err.reason == "unauthorized"
+        failed = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert failed and failed[0].startswith(
+            "[quonfig] init FAILED: SDK key rejected (401) by primary and secondary."
+        ), failed
+    finally:
+        client.close()
+        a.close()
+        b.close()
+
+
+@pytest.mark.parametrize("timeout_ms", [0, -1])
+def test_non_positive_init_timeout_runs_one_attempt_before_deciding(timeout_ms: int) -> None:
+    # Decision 8: initTimeout <= 0 runs exactly one attempt, then applies the
+    # policy. A slow-but-healthy upstream therefore boots.
+    a = _Upstream(200, delay=0.3)
+    client = _client([a.url], init_timeout_ms=timeout_ms)
+    try:
+        err, _ = _timed_init(client)
+        assert err is None, repr(err)
+        assert client.is_ready()
+    finally:
+        client.close()
+        a.close()
+
+
+def test_zero_init_timeout_fail_raises_after_exactly_one_attempt() -> None:
+    a, b = _Upstream(503), _Upstream(503)
+    client = _client([a.url, b.url], init_timeout_ms=0, hedge_delay_ms=50)
+    try:
+        err, _ = _timed_init(client)
+        assert isinstance(err, QuonfigInitError), repr(err)
+        # The attempt completed and answered 503: unavailable, not timeout.
+        assert err.reason == "unavailable"
+        assert not isinstance(err, QuonfigInitTimeoutError)
+        assert (a.hits, b.hits) == (1, 1)
+    finally:
+        client.close()
+        a.close()
+        b.close()
+
+
+def test_zero_init_timeout_continue_starts_on_defaults_after_one_attempt() -> None:
+    a = _Upstream(503)
+    client = _client([a.url], init_timeout_ms=0, on_init_failure="continue")
+    try:
+        err, _ = _timed_init(client)
+        assert err is None, repr(err)
+        assert a.hits == 1
+        assert client.get_string("some.key", default="DEFAULT") == "DEFAULT"
+    finally:
+        client.close()
+        a.close()
+
+
+def _live_quonfig_threads() -> list:
+    return sorted(
+        t.name
+        for t in threading.enumerate()
+        if t.is_alive() and t.name in ("quonfig-sse", "quonfig-init", "quonfig-init-watch")
+    )
+
+
+def test_second_init_after_a_caught_fail_joins_the_retry_and_close_stops_everything() -> None:
+    before = _live_quonfig_threads()
+    assert before == [], before
+    client = _client(REFUSED, enable_sse=True, init_timeout_ms=300)
+    try:
+        with pytest.raises(QuonfigInitError):
+            client.init()
+        first = _live_quonfig_threads()
+        # The second init() joins the running background retry: it applies the
+        # policy again but starts no second SSE stream or reporter.
+        with pytest.raises(QuonfigInitError):
+            client.init()
+        second = _live_quonfig_threads()
+        assert second.count("quonfig-sse") == 1, second
+        assert second.count("quonfig-init-watch") <= 1, second
+        assert len(second) <= len(first), (first, second)
+    finally:
+        client.close()
+    deadline = time.monotonic() + 5.0
+    while _live_quonfig_threads() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _live_quonfig_threads() == []
+
+
+def test_second_init_after_a_healthy_boot_returns_without_refetching() -> None:
+    a = _Upstream(200)
+    client = _client([a.url], init_timeout_ms=8000)
+    try:
+        client.init()
+        hits = a.hits
+        start = time.monotonic()
+        client.init()
+        assert time.monotonic() - start < 0.2
+        assert a.hits == hits
+        assert client.is_ready()
+    finally:
+        client.close()
+        a.close()
+
+
+def test_heal_line_maps_an_unknown_leg_to_primary(caplog: pytest.LogCaptureFixture) -> None:
+    from quonfig.types import ConfigEnvelope
+
+    client = _client(REFUSED, on_init_failure="continue", init_timeout_ms=200)
+    try:
+        client.init()
+        assert client._transport is not None
+        client._transport.last_fetch_index = -1
+        env = ConfigEnvelope.from_wire(json.loads(_envelope_json()))
+        with caplog.at_level(logging.WARNING, logger="quonfig"):
+            client._install_network_envelope(env, from_http=True, source_index=None)
+        healed = [r.getMessage() for r in caplog.records if "init recovered" in r.getMessage()]
+        assert healed and " via primary " in healed[0], healed
+    finally:
+        client.close()
+
+
+def test_init_log_records_carry_the_event_field(caplog: pytest.LogCaptureFixture) -> None:
+    client = _client(REFUSED)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="quonfig"):
+            with pytest.raises(QuonfigInitError):
+                client.init()
+        events = [getattr(r, "event", None) for r in caplog.records]
+        assert "quonfig.init.start" in events
+        assert "quonfig.init.retrying" in events
+        assert "quonfig.init.failed" in events
+        assert all(not hasattr(r, "quonfig_event") for r in caplog.records)
+    finally:
+        client.close()
+
+
+def test_init_lines_and_error_never_carry_url_userinfo(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quonfig.transport import LegResult
+
+    client = _client(["http://user:hunter2@127.0.0.1:1"])
+    assert client._transport is not None
+
+    def _fake_hedged(*_a: Any, **_k: Any) -> Any:
+        yield LegResult(
+            source_index=0,
+            error=OSError("connect failed for http://user:hunter2@127.0.0.1:1/api/v2/configs"),
+        )
+
+    monkeypatch.setattr(client._transport, "fetch_hedged", _fake_hedged)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="quonfig"):
+            err, _ = _timed_init(client)
+        assert isinstance(err, QuonfigInitError), repr(err)
+        text = str(err) + "\n" + "\n".join(r.getMessage() for r in caplog.records)
+        assert "hunter2" not in text, text
+        assert "user:" not in text, text
+        assert "127.0.0.1:1" in str(err)
+    finally:
+        client.close()

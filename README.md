@@ -532,7 +532,7 @@ rate-limit map, and the 2MB retained queue.
 `init_timeout_ms` (default 10s). If no config loads by then,
 `on_init_failure` decides what happens:
 
-| `on_init_failure` | At the timeout | 401/403 from every leg |
+| `on_init_failure` | At the timeout | 401/403/404/410 from every leg |
 |---|---|---|
 | `"fail"` (default) | raises `QuonfigInitError` (`QuonfigInitTimeoutError` if no leg answered) | raises at once (`reason="unauthorized"`) |
 | `"wait"` | keeps blocking and retrying | logs an ERROR and keeps retrying |
@@ -554,6 +554,23 @@ Getters never block on init. Before the first config they return your default
 `QuonfigInitError` keeps retrying in the background and heals on its own:
 check `client.is_ready()` or block on `client.wait_for_ready(timeout_ms=...)`.
 Under `"wait"` or `"continue"`, wire your readiness probe to `is_ready()`.
+
+`init_timeout_ms <= 0` runs exactly one fetch attempt (bounded by the per-leg
+abort, `config_fetch_hedge_abort_ms`), then applies `on_init_failure`. It is
+not "no deadline", and it never decides before that attempt completes.
+
+The error's `reason` is `"timeout"` when the last attempt hung (every leg timed
+out) and `"unavailable"` otherwise. A key rejected by only one leg is not
+`"unauthorized"`: every configured leg must answer 401, 403, 404 or 410.
+
+Calling `init()` again on a client that already started (for example after a
+caught `QuonfigInitError`) joins the running background retry. It starts no
+second stream, and it returns at once if config has loaded since, or waits up
+to `init_timeout_ms` and applies `on_init_failure` again.
+
+Init log records carry `event="quonfig.init.<name>"` in `extra`. Init lines
+and the error message name hosts and `HTTP <status>` only, never URL
+credentials or response bodies.
 
 The 1.x spellings `"raise"` (= `"fail"`) and `"return"` /
 `"return_zero_value"` (= `"continue"`) still work and log a one-time
