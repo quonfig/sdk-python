@@ -1259,20 +1259,25 @@ class Quonfig:
         fired = 0
         leg_errors: List[str] = []
         leg_statuses: Dict[int, int] = {}
-        all_timeouts = True
         for lr in self._transport.fetch_hedged():
             fired += 1
             if lr.source_index == 0:
                 primary_status = lr.status
+            if initial and (lr.error is None or not is_timeout_error(lr.error)):
+                # This leg answered (any status) or failed fast: the attempt
+                # did not hang (Decisions 2 and 10; a body that stalled after
+                # the status line is a timeout error, so still a hang). A leg
+                # settling after the init deadline was still pending when the
+                # deadline cut the attempt, so it does not count.
+                self._note_init_leg_answered()
             if lr.error is not None:
                 if initial:
                     leg_errors.append(self._describe_leg_error(lr))
                     leg_statuses[lr.source_index] = lr.status
-                    # A leg that hung (including a body that stalled after
-                    # the status line) counts toward reason="timeout"
-                    # (Decision 2); any other error does not.
-                    if not is_timeout_error(lr.error):
-                        all_timeouts = False
+                    if not self._init_past_deadline():
+                        # The leg errors so far, so a deadline that cuts this
+                        # attempt reports what its settled legs said.
+                        self._init_attempt_errors = "; ".join(leg_errors)
                 continue
             answered = True
             if lr.not_changed:
@@ -1302,7 +1307,6 @@ class Quonfig:
             self._telemetry.record_hedge_fired()
         if initial:
             self._init_leg_errors = "; ".join(leg_errors)
-            self._init_all_timeouts = not answered and all_timeouts
             # An auth-class status (401/403/404/410, go's isAuthClassStatus)
             # from EVERY leg the transport can fire (primary and, with failover
             # on, secondary): the SDK key is rejected, so fail fails at once
@@ -1324,6 +1328,15 @@ class Quonfig:
             outcome.auth_status = primary_status
             outcome.auth_host = _host_of(self._transport.api_urls[0])
         return outcome
+
+    def _init_past_deadline(self) -> bool:
+        """The init deadline has passed and its reason is not decided yet."""
+        dl = self._init_deadline
+        return dl is not None and not self._init_decided.is_set() and time.monotonic() >= dl
+
+    def _note_init_leg_answered(self) -> None:
+        if not self._init_past_deadline():
+            self._init_attempt_answered = True
 
     def _describe_leg_error(self, lr: Any) -> str:
         """``<leg>=<host>: <error>`` for the init-failure log and error
@@ -1484,9 +1497,23 @@ class Quonfig:
         self._init_started_at: Optional[float] = None
         # ``primary=<host>: <error>; secondary=...`` from the latest attempt.
         self._init_leg_errors = ""
+        # The same for the attempt in flight: its legs settled before the init
+        # deadline (what a deadline that cuts it reports).
+        self._init_attempt_errors = ""
+        # Attempts completed (for the progress lines) and started.
         self._init_attempts = 0
-        # Latest attempt had no answer and every leg error was a timeout.
-        self._init_all_timeouts = True
+        self._init_attempts_started = 0
+        # Some leg of the latest STARTED attempt answered (any status) or
+        # failed fast before the init deadline. While an attempt is in flight
+        # this is that attempt; in the backoff gap it is the last completed
+        # one, so the deadline reason is "timeout" iff it stays False
+        # (Decisions 7 and 10).
+        self._init_attempt_answered = False
+        # Monotonic init deadline under fail/continue with init_timeout_ms > 0
+        # (None otherwise), and set once the reason is decided. No attempt
+        # starts at or past the deadline until then (matches sdk-go).
+        self._init_deadline: Optional[float] = None
+        self._init_decided = threading.Event()
         # Latest attempt: 401/403 from every leg (the status), and which legs.
         self._init_auth_status = 0
         self._init_auth_legs = ""
@@ -1511,6 +1538,8 @@ class Quonfig:
         self._reset_init_state(ready=ready)
         self._poll_engage_pending = False
         self._init_started_at = time.monotonic()
+        if self._on_init_failure != "wait" and self._init_timeout_ms > 0:
+            self._init_deadline = self._init_started_at + self._init_timeout_ms / 1000.0
         logger.debug(
             "[quonfig] init: fetching config (init_timeout_ms=%d, on_init_failure=%s)",
             self._init_timeout_ms,
@@ -1524,13 +1553,23 @@ class Quonfig:
             attempt = 0
             auth_logged = False
             while not (self._shutdown.is_set() or stop.is_set() or self._ready.is_set()):
+                if self._init_past_deadline():
+                    # The deadline fell in the backoff gap: the last completed
+                    # attempt decides the reason, so start nothing until the
+                    # init() caller has decided.
+                    self._init_wake.set()
+                    self._init_decided.wait(0.05)
+                    continue
                 attempt += 1
                 installed = False
+                self._init_attempt_answered = False
+                self._init_attempt_errors = ""
+                self._init_attempts_started = attempt
                 try:
                     installed = self._fetch_and_install_hedged(initial=True)
                 except Exception as e:  # noqa: BLE001 — keep retrying
                     self._init_leg_errors = _redact_userinfo(f"{type(e).__name__}: {e}")
-                    self._init_all_timeouts = False
+                    self._note_init_leg_answered()
                     self._init_auth_status = 0
                 self._init_attempts = attempt
                 if installed or self._ready.is_set() or self._shutdown.is_set() or stop.is_set():
@@ -1622,6 +1661,8 @@ class Quonfig:
     def _finish_init(self) -> None:
         self._evaluator = Evaluator(self._store, self._environment)
         self._initialized.set()
+        # Release an init loop held at the deadline (see _init_past_deadline).
+        self._init_decided.set()
 
     def _engage_polling_after_init(self) -> None:
         """Polling mode (``enable_sse=False``): engage the poller once init()
@@ -1730,7 +1771,18 @@ class Quonfig:
             self._finish_init()
             return
         elapsed = time.monotonic() - (self._init_started_at or time.monotonic())
-        errs = self._init_leg_errors or "no delivery leg answered"
+        # An attempt still in flight is the last attempt: report its settled
+        # legs, not the previous attempt's errors.
+        in_flight = self._init_attempts_started > self._init_attempts
+        errs = (
+            self._init_attempt_errors if in_flight else self._init_leg_errors
+        ) or "no delivery leg answered"
+        # Decisions 7 and 10: the attempt in flight at the deadline is the last
+        # one; in the backoff gap the last completed one decides. Either way:
+        # timeout iff none of its legs answered or failed fast (no attempt
+        # started at all is a timeout too). Read before _finish_init lets the
+        # init loop start another attempt.
+        timeout = self._init_attempts_started == 0 or not self._init_attempt_answered
         mode = self._on_init_failure
         self._init_problem_logged = True
         # The update channel (SSE / fallback poller) takes over the retrying.
@@ -1770,7 +1822,6 @@ class Quonfig:
             return
 
         if mode == "fail":
-            timeout = self._init_attempts == 0 or self._init_all_timeouts
             err_cls = QuonfigInitTimeoutError if timeout else QuonfigInitError
             logger.error(
                 "[quonfig] init FAILED: no config after %.1fs. %s. on_init_failure=fail: "

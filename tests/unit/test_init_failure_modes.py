@@ -146,7 +146,10 @@ def test_init_error_types_are_exported_and_timeout_subclasses_init_error() -> No
 
 
 def test_default_mode_is_fail_and_init_raises_after_retrying_refused_legs() -> None:
-    client = _client(REFUSED)
+    # 650ms: attempt 2 starts by ~500ms and attempt 3 no sooner than 750ms, so
+    # the deadline falls in a backoff gap, never just after an attempt starts
+    # (an attempt cut before any leg answered is a timeout, Decision 10).
+    client = _client(REFUSED, init_timeout_ms=650)
     try:
         err, elapsed = _timed_init(client)
         assert isinstance(err, QuonfigInitError), repr(err)
@@ -438,7 +441,9 @@ def test_every_auth_class_status_from_every_leg_fails_at_once(status: int) -> No
 
 def test_auth_class_from_the_primary_alone_does_not_decide_unauthorized() -> None:
     a, b = _Upstream(404), _Upstream(503)
-    client = _client([a.url, b.url], init_timeout_ms=500)
+    # 200ms: before attempt 2 can start (>= 250ms backoff), so attempt 1, with
+    # both legs answered, decides (Decision 10).
+    client = _client([a.url, b.url], init_timeout_ms=200)
     try:
         err, _ = _timed_init(client)
         assert isinstance(err, QuonfigInitError), repr(err)
@@ -686,3 +691,152 @@ def test_redact_userinfo_strips_credentials_including_an_at_in_the_password(text
     out = _redact_userinfo(text)
     assert "hunter2" not in out and "ter2" not in out, out
     assert "host" in out, out
+
+
+# ---------------------------------------------------------------------------
+# qfg-9p4i.17.10 (Decisions 7 and 10): the reason at the init deadline.
+# An attempt in flight at the deadline is the last attempt: timeout iff none of
+# its legs has answered. In the backoff gap the last COMPLETED attempt decides:
+# timeout iff every one of its legs timed out.
+# ---------------------------------------------------------------------------
+
+
+class _Scripted:
+    """Answers the Nth config GET per ``script[N]`` (the last entry repeats):
+    an HTTP status, or ``"hang"`` (never answers until closed)."""
+
+    def __init__(self, script: list) -> None:
+        self.script = script
+        self.hits = 0
+        self._stop = threading.Event()
+        outer = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                idx = outer.hits
+                outer.hits += 1
+                step = outer.script[min(idx, len(outer.script) - 1)]
+                if step == "hang":
+                    outer._stop.wait(30)
+                    return
+                body = b"nope"
+                self.send_response(int(step))
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._server.daemon_threads = True
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    def close(self) -> None:
+        self._stop.set()
+        self._server.shutdown()
+
+
+def _fail_reason(urls: list, **kw: Any) -> "tuple[BaseException, Quonfig]":
+    client = _client(urls, on_init_failure="fail", **kw)
+    err, _ = _timed_init(client)
+    assert isinstance(err, QuonfigInitError), repr(err)
+    return err, client
+
+
+def test_hung_retry_after_a_fast_503_reports_timeout() -> None:
+    # Attempt 1 answers 503 on both legs fast; attempt 2 hangs on both legs
+    # and is still in flight at the deadline: it is the last attempt, and none
+    # of its legs answered.
+    a, b = _Scripted([503, "hang"]), _Scripted([503, "hang"])
+    try:
+        err, client = _fail_reason(
+            [a.url, b.url],
+            init_timeout_ms=1500,
+            hedge_delay_ms=100,
+            config_fetch_hedge_abort_ms=5000,
+        )
+        try:
+            assert a.hits >= 2, a.hits
+            assert isinstance(err, QuonfigInitTimeoutError), repr(err)
+            assert err.reason == "timeout"
+            # The errors are the cut attempt's (nothing settled), not attempt
+            # 1's 503s: a timeout must not blame a fast failure.
+            assert "503" not in err.leg_errors, err.leg_errors
+            assert "503" not in str(err), str(err)
+        finally:
+            client.close()
+    finally:
+        a.close()
+        b.close()
+
+
+def test_deadline_cutting_attempt_1_after_a_fast_primary_failure_reports_unavailable() -> None:
+    # Attempt 1 is cut by the deadline: the primary failed fast (503), the
+    # secondary still hangs. A leg answered, so this is not a hang.
+    a, b = _Scripted([503]), _Scripted(["hang"])
+    try:
+        err, client = _fail_reason(
+            [a.url, b.url],
+            init_timeout_ms=500,
+            hedge_delay_ms=100,
+            config_fetch_hedge_abort_ms=5000,
+        )
+        try:
+            assert a.hits == 1, a.hits
+            assert not isinstance(err, QuonfigInitTimeoutError), repr(err)
+            assert err.reason == "unavailable"
+        finally:
+            client.close()
+    finally:
+        a.close()
+        b.close()
+
+
+@pytest.mark.parametrize("status", [401, 503])
+def test_deadline_in_backoff_after_a_partly_answered_attempt_reports_unavailable(
+    status: int,
+) -> None:
+    # Attempt 1 completes: the primary answers fast, the secondary hangs until
+    # the 150ms per-leg abort. The deadline (350ms) falls in the backoff gap
+    # (>= 250ms after attempt 1), so attempt 1 decides: not every leg timed
+    # out. Later attempts repeat the shape, so the result is the same either way.
+    a, b = _Scripted([status]), _Scripted(["hang"])
+    try:
+        err, client = _fail_reason(
+            [a.url, b.url],
+            init_timeout_ms=350,
+            hedge_delay_ms=50,
+            config_fetch_hedge_abort_ms=150,
+        )
+        try:
+            assert not isinstance(err, QuonfigInitTimeoutError), repr(err)
+            assert err.reason == "unavailable"
+        finally:
+            client.close()
+    finally:
+        a.close()
+        b.close()
+
+
+@pytest.mark.parametrize("abort_ms", [150, 5000])
+def test_every_leg_hung_throughout_reports_timeout(abort_ms: int) -> None:
+    # 150ms abort: attempts complete with every leg timed out (deadline in an
+    # attempt or in backoff). 5000ms: attempt 1 is cut with both legs pending.
+    a, b = _Scripted(["hang"]), _Scripted(["hang"])
+    try:
+        err, client = _fail_reason(
+            [a.url, b.url],
+            init_timeout_ms=700,
+            hedge_delay_ms=50,
+            config_fetch_hedge_abort_ms=abort_ms,
+        )
+        try:
+            assert isinstance(err, QuonfigInitTimeoutError), repr(err)
+            assert err.reason == "timeout"
+        finally:
+            client.close()
+    finally:
+        a.close()
+        b.close()
