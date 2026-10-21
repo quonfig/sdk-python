@@ -1277,7 +1277,7 @@ class Quonfig:
                     if not self._init_past_deadline():
                         # The leg errors so far, so a deadline that cuts this
                         # attempt reports what its settled legs said.
-                        self._init_leg_errors = "; ".join(leg_errors)
+                        self._init_attempt_errors = "; ".join(leg_errors)
                 continue
             answered = True
             if lr.not_changed:
@@ -1497,6 +1497,9 @@ class Quonfig:
         self._init_started_at: Optional[float] = None
         # ``primary=<host>: <error>; secondary=...`` from the latest attempt.
         self._init_leg_errors = ""
+        # The same for the attempt in flight: its legs settled before the init
+        # deadline (what a deadline that cuts it reports).
+        self._init_attempt_errors = ""
         # Attempts completed (for the progress lines) and started.
         self._init_attempts = 0
         self._init_attempts_started = 0
@@ -1560,6 +1563,7 @@ class Quonfig:
                 attempt += 1
                 installed = False
                 self._init_attempt_answered = False
+                self._init_attempt_errors = ""
                 self._init_attempts_started = attempt
                 try:
                     installed = self._fetch_and_install_hedged(initial=True)
@@ -1767,7 +1771,12 @@ class Quonfig:
             self._finish_init()
             return
         elapsed = time.monotonic() - (self._init_started_at or time.monotonic())
-        errs = self._init_leg_errors or "no delivery leg answered"
+        # An attempt still in flight is the last attempt: report its settled
+        # legs, not the previous attempt's errors.
+        in_flight = self._init_attempts_started > self._init_attempts
+        errs = (
+            self._init_attempt_errors if in_flight else self._init_leg_errors
+        ) or "no delivery leg answered"
         # Decisions 7 and 10: the attempt in flight at the deadline is the last
         # one; in the backoff gap the last completed one decides. Either way:
         # timeout iff none of its legs answered or failed fast (no attempt

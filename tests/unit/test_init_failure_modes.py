@@ -146,7 +146,10 @@ def test_init_error_types_are_exported_and_timeout_subclasses_init_error() -> No
 
 
 def test_default_mode_is_fail_and_init_raises_after_retrying_refused_legs() -> None:
-    client = _client(REFUSED)
+    # 650ms: attempt 2 starts by ~500ms and attempt 3 no sooner than 750ms, so
+    # the deadline falls in a backoff gap, never just after an attempt starts
+    # (an attempt cut before any leg answered is a timeout, Decision 10).
+    client = _client(REFUSED, init_timeout_ms=650)
     try:
         err, elapsed = _timed_init(client)
         assert isinstance(err, QuonfigInitError), repr(err)
@@ -438,7 +441,9 @@ def test_every_auth_class_status_from_every_leg_fails_at_once(status: int) -> No
 
 def test_auth_class_from_the_primary_alone_does_not_decide_unauthorized() -> None:
     a, b = _Upstream(404), _Upstream(503)
-    client = _client([a.url, b.url], init_timeout_ms=500)
+    # 200ms: before attempt 2 can start (>= 250ms backoff), so attempt 1, with
+    # both legs answered, decides (Decision 10).
+    client = _client([a.url, b.url], init_timeout_ms=200)
     try:
         err, _ = _timed_init(client)
         assert isinstance(err, QuonfigInitError), repr(err)
@@ -756,6 +761,10 @@ def test_hung_retry_after_a_fast_503_reports_timeout() -> None:
             assert a.hits >= 2, a.hits
             assert isinstance(err, QuonfigInitTimeoutError), repr(err)
             assert err.reason == "timeout"
+            # The errors are the cut attempt's (nothing settled), not attempt
+            # 1's 503s: a timeout must not blame a fast failure.
+            assert "503" not in err.leg_errors, err.leg_errors
+            assert "503" not in str(err), str(err)
         finally:
             client.close()
     finally:
