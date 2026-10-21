@@ -125,8 +125,10 @@ a `git pull`, or a build step.
 ```python
 from quonfig import Quonfig
 
+
 def on_update():
     print("Quonfig configs reloaded from disk")
+
 
 client = Quonfig(
     datadir="./workspace-data",
@@ -232,17 +234,17 @@ from quonfig import Quonfig
 # Module scope — once per execution environment, on cold start.
 client = Quonfig(
     sdk_key=os.environ["QUONFIG_BACKEND_SDK_KEY"],
-    enable_sse=False,                    # no long-lived stream
-    fallback_poll_enabled=False,         # no background poller
+    enable_sse=False,  # no long-lived stream
+    fallback_poll_enabled=False,  # no background poller
     collect_evaluation_summaries=False,  # no background telemetry
-    context_upload_mode="none",          # no background telemetry
+    context_upload_mode="none",  # no background telemetry
 ).init()
 
 
 def lambda_handler(event, context):
     client.update_if_staler_than(60_000)  # non-blocking; returns immediately
     body = client.get_string("greeting", default="hello")
-    client.flush()                        # no-op here (telemetry off); delivers it if enabled
+    client.flush()  # no-op here (telemetry off); delivers it if enabled
     return {"statusCode": 200, "body": body}
 ```
 
@@ -309,7 +311,7 @@ parent's snapshot.
 # app.py, imported by `gunicorn --preload -w 8 app:app`
 from quonfig import Quonfig
 
-client = Quonfig(sdk_key="sdk-...").init()   # built once, in the master
+client = Quonfig(sdk_key="sdk-...").init()  # built once, in the master
 ```
 
 Each forked worker gets its own transport, its own SSE stream or HTTP poll
@@ -606,7 +608,7 @@ The client exposes two diagnostic getters:
 
 ```python
 client.last_successful_refresh()  # -> datetime | None
-client.connection_state()         # -> "connected" | "disconnected" | "falling_back" | "initializing"
+client.connection_state()  # -> "connected" | "disconnected" | "falling_back" | "initializing"
 ```
 
 - `last_successful_refresh()` is the wall-clock time of the most recent
