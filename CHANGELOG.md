@@ -69,6 +69,14 @@
 
 ### Fixed
 
+- **The init deadline reason now follows the attempt in flight (qfg-9p4i.17.10,
+  Decisions 7 and 10).** When `init_timeout_ms` cuts an attempt, that attempt
+  decides the reason: `timeout` only if none of its legs answered. A hung retry
+  after a fast 503 now raises `QuonfigInitTimeoutError`, and a first attempt
+  cut while the primary had already failed fast raises `reason="unavailable"`.
+  In the backoff gap the last completed attempt still decides, and no new
+  attempt starts once the deadline has passed.
+
 - **A fast boot failure now honors `on_init_failure="raise"` (patch,
   qfg-9p4i.1).** When every delivery leg failed fast at boot (connection
   refused, DNS failure, 401, 5xx), init latched with an empty store and the
