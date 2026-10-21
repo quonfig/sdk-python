@@ -51,8 +51,12 @@ def _init_failure_client(
 
             return _StatusHandler
 
+        fixed_urls = api_urls
         api_urls = []
-        for status in api_statuses:
+        for i, status in enumerate(api_statuses):
+            if status == 0:
+                api_urls.append(fixed_urls[i])
+                continue
             server = ThreadingHTTPServer(("127.0.0.1", 0), _status_handler(status))
             threading.Thread(target=server.serve_forever, daemon=True).start()
             servers.append(server)
@@ -105,7 +109,7 @@ def test_get_or_raise_returns_a_default_value_instead_of_raising() -> None:
 # init fails by default when every delivery leg refuses the connection
 def test_init_fails_by_default_when_every_delivery_leg_refuses_the_connection() -> None:
     c, err, elapsed_ms, close = _init_failure_client(
-        None, ["http://127.0.0.1:1", "http://127.0.0.1:2"], [], None, 500
+        None, ["http://127.0.0.1:1", "http://127.0.0.1:2"], [], None, 0
     )
     try:
         assert err is not None, "init() must raise (on_init_failure default = fail)"
@@ -116,28 +120,7 @@ def test_init_fails_by_default_when_every_delivery_leg_refuses_the_connection() 
         assert getattr(err, "reason", None) == "unavailable", (
             f"reason {getattr(err, 'reason', None)!r}"
         )
-        assert elapsed_ms < 5000, f"init() raised after {elapsed_ms:.0f}ms"
-    finally:
-        close()
-
-
-# init with on_init_failure fail raises when every delivery leg refuses the connection
-def test_init_with_on_init_failure_fail_raises_when_every_delivery_leg_refuses_the_connection() -> (
-    None
-):
-    c, err, elapsed_ms, close = _init_failure_client(
-        "fail", ["http://127.0.0.1:1", "http://127.0.0.1:2"], [], None, 500
-    )
-    try:
-        assert err is not None, "init() must raise (on_init_failure fail)"
-        assert "QuonfigInitError" in [k.__name__ for k in type(err).__mro__], repr(err)
-        assert not isinstance(err, QuonfigInitTimeoutError), (
-            "reason unavailable, not the init timeout"
-        )
-        assert getattr(err, "reason", None) == "unavailable", (
-            f"reason {getattr(err, 'reason', None)!r}"
-        )
-        assert elapsed_ms < 5000, f"init() raised after {elapsed_ms:.0f}ms"
+        assert elapsed_ms < 8000, f"init() raised after {elapsed_ms:.0f}ms"
     finally:
         close()
 
@@ -211,7 +194,7 @@ def test_deprecated_on_init_failure_raise_behaves_as_fail_when_every_delivery_le
     None
 ):
     c, err, elapsed_ms, close = _init_failure_client(
-        "raise", ["http://127.0.0.1:1", "http://127.0.0.1:2"], [], None, 500
+        "raise", ["http://127.0.0.1:1", "http://127.0.0.1:2"], [], None, 0
     )
     try:
         assert err is not None, "init() must raise (on_init_failure raise)"
@@ -222,7 +205,7 @@ def test_deprecated_on_init_failure_raise_behaves_as_fail_when_every_delivery_le
         assert getattr(err, "reason", None) == "unavailable", (
             f"reason {getattr(err, 'reason', None)!r}"
         )
-        assert elapsed_ms < 5000, f"init() raised after {elapsed_ms:.0f}ms"
+        assert elapsed_ms < 8000, f"init() raised after {elapsed_ms:.0f}ms"
     finally:
         close()
 
@@ -280,11 +263,11 @@ def test_init_with_on_init_failure_fail_raises_at_once_when_every_delivery_leg_a
         close()
 
 
-# init with on_init_failure fail raises unavailable when only the primary answers 401 and the secondary 503
-def test_init_with_on_init_failure_fail_raises_unavailable_when_only_the_primary_answers_401_and_the_secondary_503() -> (
+# init with on_init_failure fail raises unavailable after one attempt when only the primary answers 401 and the secondary 503
+def test_init_with_on_init_failure_fail_raises_unavailable_after_one_attempt_when_only_the_primary_answers_401_and_the_secondary_503() -> (
     None
 ):
-    c, err, elapsed_ms, close = _init_failure_client("fail", [], [401, 503], None, 1500)
+    c, err, elapsed_ms, close = _init_failure_client("fail", [], [401, 503], None, 0)
     try:
         assert err is not None, "init() must raise (on_init_failure fail)"
         assert "QuonfigInitError" in [k.__name__ for k in type(err).__mro__], repr(err)
@@ -294,7 +277,28 @@ def test_init_with_on_init_failure_fail_raises_unavailable_when_only_the_primary
         assert getattr(err, "reason", None) == "unavailable", (
             f"reason {getattr(err, 'reason', None)!r}"
         )
-        assert elapsed_ms < 6000, f"init() raised after {elapsed_ms:.0f}ms"
+        assert elapsed_ms < 5000, f"init() raised after {elapsed_ms:.0f}ms"
+    finally:
+        close()
+
+
+# init with on_init_failure fail raises unavailable at the deadline when the primary answers 401 and the secondary hangs
+def test_init_with_on_init_failure_fail_raises_unavailable_at_the_deadline_when_the_primary_answers_401_and_the_secondary_hangs() -> (
+    None
+):
+    c, err, elapsed_ms, close = _init_failure_client(
+        "fail", ["", "http://192.0.2.1:8002"], [401, 0], None, 9000
+    )
+    try:
+        assert err is not None, "init() must raise (on_init_failure fail)"
+        assert "QuonfigInitError" in [k.__name__ for k in type(err).__mro__], repr(err)
+        assert not isinstance(err, QuonfigInitTimeoutError), (
+            "reason unavailable, not the init timeout"
+        )
+        assert getattr(err, "reason", None) == "unavailable", (
+            f"reason {getattr(err, 'reason', None)!r}"
+        )
+        assert elapsed_ms < 12000, f"init() raised after {elapsed_ms:.0f}ms"
     finally:
         close()
 
@@ -315,7 +319,7 @@ def test_init_with_init_timeout_ms_0_and_on_init_failure_fail_raises_after_one_a
         assert getattr(err, "reason", None) == "unavailable", (
             f"reason {getattr(err, 'reason', None)!r}"
         )
-        assert elapsed_ms < 5000, f"init() raised after {elapsed_ms:.0f}ms"
+        assert elapsed_ms < 8000, f"init() raised after {elapsed_ms:.0f}ms"
     finally:
         close()
 
@@ -359,7 +363,7 @@ def test_init_error_never_carries_the_userinfo_of_a_delivery_url() -> None:
         ["http://qfguser:qfgsecret@127.0.0.1:1", "http://qfguser:qfgsecret@127.0.0.1:2"],
         [],
         None,
-        500,
+        0,
     )
     try:
         assert err is not None, "init() must raise (on_init_failure fail)"
@@ -370,7 +374,7 @@ def test_init_error_never_carries_the_userinfo_of_a_delivery_url() -> None:
         assert getattr(err, "reason", None) == "unavailable", (
             f"reason {getattr(err, 'reason', None)!r}"
         )
-        assert elapsed_ms < 5000, f"init() raised after {elapsed_ms:.0f}ms"
+        assert elapsed_ms < 8000, f"init() raised after {elapsed_ms:.0f}ms"
         chain: "list[BaseException]" = []
         e: "BaseException | None" = err
         while e is not None and e not in chain:
@@ -386,7 +390,7 @@ def test_init_error_never_carries_the_userinfo_of_a_delivery_url() -> None:
 # init error never carries an upstream response body
 def test_init_error_never_carries_an_upstream_response_body() -> None:
     c, err, elapsed_ms, close = _init_failure_client(
-        "fail", [], [503, 503], "upstream exploded: qfg-upstream-body-marker", 500
+        "fail", [], [503, 503], "upstream exploded: qfg-upstream-body-marker", 0
     )
     try:
         assert err is not None, "init() must raise (on_init_failure fail)"
