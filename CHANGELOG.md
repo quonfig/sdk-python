@@ -16,7 +16,8 @@
     - `"fail"`: `init()` raises `QuonfigInitError` at the timeout
       (`reason="unavailable"`), or its subclass `QuonfigInitTimeoutError` when
       no leg answered at all (`reason="timeout"`). If every leg rejects the SDK
-      key (401/403), it raises at once with `reason="unauthorized"`.
+      key (401/403/404/410 from every configured leg), it raises at once with
+      `reason="unauthorized"`.
     - `"wait"`: `init()` keeps blocking and retrying until a config loads.
     - `"continue"`: `init()` returns at the timeout; getters serve code
       defaults until a config loads.
@@ -48,12 +49,21 @@
     timeout; the failure logs one ERROR naming each leg's host and error
     (never the SDK key); a client still unready after init logs a WARN every
     30s for 5 minutes, then every 5 minutes; the recovery logs a WARN. Records
-    carry `quonfig_event="quonfig.init.<name>"` in `extra`.
+    carry `event="quonfig.init.<name>"` in `extra`.
   - A forked child's first fetch applies the same `on_init_failure`. An
     explicit `init()` in the child raises like a fresh boot; the lazy rebuild
     triggered by a first getter logs the failure and serves defaults instead,
     so a logging filter never raises.
   - Superseded: the 1.x getter-side raise from qfg-9p4i.1 below.
+- **Cross-SDK init conformance (qfg-9p4i.17).** The init auth set is
+  401/403/404/410 from every configured leg, and the unauthorized line reports
+  the primary's status. `init_timeout_ms <= 0` runs exactly one attempt, then
+  applies `on_init_failure`. A second `init()` on a started client joins the
+  running retry instead of starting a second SSE stream and reporter that
+  `close()` did not stop. The heal line maps an unknown leg to primary, and it
+  is logged before `wait_for_ready()` wakes. URL userinfo is stripped from init
+  log lines and the init error. A leg whose body stalls mid-read counts as a
+  hang, so an attempt that hung that way raises `reason="timeout"`.
 - **Tests:** integration-test-data pin bumped to `v2026.10.20` (init-failure
   cases); generated tests regenerated.
 
