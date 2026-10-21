@@ -13,8 +13,6 @@ import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from urllib.parse import urlsplit
 
-import requests
-
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -39,7 +37,13 @@ from .exceptions import (
 )
 from .resolver import LOG_LEVEL_ORDER, Resolver, compute_reportable_value_for
 from .store import ConfigStore
-from .transport import CycleOutcome, FallbackPoller, Transport, is_auth_class_status
+from .transport import (
+    CycleOutcome,
+    FallbackPoller,
+    Transport,
+    is_auth_class_status,
+    is_timeout_error,
+)
 from .types import (
     QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP,
     QUONFIG_SDK_LOGGING_CONTEXT_NAME,
@@ -171,7 +175,7 @@ def _host_of(url: str) -> str:
     return f"{parts.hostname}:{parts.port}" if parts.port is not None else parts.hostname
 
 
-_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
+_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/?#\s]*@")
 
 
 def _redact_userinfo(text: str) -> str:
@@ -1264,7 +1268,10 @@ class Quonfig:
                 if initial:
                     leg_errors.append(self._describe_leg_error(lr))
                     leg_statuses[lr.source_index] = lr.status
-                    if lr.status or not isinstance(lr.error, (requests.Timeout, TimeoutError)):
+                    # A leg that hung (including a body that stalled after
+                    # the status line) counts toward reason="timeout"
+                    # (Decision 2); any other error does not.
+                    if not is_timeout_error(lr.error):
                         all_timeouts = False
                 continue
             answered = True
@@ -1325,7 +1332,7 @@ class Quonfig:
         host = "?"
         if self._transport is not None and lr.source_index < len(self._transport.api_urls):
             host = _host_of(self._transport.api_urls[lr.source_index])
-        if lr.status:
+        if lr.status and not is_timeout_error(lr.error):
             detail = f"HTTP {lr.status}"
         else:
             detail = _redact_userinfo(f"{type(lr.error).__name__}: {lr.error}")

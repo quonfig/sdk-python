@@ -62,7 +62,8 @@
   running retry instead of starting a second SSE stream and reporter that
   `close()` did not stop. The heal line maps an unknown leg to primary, and it
   is logged before `wait_for_ready()` wakes. URL userinfo is stripped from init
-  log lines and the init error.
+  log lines and the init error. A leg whose body stalls mid-read counts as a
+  hang, so an attempt that hung that way raises `reason="timeout"`.
 - **Tests:** integration-test-data pin bumped to `v2026.10.20` (init-failure
   cases); generated tests regenerated.
 

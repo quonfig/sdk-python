@@ -153,6 +153,13 @@ def is_auth_class_status(status: int) -> bool:
     return status in AUTH_CLASS_STATUSES
 
 
+def is_timeout_error(error: Optional[BaseException]) -> bool:
+    """A leg error that is a hang: connect/read timeout, the per-leg
+    wall-clock abort, or urllib3's own ``ReadTimeoutError`` from a body that
+    stalls mid-read (``raw.read1`` is not wrapped by requests)."""
+    return isinstance(error, (requests.Timeout, TimeoutError, urllib3.exceptions.TimeoutError))
+
+
 @dataclass
 class CycleOutcome:
     """What one hedged config-fetch cycle produced, as the auth-failure rule

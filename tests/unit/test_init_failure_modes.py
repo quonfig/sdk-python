@@ -618,3 +618,71 @@ def test_init_lines_and_error_never_carry_url_userinfo(
         assert "127.0.0.1:1" in str(err)
     finally:
         client.close()
+
+
+class _StallBody:
+    """Sends a 200 with headers and part of the body, then stalls: a hang
+    mid-body, surfaced by urllib3 as its own ReadTimeoutError."""
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        outer = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "1000")
+                self.end_headers()
+                self.wfile.write(b'{"configs": [')
+                self.wfile.flush()
+                outer._stop.wait(10)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._server.daemon_threads = True
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    def close(self) -> None:
+        self._stop.set()
+        self._server.shutdown()
+
+
+@pytest.mark.parametrize("hang", ["headers", "body"])
+def test_zero_init_timeout_reports_timeout_when_the_single_attempt_hung(hang: str) -> None:
+    # Decision 2: reason is "timeout" iff the LAST attempt hung (every leg
+    # ended on a timeout/abort). A body that stalls mid-read is a hang too.
+    a, b = (_Blackhole(), _Blackhole()) if hang == "headers" else (_StallBody(), _StallBody())
+    client = _client(
+        [a.url, b.url],
+        init_timeout_ms=0,
+        hedge_delay_ms=50,
+        config_fetch_hedge_abort_ms=300,
+    )
+    try:
+        err, _ = _timed_init(client)
+        assert isinstance(err, QuonfigInitTimeoutError), repr(err)
+        assert err.reason == "timeout"
+    finally:
+        client.close()
+        a.close()
+        b.close()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "boom http://user:hunter2@host:1/api",
+        "boom https://user:hun@ter2@host:1/api?x=1",
+        "boom http://hunter2@host",
+    ],
+)
+def test_redact_userinfo_strips_credentials_including_an_at_in_the_password(text: str) -> None:
+    from quonfig.client import _redact_userinfo
+
+    out = _redact_userinfo(text)
+    assert "hunter2" not in out and "ter2" not in out, out
+    assert "host" in out, out
