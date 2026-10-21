@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 - 2026-10-21
 
-### Breaking changes (2.0.0)
+### Breaking changes
 
 - **BREAKING / UPGRADE: `init()` now blocks, and fails by default when no
   config loads (major, qfg-9p4i.8).** Spec:
