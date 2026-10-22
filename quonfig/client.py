@@ -613,6 +613,12 @@ class Quonfig:
         # ``_chaos_diagnostics()``; guarded by ``_health_lock``. Not public API.
         self._diag_sse_connect_attempts = 0
         self._diag_worker_restart_layer1 = 0
+        # ``quonfig_sdk_callback_errors_total{callback}`` (contract Test 5,
+        # qfg-6vno.29): caught user-callback raises. Never a worker restart.
+        self._diag_callback_errors: Dict[str, int] = {
+            "on_config_update": 0,
+            "on_connection_state_change": 0,
+        }
 
         # Staleness-triggered refresh coalescing (qfg-0xj3.2).
         # ``update_if_staler_than`` is called per-request on serverless hosts,
@@ -1087,9 +1093,11 @@ class Quonfig:
         try:
             self._on_config_update()
         except Exception as e:  # noqa: BLE001
-            self._record_diagnostic("worker_restart")
-            logger.error(
-                "Quonfig: onConfigUpdate callback threw: %s: %s — supervisor caught, continuing",
+            # A callback error, not a worker restart: no worker was restarted
+            # (contract Test 5, qfg-6vno.29).
+            self._record_callback_error("on_config_update")
+            logger.exception(
+                "Quonfig: onConfigUpdate callback threw: %s: %s — caught, continuing",
                 type(e).__name__,
                 e,
             )
@@ -1102,6 +1110,11 @@ class Quonfig:
             elif kind == "worker_restart":
                 self._diag_worker_restart_layer1 += 1
 
+    def _record_callback_error(self, callback: str) -> None:
+        """Count one caught user-callback raise (test-only, qfg-6vno.29)."""
+        with self._health_lock:
+            self._diag_callback_errors[callback] = self._diag_callback_errors.get(callback, 0) + 1
+
     def _chaos_diagnostics(self) -> Dict[str, Any]:
         """Test-only: the SDK-side counters the cross-SDK chaos scenarios
         assert on (qfg-6vno.5). NOT public API — no semver promise; the chaos
@@ -1113,11 +1126,16 @@ class Quonfig:
         - ``worker_restart_layer1``: Layer 1 supervisor recoveries
           (``quonfig_sdk_worker_restart_total{layer="1"}``): each restart of
           the SSE worker after an abnormal connection end (refused, IO error,
-          read timeout, a stream that ended before its first frame), plus each
-          user ``on_config_update`` throw the supervisor caught (recovered in
-          place, without a thread restart). A clean EOF after a frame is a
-          transparent reconnect, not a restart. There is no layer-2 counter:
-          the fallback poller has no restart supervisor.
+          read timeout, a stream that ended before its first frame, an
+          oversized event). A clean EOF after a frame is a transparent
+          reconnect, not a restart, and a user callback raise is never a
+          restart. There is no layer-2 counter: the fallback poller has no
+          restart supervisor.
+        - ``callback_errors``: ``{callback: count}`` for
+          ``quonfig_sdk_callback_errors_total{callback}``, ``callback`` in
+          ``on_config_update`` / ``on_connection_state_change`` (the
+          ``on_sse_connection_state_change`` option): each user callback
+          raise the SDK caught (contract Test 5, qfg-6vno.29).
         - ``sse_worker_alive``: whether the SSE worker thread is running.
 
         Diagnostic-only: it never triggers the post-fork rebuild (qfg-lv4n).
@@ -1125,10 +1143,12 @@ class Quonfig:
         with self._health_lock:
             attempts = self._diag_sse_connect_attempts
             restarts = self._diag_worker_restart_layer1
+            callback_errors = dict(self._diag_callback_errors)
         sse = self._sse
         return {
             "sse_connect_attempts": attempts,
             "worker_restart_layer1": restarts,
+            "callback_errors": callback_errors,
             "sse_worker_alive": bool(sse is not None and sse.is_alive()),
         }
 
@@ -2659,8 +2679,12 @@ class Quonfig:
             try:
                 self._on_sse_connection_state_change(state)
             except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Quonfig: on_sse_connection_state_change threw: %s: %s",
+                # ERROR with the traceback, counted as a callback error, never
+                # a restart (contract Test 5, qfg-6vno.29).
+                self._record_callback_error("on_connection_state_change")
+                logger.exception(
+                    "Quonfig: on_sse_connection_state_change callback threw: %s: %s"
+                    " — caught, continuing",
                     type(e).__name__,
                     e,
                 )

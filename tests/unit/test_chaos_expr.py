@@ -35,6 +35,43 @@ def test_known_sdk_metric_still_evaluates() -> None:
     assert r.status == "pass", r.reason
 
 
+class _DiagClient:
+    def __init__(self, diag: dict) -> None:
+        self.diag = diag
+
+    def _chaos_diagnostics(self) -> dict:
+        return self.diag
+
+
+def test_callback_errors_metric_reads_the_sdk_counter() -> None:
+    """Scenario 10 exp[0] / contract Test 5 (qfg-6vno.29)."""
+    probe = ChaosProbe()
+    probe.set_client(
+        _DiagClient(
+            {
+                "sse_connect_attempts": 1,
+                "worker_restart_layer1": 0,
+                "sse_worker_alive": True,
+                "callback_errors": {"on_config_update": 2, "on_connection_state_change": 0},
+            }
+        )
+    )
+    expr = "client.sdkMetric('quonfig_sdk_callback_errors_total', callback='on_config_update')"
+    assert _evaluate(f"{expr} >= 1", probe).status == "pass"
+    assert _evaluate(f"{expr} == 2", probe).status == "pass"
+    other = (
+        "client.sdkMetric('quonfig_sdk_callback_errors_total', "
+        "callback='on_connection_state_change') == 0"
+    )
+    assert _evaluate(other, probe).status == "pass"
+    unknown = "client.sdkMetric('quonfig_sdk_callback_errors_total', callback='on_nope') == 0"
+    r = _evaluate(unknown, probe)
+    assert r.status == "fail"
+    # A fresh probe (no client yet) answers 0, not an unknown metric.
+    fresh = ChaosProbe()
+    assert _evaluate(f"{expr} == 0", fresh).status == "pass"
+
+
 def test_unrecognized_expression_fails() -> None:
     r = _evaluate("client.somethingNew() == 1", ChaosProbe())
     assert r.status == "fail"

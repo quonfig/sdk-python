@@ -312,6 +312,7 @@ class ChaosProbe:
             return {
                 "sse_connect_attempts": 0,
                 "worker_restart_layer1": 0,
+                "callback_errors": {"on_config_update": 0, "on_connection_state_change": 0},
                 "sse_worker_alive": False,
             }
         return c._chaos_diagnostics()
@@ -360,6 +361,14 @@ class ChaosProbe:
             return float(self.diagnostics()["worker_restart_layer1"]), "known"
         if name == "quonfig_sse_connect_attempts_total":
             return float(self.diagnostics()["sse_connect_attempts"]), "known"
+        if name == "quonfig_sdk_callback_errors_total":
+            errors = self.diagnostics()["callback_errors"]
+            callback = labels.get("callback")
+            if callback is None:
+                return float(sum(errors.values())), "known"
+            if callback not in errors:
+                return 0.0, "unknown"
+            return float(errors[callback]), "known"
         return 0.0, "unknown"
 
     def log_matches(self, level: str, regex: re.Pattern) -> int:
@@ -377,7 +386,7 @@ _RE_LAST_REFRESH = re.compile(
     r"^client\.lastSuccessfulRefresh\(\)\s*(>=|>|<=|<|==)\s*\(now\(\)\s*-\s*(\d+)\)$"
 )
 _RE_SDK_METRIC = re.compile(
-    r"^client\.sdkMetric\(\s*'([^']+)'\s*(?:,\s*layer=\s*'([^']+)'\s*)?\)\s*"
+    r"^client\.sdkMetric\(\s*'([^']+)'\s*(?:,\s*(layer|callback)=\s*'([^']+)'\s*)?\)\s*"
     r"(>=|<=|==|!=|<|>)\s*(\d+)$"
 )
 _RE_SERVER_METRIC = re.compile(r"^server_metric\(\s*'([^']+)'\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)$")
@@ -520,19 +529,21 @@ def _eval_leaf(expr: str, probe: ChaosProbe) -> EvalResult:
         return _leaf(ok, f"lastSuccessfulRefresh={last} {op} (now()-{ago})={threshold}")
     m = _RE_SDK_METRIC.match(expr)
     if m:
-        metric, layer, op, want_str = m.group(1), m.group(2), m.group(3), m.group(4)
-        labels = {"layer": layer} if layer else {}
+        metric, label, label_value = m.group(1), m.group(2), m.group(3)
+        op, want_str = m.group(4), m.group(5)
+        labels = {label: label_value} if label else {}
+        shown = f"{metric},{label}={label_value}" if label else metric
         got, status = probe.sdk_metric(metric, labels)
         if status == "skip":
-            why = f"sdkMetric({metric},layer={layer or ''}) {op} {want_str}: {LAYER2_RESTART_SKIP_REASON}"
+            why = f"sdkMetric({shown}) {op} {want_str}: {LAYER2_RESTART_SKIP_REASON}"
             return EvalResult("skip", why, [why])
         if status != "known":
             return _leaf(
-                False, f"unknown sdkMetric {metric!r}: the chaos probe does not implement it"
+                False, f"unknown sdkMetric {shown!r}: the chaos probe does not implement it"
             )
         want = float(want_str)
         ok = _compare(op, got, want)
-        return _leaf(ok, f"sdkMetric({metric},layer={layer or ''})={got} {op} {want}")
+        return _leaf(ok, f"sdkMetric({shown})={got} {op} {want}")
     m = _RE_SERVER_METRIC.match(expr)
     if m:
         # Explicit SKIP, never a silent 0 (qfg-goi1.1.4, Decision 6).

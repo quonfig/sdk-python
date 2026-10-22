@@ -750,6 +750,179 @@ def test_returns_false_for_prop_does_not_match_rule_when_the_given_prop_matches_
     assert result is False
 
 
+# returns true for PROP_MATCHES when the regex matches part of the prop (unanchored search)
+def test_returns_true_for_prop_matches_when_the_regex_matches_part_of_the_prop_unanchored_search(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.matches", contexts={"user": {"code": "xaab"}})
+    assert result is True
+
+
+# returns false for PROP_DOES_NOT_MATCH when the regex matches part of the prop (unanchored search)
+def test_returns_false_for_prop_does_not_match_when_the_regex_matches_part_of_the_prop_unanchored_search(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.does-not-match", contexts={"user": {"code": "xaab"}}
+    )
+    assert result is False
+
+
+# returns true for PROP_MATCHES with an anchored regex when the whole prop matches
+def test_returns_true_for_prop_matches_with_an_anchored_regex_when_the_whole_prop_matches(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.matches.anchored", contexts={"user": {"code": "123"}}
+    )
+    assert result is True
+
+
+# returns false for PROP_MATCHES with an anchored regex when the prop is too long
+def test_returns_false_for_prop_matches_with_an_anchored_regex_when_the_prop_is_too_long(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.matches.anchored", contexts={"user": {"code": "1234"}}
+    )
+    assert result is False
+
+
+# returns false for PROP_MATCHES with an anchored regex when the prop has a non-matching character
+def test_returns_false_for_prop_matches_with_an_anchored_regex_when_the_prop_has_a_non_matching_character(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.matches.anchored", contexts={"user": {"code": "12a"}}
+    )
+    assert result is False
+
+
+# returns false for PROP_MATCHES when the prop is not a string
+def test_returns_false_for_prop_matches_when_the_prop_is_not_a_string(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("feature-flag.matches.anchored", contexts={"user": {"code": 123}})
+    assert result is False
+
+
+# returns false for PROP_MATCHES when the prop is missing
+def test_returns_false_for_prop_matches_when_the_prop_is_missing(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.matches.anchored", contexts={"user": {"key": "michael"}}
+    )
+    assert result is False
+
+
+# returns true for PROP_DOES_NOT_MATCH with an anchored regex when the prop is too long
+def test_returns_true_for_prop_does_not_match_with_an_anchored_regex_when_the_prop_is_too_long(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.does-not-match.anchored", contexts={"user": {"code": "1234"}}
+    )
+    assert result is True
+
+
+# returns true for PROP_DOES_NOT_MATCH with an anchored regex when the prop has a non-matching character
+def test_returns_true_for_prop_does_not_match_with_an_anchored_regex_when_the_prop_has_a_non_matching_character(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.does-not-match.anchored", contexts={"user": {"code": "12a"}}
+    )
+    assert result is True
+
+
+# returns false for PROP_DOES_NOT_MATCH with an anchored regex when the whole prop matches
+def test_returns_false_for_prop_does_not_match_with_an_anchored_regex_when_the_whole_prop_matches(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.does-not-match.anchored", contexts={"user": {"code": "123"}}
+    )
+    assert result is False
+
+
+# returns false for PROP_DOES_NOT_MATCH when the prop is not a string
+def test_returns_false_for_prop_does_not_match_when_the_prop_is_not_a_string(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.does-not-match.anchored", contexts={"user": {"code": 123}}
+    )
+    assert result is False
+
+
+# returns false for PROP_DOES_NOT_MATCH when the prop is missing
+def test_returns_false_for_prop_does_not_match_when_the_prop_is_missing(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.does-not-match.anchored", contexts={"user": {"key": "michael"}}
+    )
+    assert result is False
+
+
+# returns false for PROP_MATCHES when the stored regex is invalid
+def test_returns_false_for_prop_matches_when_the_stored_regex_is_invalid(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.matches.invalid-pattern", contexts={"user": {"code": "("}}
+    )
+    assert result is False
+
+
+# returns false for PROP_DOES_NOT_MATCH when the stored regex is invalid
+def test_returns_false_for_prop_does_not_match_when_the_stored_regex_is_invalid(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.does-not-match.invalid-pattern", contexts={"user": {"code": "abc"}}
+    )
+    assert result is False
+
+
+# returns true for IN_SEG when the segment's PROP_DOES_NOT_MATCH criterion holds
+def test_returns_true_for_in_seg_when_the_segment_s_prop_does_not_match_criterion_holds(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.in-segment.does-not-match", contexts={"user": {"code": "abc"}}
+    )
+    assert result is True
+
+
+# returns false for IN_SEG when the segment's PROP_DOES_NOT_MATCH regex matches
+def test_returns_false_for_in_seg_when_the_segment_s_prop_does_not_match_regex_matches(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.in-segment.does-not-match", contexts={"user": {"code": "123"}}
+    )
+    assert result is False
+
+
+# returns false for IN_SEG when the segment's PROP_DOES_NOT_MATCH prop is missing
+def test_returns_false_for_in_seg_when_the_segment_s_prop_does_not_match_prop_is_missing(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.is_feature_enabled(
+        "feature-flag.in-segment.does-not-match", contexts={"user": {"key": "michael"}}
+    )
+    assert result is False
+
+
 # returns true for IS_PRESENT rule when the given prop is a non-empty string
 def test_returns_true_for_is_present_rule_when_the_given_prop_is_a_non_empty_string(
     config_client,

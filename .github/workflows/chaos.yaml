@@ -79,7 +79,7 @@ jobs:
           # deliberately rev'd. Kept equal to the unit/contract pin in
           # test.yaml (qfg-goi1.1.4). scripts/check-itd-pins.sh (run by
           # test.yaml) fails CI when the three ITD refs differ (qfg-6vno.7).
-          ref: v2026.10.21.1
+          ref: v2026.10.22.2
 
       - name: Checkout api-delivery
         if: env.HAS_REPO_TOKEN == 'true'
