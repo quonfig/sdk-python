@@ -4,6 +4,21 @@
 
 ### Changed
 
+- A forked child whose lazy re-initialization fails under the default
+  `on_init_failure="fail"` now raises, matching a fresh boot and sdk-ruby
+  (init-failure design B.3 "Fork"; qfg-6vno.23). Before, a recycled worker
+  that came up during a delivery outage blocked up to `init_timeout_ms` on its
+  first getter and then silently served code defaults. Now that first content
+  read (`get`, `get_string`, `enabled`, `keys`, ...) raises `QuonfigInitError`,
+  and every later one raises the same error without a new fetch until the
+  background update channel installs a config. `*_details` getters return
+  `reason="ERROR"`, `error_code="PROVIDER_NOT_READY"` instead of raising;
+  `should_log`, `with_context`, `refresh` and the health accessors never
+  raise it. `continue` and `wait` are unchanged, an explicit `init()` in the
+  child still raises as before, and the parent is never touched. This is a
+  behavior change on the default mode, approved as minor under Decision 1
+  (qfg-6vno.16).
+
 - Size caps on delivery payloads (minor, qfg-6vno.20.4; supervisor contract
   "Rule — size caps", qfg-6vno.8). One SSE event is capped at 4 MiB
   (4,194,304 bytes), counting every line of the event, so a multi-line `data:`

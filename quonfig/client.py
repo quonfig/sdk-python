@@ -642,6 +642,10 @@ class Quonfig:
         self._fork_lock = threading.RLock()
         self._fork_had_transport = self._transport is not None
         self._fork_stream_url_override: Optional[str] = None
+        # A LAZY child rebuild that failed under on_init_failure="fail"
+        # (qfg-6vno.23): every content call raises it, without re-running the
+        # fetch, until the child heals (sdk-ruby ``@fork_rebuild_error``).
+        self._fork_init_error: Optional[QuonfigInitError] = None
 
         # Track this instance so the at-fork hook can find it. Registered LAST
         # so a construction that raised is never handed to the hook. Weakly
@@ -931,6 +935,9 @@ class Quonfig:
         self._initialized = threading.Event()
         self._reset_init_state(ready=False)
         self._init_error = None
+        # A grandchild rebuilds afresh; it does not inherit its parent
+        # child's sticky rebuild error (qfg-6vno.23).
+        self._fork_init_error = None
         self._started = False
         if not pending:
             # Captured from the transport this fork is dropping. On a re-fork of
@@ -990,6 +997,18 @@ class Quonfig:
             self._needs_rebuild_after_fork = False
             self._rebuild_in_child(raise_init_error=raise_init_error)
 
+    def _raise_sticky_fork_init_error(self) -> None:
+        """Raise the lazy child rebuild's ``fail`` error, unless the update
+        channel has since installed an envelope: then the init failure is
+        history and it is cleared (sdk-ruby ``raise_sticky_fork_init_error``)."""
+        err = self._fork_init_error
+        if err is None:
+            return
+        if self._ready.is_set() or self._shutdown.is_set():
+            self._fork_init_error = None
+            return
+        raise err
+
     def _rebuild_in_child(self, raise_init_error: bool = False) -> None:
         """Stand the client back up in a forked child: fresh transport (fresh
         ``requests.Session``, so a child never reuses a parent's pooled
@@ -1001,12 +1020,15 @@ class Quonfig:
         Datadir mode re-reads from disk here, exactly as a fresh client would.
 
         The child's ``init()`` applies the same ``on_init_failure`` as a fresh
-        boot (it blocks; ``wait`` keeps blocking). A ``QuonfigInitError`` from
-        it propagates only from an explicit ``init()`` call
-        (``raise_init_error``); a LAZY rebuild runs inside whatever public call
-        the child made first — possibly a logging filter's ``should_log`` — so
-        there it is logged (init already logged the ERROR) and the caller gets
-        defaults while the client keeps retrying.
+        boot (it blocks; ``wait`` keeps blocking; init-failure design B.3
+        "Fork"). A ``QuonfigInitError`` from an explicit ``init()`` call
+        (``raise_init_error``) propagates from it. On a LAZY rebuild under
+        ``fail`` it is kept as the sticky ``_fork_init_error``: the first
+        content call raises it, and so does every later one, without a new
+        fetch, until the update channel heals the child (qfg-6vno.23; matches
+        sdk-ruby). Calls that are not content reads (a logging filter's
+        ``should_log``, ``with_context``, ``refresh``...) never raise it.
+        ``continue`` serves defaults while the client keeps retrying.
         """
         self._build_components_after_fork()
 
@@ -1042,6 +1064,8 @@ class Quonfig:
 
         if init_error is not None and raise_init_error:
             raise init_error
+        if init_error is not None and self._on_init_failure == "fail":
+            self._fork_init_error = init_error
 
         components = []
         if self._transport is not None:
@@ -1944,8 +1968,13 @@ class Quonfig:
     def _wait_initialized(self) -> None:
         """Prepare a read. Getters never block on init (2.0.0, design B.3):
         ``init()`` is the only gate. Before the first config a getter answers
-        from the empty store, so the caller's default (or ``on_no_default``)."""
+        from the empty store, so the caller's default (or ``on_no_default``).
+
+        In a forked child whose lazy rebuild failed under ``fail``, raises the
+        sticky ``QuonfigInitError`` until the child heals (qfg-6vno.23)."""
         self._ensure_rebuilt_after_fork()
+        if self._fork_init_error is not None:
+            self._raise_sticky_fork_init_error()
         if self._evaluator is None:
             self._evaluator = Evaluator(self._store, self._environment)
         if not self._started and not self._warned_get_before_init:
@@ -2205,6 +2234,17 @@ class Quonfig:
                     reason_str,
                     hash_property_missing=result.hash_property_missing,
                 ),
+            )
+        except QuonfigInitError as e:
+            # A forked child's sticky ``fail`` rebuild error (qfg-6vno.23): the
+            # plain getters raise it, ``*_details`` report not-ready instead.
+            return EvaluationDetails(
+                value=None,
+                reason="ERROR",
+                error_code="PROVIDER_NOT_READY",
+                error_message=str(e),
+                variant=self._build_variant("ERROR", None, None),
+                flag_metadata=self._build_flag_metadata(None, None, None, None, None),
             )
         except Exception as e:  # noqa: BLE001 — *_details must never raise
             return EvaluationDetails(
