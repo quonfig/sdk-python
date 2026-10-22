@@ -174,18 +174,20 @@ def _apply_inject(tp: Toxiproxy, inj: Dict[str, Any]) -> Optional[Dict[str, Any]
         tp.set_enabled("sse", False)
         return {"enable": ["sse"]}
     if "sse_http_status" in inj:
-        # toxiproxy is TCP-only; HTTP status injection is a no-op here.
-        print(
-            f"inject: sse_http_status={inj['sse_http_status']} not supported (toxiproxy TCP-only)"
+        # toxiproxy is TCP-only and cannot script an HTTP status. Fail the run
+        # rather than silently pass a scenario whose fault never landed
+        # (qfg-6vno.5).
+        raise ValueError(
+            f"inject: sse_http_status={inj['sse_http_status']} is not supported by this rig "
+            "(toxiproxy is TCP-only)"
         )
-        return {}
     if inj.get("proxy") and inj.get("toxic"):
         toxic = inj["toxic"]
         tp.add_toxic(
             inj["proxy"], name, str(toxic.get("type")), "downstream", toxic.get("attributes") or {}
         )
         return {"proxy": inj["proxy"], "toxic": name}
-    return None
+    raise ValueError(f"unknown inject shape {inj!r}: the chaos runner does not implement it")
 
 
 def _clear_inject(tp: Toxiproxy, st: Optional[Dict[str, Any]]) -> None:
@@ -208,7 +210,9 @@ def _apply_process(tp: Toxiproxy, p: Dict[str, Any]) -> None:
             if i < count - 1:
                 time.sleep(max(0.0, (interval_ms - 200) / 1000.0))
     else:
-        print(f"process: unknown action {p.get('action')!r} — no-op")
+        raise ValueError(
+            f"unknown process action {p.get('action')!r}: the chaos runner does not implement it"
+        )
 
 
 # ----- SDK probe -----
@@ -217,7 +221,7 @@ def _apply_process(tp: Toxiproxy, p: Dict[str, Any]) -> None:
 class _LogTap(logging.Handler):
     """Captures all `quonfig.*` log records into the probe's log buffer."""
 
-    def __init__(self, probe: "ChaosProbe") -> None:
+    def __init__(self, probe: Any) -> None:
         super().__init__(level=logging.DEBUG)
         self._probe = probe
 
@@ -228,39 +232,102 @@ class _LogTap(logging.Handler):
             pass
 
 
+# Python level names -> the contract's sdkLog levels. sdkLog(level, re) counts
+# lines at EXACTLY that level (chaos README), so 'warn' never matches ERROR.
+_LOG_LEVELS = {
+    "DEBUG": "debug",
+    "INFO": "info",
+    "WARNING": "warn",
+    "WARN": "warn",
+    "ERROR": "error",
+    "CRITICAL": "error",
+}
+
+# The connectionState() enum fixed by the supervisor contract; SDKs may not
+# invent new strings, so neither may a scenario row (qfg-6vno.5).
+CONNECTION_STATES = ("initializing", "connected", "disconnected", "falling_back")
+
+INIT_STATES = ("pending", "returned", "raised")
+
+# worker_restart_total{layer="2"}: sdk-python's Layer 2 fallback poller has no
+# restart supervisor, so the SDK has no such counter. Reported SKIPPED rather
+# than answered with a constant 0 (qfg-6vno.5).
+LAYER2_RESTART_SKIP_REASON = (
+    "sdk-python has no layer-2 worker restart counter: the fallback poller has no "
+    "restart supervisor (qfg-6vno.5, qfg-11ct)"
+)
+
+
 class ChaosProbe:
-    """Mirrors sdk-node's ChaosProbe and sdk-go's chaosProbe vocabulary."""
+    """Reads every asserted value from the SDK (qfg-6vno.5).
+
+    Connection state, fallback state, liveness, the Layer 1 restart and SSE
+    attempt counters and process liveness all come from the client's own
+    surfaces (``connection_state()``, ``fallback_poller_active()``,
+    ``last_successful_refresh()``, the test-only ``_chaos_diagnostics()``).
+    The probe keeps only what the runner itself owns: the init call's outcome
+    (``initState()``), the SDK's ``on_config_update`` callbacks after init
+    returned (``readyEventCount()``) and the captured SDK log lines.
+    """
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.conn_state = (
-            "initializing"  # initializing|connected|reconnecting|falling_back|disconnected
-        )
         self._client: Optional[Any] = None
-        self.conn_attempts = 0
-        self.restart_layer1 = 0
-        self.restart_layer2 = 0
-        self.fallback_active = False
-        self.process_crashed = False
-        self.logs: List[str] = []
+        self.init_state = "pending"
+        self.ready_events = 0
+        self.logs: List[tuple[str, str]] = []
         self.log_lock = threading.Lock()
-
-    def on_sse_state(self, state: str) -> None:
-        with self.lock:
-            if state == "connected":
-                self.conn_state = "connected"
-                self.conn_attempts += 1
-            elif state in ("error", "connecting"):
-                if self.conn_state == "connected":
-                    # connected → not-connected edge counts as a Layer 1 restart
-                    self.restart_layer1 += 1
-                self.conn_state = "reconnecting"
-            elif state == "disconnected":
-                self.conn_state = "disconnected"
 
     def set_client(self, client: Any) -> None:
         with self.lock:
             self._client = client
+
+    def _c(self) -> Optional[Any]:
+        with self.lock:
+            return self._client
+
+    def set_init_state(self, state: str) -> None:
+        with self.lock:
+            self.init_state = state
+
+    def on_config_update(self) -> None:
+        """The SDK's ``on_config_update`` callback fired. Counted as a ready
+        event only once the init call has returned (chaos README,
+        ``client.readyEventCount()``)."""
+        with self.lock:
+            if self.init_state != "pending":
+                self.ready_events += 1
+
+    def connection_state(self) -> str:
+        c = self._c()
+        return c.connection_state() if c is not None else "initializing"
+
+    def fallback_poller_active(self) -> bool:
+        c = self._c()
+        return bool(c is not None and c.fallback_poller_active())
+
+    def diagnostics(self) -> Dict[str, Any]:
+        c = self._c()
+        if c is None:
+            return {
+                "sse_connect_attempts": 0,
+                "worker_restart_layer1": 0,
+                "sse_worker_alive": False,
+            }
+        return c._chaos_diagnostics()
+
+    def process_still_alive(self) -> bool:
+        """The SDK's SSE worker is still running: a supervisor that let a
+        user-callback throw kill the worker fails this."""
+        return bool(self.diagnostics().get("sse_worker_alive"))
+
+    def ready(self) -> bool:
+        c = self._c()
+        return bool(c is not None and c.is_ready())
+
+    def get_string(self, key: str, default: str) -> Any:
+        c = self._c()
+        return c.get_string(key, default) if c is not None else default
 
     def last_refresh_ms(self) -> int:
         """Epoch ms of ``client.last_successful_refresh()``, 0 before the first.
@@ -269,55 +336,36 @@ class ChaosProbe:
         advances; an install-only ``on_update`` stamp would freeze on a static
         rig config (qfg-goi1.7 probe rewire).
         """
-        with self.lock:
-            c = self._client
+        c = self._c()
         stamp = c.last_successful_refresh() if c is not None else None
         return int(stamp.timestamp() * 1000) if stamp is not None else 0
 
-    def set_fallback_active(self, active: bool) -> None:
-        with self.lock:
-            self.fallback_active = active
-            if active:
-                self.conn_state = "falling_back"
-
     def log(self, level: str, msg: str) -> None:
-        line = f"level={level.lower()} {msg}"
+        canonical = _LOG_LEVELS.get(level.upper(), level.lower())
         with self.log_lock:
-            self.logs.append(line)
-        # Map onConfigUpdate-callback-throw to a Layer 1 restart so chaos
-        # scenario 10 sees worker_restart_total increment per panic. Mirrors
-        # sdk-node's chaos probe.
-        if re.search(r"onConfigUpdate callback threw", msg, re.I):
-            with self.lock:
-                self.restart_layer1 += 1
+            self.logs.append((canonical, msg))
 
-    def sdk_metric(self, name: str, labels: Dict[str, str]) -> tuple[float, bool]:
-        """Return ``(value, known)`` for an SDK-side metric.
+    def sdk_metric(self, name: str, labels: Dict[str, str]) -> tuple[float, str]:
+        """Return ``(value, status)`` for an SDK-side metric, read from the
+        SDK's ``_chaos_diagnostics()``.
 
-        ``known`` is False for a metric name the probe does not implement, so
-        the evaluator fails the expectation loudly instead of comparing against
-        a silent 0. Mirrors sdk-go's ``chaosProbe.sdkMetric``.
+        ``status`` is ``"known"``, ``"skip"`` (the SDK has no such counter;
+        see ``LAYER2_RESTART_SKIP_REASON``) or ``"unknown"`` (a metric name
+        the probe does not implement, so the evaluator fails loudly instead of
+        comparing against a silent 0). Mirrors sdk-go's ``chaosProbe.sdkMetric``.
         """
-        with self.lock:
-            if name == "quonfig_sdk_worker_restart_total":
-                if labels.get("layer") == "1":
-                    return float(self.restart_layer1), True
-                if labels.get("layer") == "2":
-                    return float(self.restart_layer2), True
-                return float(self.restart_layer1 + self.restart_layer2), True
-            if name == "quonfig_sse_connect_attempts_total":
-                return float(self.conn_attempts), True
-        return 0.0, False
+        if name == "quonfig_sdk_worker_restart_total":
+            if labels.get("layer") == "2":
+                return 0.0, "skip"
+            return float(self.diagnostics()["worker_restart_layer1"]), "known"
+        if name == "quonfig_sse_connect_attempts_total":
+            return float(self.diagnostics()["sse_connect_attempts"]), "known"
+        return 0.0, "unknown"
 
     def log_matches(self, level: str, regex: re.Pattern) -> int:
+        want = _LOG_LEVELS.get(level.upper(), level.lower())
         with self.log_lock:
-            n = 0
-            for line in self.logs:
-                if level and f"level={level.lower()}" not in line.lower():
-                    continue
-                if regex.search(line):
-                    n += 1
-            return n
+            return sum(1 for lvl, msg in self.logs if lvl == want and regex.search(msg))
 
 
 # ----- expression evaluator -----
@@ -334,7 +382,13 @@ _RE_SDK_METRIC = re.compile(
 )
 _RE_SERVER_METRIC = re.compile(r"^server_metric\(\s*'([^']+)'\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)$")
 _RE_SDK_LOG = re.compile(
-    r"^client\.sdkLog\(\s*'([^']+)'\s*,\s*/(.+)/i\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)$"
+    r"^client\.sdkLog\(\s*'([^']+)'\s*,\s*/(.+)/(i?)\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)$"
+)
+_RE_INIT_STATE = re.compile(r"^client\.initState\(\)\s*(==|!=)\s*'([^']+)'$")
+_RE_READY = re.compile(r"^client\.ready\(\)\s*==\s*(true|false)$")
+_RE_READY_EVENTS = re.compile(r"^client\.readyEventCount\(\)\s*(>=|<=|==|!=|<|>)\s*(\d+)$")
+_RE_GET_STRING = re.compile(
+    r"^client\.getString\(\s*'([^']+)'\s*,\s*'([^']*)'\s*\)\s*(==|!=)\s*'([^']*)'$"
 )
 
 
@@ -411,21 +465,51 @@ def _eval_leaf(expr: str, probe: ChaosProbe) -> EvalResult:
     m = _RE_CONN_STATE_EQ.match(expr)
     if m:
         op, want = m.group(1), m.group(2)
-        with probe.lock:
-            got = probe.conn_state
+        if want not in CONNECTION_STATES:
+            return _leaf(
+                False,
+                f"{want!r} is not a connectionState() value "
+                f"(supervisor contract: {', '.join(CONNECTION_STATES)})",
+            )
+        got = probe.connection_state()
         ok = (got == want) if op == "==" else (got != want)
         return _leaf(ok, f"connectionState={got} {op} {want}")
     m = _RE_FALLBACK_EQ.match(expr)
     if m:
         want = m.group(1) == "true"
-        with probe.lock:
-            got = probe.fallback_active
+        got = probe.fallback_poller_active()
         return _leaf(got == want, f"fallbackPollerActive={got} want {want}")
     m = _RE_PROC_ALIVE_EQ.match(expr)
     if m:
         want = m.group(1) == "true"
-        alive = not probe.process_crashed
+        alive = probe.process_still_alive()
         return _leaf(alive == want, f"processStillAlive={alive} want {want}")
+    m = _RE_INIT_STATE.match(expr)
+    if m:
+        op, want = m.group(1), m.group(2)
+        if want not in INIT_STATES:
+            return _leaf(False, f"{want!r} is not an initState() value")
+        with probe.lock:
+            got = probe.init_state
+        ok = (got == want) if op == "==" else (got != want)
+        return _leaf(ok, f"initState={got} {op} {want}")
+    m = _RE_READY.match(expr)
+    if m:
+        want = m.group(1) == "true"
+        got = probe.ready()
+        return _leaf(got == want, f"ready={got} want {want}")
+    m = _RE_READY_EVENTS.match(expr)
+    if m:
+        op, want_n = m.group(1), float(m.group(2))
+        with probe.lock:
+            got_n = probe.ready_events
+        return _leaf(_compare(op, got_n, want_n), f"readyEventCount={got_n} {op} {want_n}")
+    m = _RE_GET_STRING.match(expr)
+    if m:
+        key, default, op, want = m.group(1), m.group(2), m.group(3), m.group(4)
+        got = probe.get_string(key, default)
+        ok = (got == want) if op == "==" else (got != want)
+        return _leaf(ok, f"getString({key!r}, {default!r})={got!r} {op} {want!r}")
     m = _RE_LAST_REFRESH.match(expr)
     if m:
         op = m.group(1)
@@ -438,8 +522,11 @@ def _eval_leaf(expr: str, probe: ChaosProbe) -> EvalResult:
     if m:
         metric, layer, op, want_str = m.group(1), m.group(2), m.group(3), m.group(4)
         labels = {"layer": layer} if layer else {}
-        got, known = probe.sdk_metric(metric, labels)
-        if not known:
+        got, status = probe.sdk_metric(metric, labels)
+        if status == "skip":
+            why = f"sdkMetric({metric},layer={layer or ''}) {op} {want_str}: {LAYER2_RESTART_SKIP_REASON}"
+            return EvalResult("skip", why, [why])
+        if status != "known":
             return _leaf(
                 False, f"unknown sdkMetric {metric!r}: the chaos probe does not implement it"
             )
@@ -453,12 +540,12 @@ def _eval_leaf(expr: str, probe: ChaosProbe) -> EvalResult:
         return EvalResult("skip", why, [why])
     m = _RE_SDK_LOG.match(expr)
     if m:
-        level, pattern, op, want_str = m.group(1), m.group(2), m.group(3), m.group(4)
-        regex = re.compile(pattern, re.I)
+        level, pattern, flags, op, want_str = m.groups()
+        regex = re.compile(pattern, re.I if flags else 0)
         got = probe.log_matches(level, regex)
         want = float(want_str)
         ok = _compare(op, got, want)
-        return _leaf(ok, f"sdkLog({level},/{pattern}/i)={got} {op} {want}")
+        return _leaf(ok, f"sdkLog({level},/{pattern}/{flags})={got} {op} {want}")
     return _leaf(False, f"unrecognized expression: {expr}")
 
 
@@ -501,6 +588,9 @@ def _evaluate(expr: str, probe: ChaosProbe) -> EvalResult:
 # ----- runner -----
 
 
+_KNOWN_INIT_FAILURE_MODES = ("fail", "wait", "continue")
+
+
 def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int, int, List[str]]:
     tp.clear_toxics("sse")
     tp.clear_toxics("http")
@@ -511,6 +601,18 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
     setup = run.get("setup") or {}
     user_callback_mode = setup.get("user_callback")
     wall_clock = float(setup.get("wall_clock_seconds") or 30) * 1000.0
+    # Init-failure vocabulary (scenario 00; chaos README "Init-failure
+    # vocabulary"): t=0 is taken BEFORE the init call, which runs on its own
+    # thread so the tick loop keeps running while it blocks, and at_ms <= 0
+    # injects land before the first fetch.
+    init_failure_mode = setup.get("on_init_failure")
+    if init_failure_mode is not None and init_failure_mode not in _KNOWN_INIT_FAILURE_MODES:
+        raise ValueError(f"setup.on_init_failure={init_failure_mode!r} is not a known mode")
+    catch_init_failure = bool(setup.get("catch_init_failure"))
+    init_timeout_ms = int(setup.get("init_timeout_ms") or 15_000)
+    if init_failure_mode == "fail" and not catch_init_failure:
+        # The runner can only observe a fail-mode client it kept.
+        raise ValueError("setup.on_init_failure=fail needs catch_init_failure: true")
 
     # Attach a logger tap for sdkLog assertions.
     quonfig_logger = logging.getLogger("quonfig")
@@ -525,26 +627,72 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
     sse_url = f"http://127.0.0.1:{CHAOS_SSE_PORT}/api/v2/sse/config"
 
     def _user_config_update_cb() -> None:
+        probe.on_config_update()
         if user_callback_mode == "throw":
             raise RuntimeError("simulated user-callback throw for chaos scenario 10")
 
     client: Optional[Quonfig] = None
-    fallback_watcher_stop = threading.Event()
-    fallback_watcher: Optional[threading.Thread] = None
+    # A chaos event that fails to apply (unknown shape, toxiproxy error) fails
+    # the scenario: a fault that never landed must not pass (qfg-6vno.5).
+    event_errors: List[str] = []
+    injection_states: Dict[str, Any] = {}
+
+    def _apply_event(ev: Dict[str, Any], at: int) -> None:
+        if "inject" in ev and ev["inject"]:
+            st = _apply_inject(tp, ev["inject"])
+            if ev["inject"].get("name"):
+                injection_states[ev["inject"]["name"]] = st
+            print(f"[{at}ms] inject {ev['inject']}")
+        elif "clear" in ev and ev["clear"]:
+            _clear_inject(tp, injection_states.get(ev["clear"]))
+            injection_states.pop(ev["clear"], None)
+            print(f"[{at}ms] clear {ev['clear']}")
+        elif "process" in ev and ev["process"]:
+            _apply_process(tp, ev["process"])
+            print(f"[{at}ms] process {ev['process']}")
+        else:
+            raise ValueError(f"unknown chaos event {ev!r}")
+
+    def _schedule(ev: Dict[str, Any], offset_ms: float) -> None:
+        at = int(ev.get("at_ms") or 0)
+
+        def _fire() -> None:
+            try:
+                _apply_event(ev, at)
+            except Exception as e:
+                event_errors.append(f"[{at}ms] chaos event {ev!r} failed: {e}")
+                print(event_errors[-1])
+
+        t = threading.Timer(max(0.0, (at - offset_ms) / 1000.0), _fire)
+        t.daemon = True
+        t.start()
 
     try:
-        client = Quonfig(
+        events = run.get("chaos") or []
+        pre_init: List[Dict[str, Any]] = []
+        if init_failure_mode is not None:
+            pre_init = [ev for ev in events if int(ev.get("at_ms") or 0) <= 0]
+            events = [ev for ev in events if int(ev.get("at_ms") or 0) > 0]
+            baseline_ms = int(time.time() * 1000)
+            # Applied synchronously: the toxiproxy admin calls block until the
+            # fault is in place, before the client is built.
+            for ev in pre_init:
+                _apply_event(ev, 0)
+
+        kwargs: Dict[str, Any] = dict(
             sdk_key="test-backend-key",
             api_urls=[api_http],
             fallback_poll_enabled=True,
             fallback_poll_interval_ms=60000,
-            init_timeout_ms=15_000,
+            init_timeout_ms=init_timeout_ms,
             on_no_default="warn",
             collect_evaluation_summaries=False,
             context_upload_mode="none",
-            on_sse_connection_state_change=lambda s: probe.on_sse_state(s),
             on_config_update=_user_config_update_cb,
         )
+        if init_failure_mode is not None:
+            kwargs["on_init_failure"] = init_failure_mode
+        client = Quonfig(**kwargs)
         probe.set_client(client)
 
         # Test seam: route SSE through chaos port BEFORE init() starts SSE
@@ -552,59 +700,29 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
         if client._transport is not None:
             client._transport._Transport__test_stream_url_override = sse_url  # type: ignore[attr-defined]
 
-        def _watch_fallback() -> None:
-            while not fallback_watcher_stop.is_set():
-                if client is not None:
-                    active = client.fallback_poller_active()
-                    with probe.lock:
-                        prev = probe.fallback_active
-                    if active != prev:
-                        probe.set_fallback_active(active)
-                fallback_watcher_stop.wait(0.1)
+        def _init() -> None:
+            try:
+                client.init()  # type: ignore[union-attr]
+                probe.set_init_state("returned")
+            except Exception as e:
+                probe.log("error", f"init raised: {e}")
+                probe.set_init_state("raised")
 
-        fallback_watcher = threading.Thread(target=_watch_fallback, daemon=True)
-        fallback_watcher.start()
-
-        try:
-            client.init()
-        except Exception as e:
-            probe.process_crashed = True
-            probe.log("error", f"init failed: {e}")
-
-        baseline_ms = int(time.time() * 1000)
-
-        # Schedule chaos events.
-        injection_states: Dict[str, Any] = {}
-
-        def _schedule(ev: Dict[str, Any]) -> None:
-            at = int(ev.get("at_ms") or 0)
-
-            def _fire() -> None:
-                try:
-                    if "inject" in ev and ev["inject"]:
-                        st = _apply_inject(tp, ev["inject"])
-                        if ev["inject"].get("name"):
-                            injection_states[ev["inject"]["name"]] = st
-                        print(f"[{at}ms] inject {ev['inject']}")
-                    elif "clear" in ev and ev["clear"]:
-                        _clear_inject(tp, injection_states.get(ev["clear"]))
-                        injection_states.pop(ev["clear"], None)
-                        print(f"[{at}ms] clear {ev['clear']}")
-                    elif "process" in ev and ev["process"]:
-                        _apply_process(tp, ev["process"])
-                        print(f"[{at}ms] process {ev['process']}")
-                except Exception as e:
-                    print(f"[{at}ms] chaos event failed: {e}")
-
-            t = threading.Timer(at / 1000.0, _fire)
-            t.daemon = True
-            t.start()
-
-        for ev in run.get("chaos") or []:
-            _schedule(ev)
+        if init_failure_mode is not None:
+            threading.Thread(target=_init, daemon=True, name="chaos-init").start()
+            for ev in events:
+                _schedule(ev, int(time.time() * 1000) - baseline_ms)
+        else:
+            _init()
+            if probe.init_state != "returned":
+                event_errors.append("client.init() raised in a scenario that does not set it up")
+            baseline_ms = int(time.time() * 1000)
+            for ev in events:
+                _schedule(ev, 0)
 
         # Track expectation states. SKIPPED is shape-based (a whole-expression
-        # server_metric), so it is read off a blank probe once, up front.
+        # server_metric / missing SDK counter), so it is read off a blank probe
+        # once, up front.
         states: List[ExpState] = [
             ExpState(i, e) for i, e in enumerate(run.get("expectations") or [])
         ]
@@ -652,19 +770,20 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
                 details.append(f"FAIL  {label} — last: {s.last_reason}")
             for leaf in s.skipped_leaves:
                 details.append(f"      SKIP leaf: {leaf}")
-        last_refresh_ms = probe.last_refresh_ms()
-        with probe.lock:
-            details.append(
-                f"summary: {passed} passed, {failed} failed, {skipped} skipped "
-                f"(state={probe.conn_state}, restartLayer1={probe.restart_layer1}, "
-                f"fallback={probe.fallback_active}, lastRefreshMs={last_refresh_ms})"
-            )
+        for err in event_errors:
+            failed += 1
+            details.append(f"FAIL  {err}")
+        diag = probe.diagnostics()
+        details.append(
+            f"summary: {passed} passed, {failed} failed, {skipped} skipped "
+            f"(state={probe.connection_state()}, initState={probe.init_state}, "
+            f"restartLayer1={diag['worker_restart_layer1']}, "
+            f"sseAttempts={diag['sse_connect_attempts']}, "
+            f"fallback={probe.fallback_poller_active()}, lastRefreshMs={probe.last_refresh_ms()})"
+        )
         return passed, failed, details
 
     finally:
-        fallback_watcher_stop.set()
-        if fallback_watcher is not None:
-            fallback_watcher.join(timeout=2.0)
         if client is not None:
             try:
                 client.close()

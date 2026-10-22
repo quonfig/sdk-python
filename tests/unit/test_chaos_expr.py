@@ -11,6 +11,14 @@ from __future__ import annotations
 from chaos.test_chaos import SERVER_METRIC_SKIP_REASON, ChaosProbe, _evaluate
 
 
+class _StateClient:
+    def __init__(self, state: str) -> None:
+        self.state = state
+
+    def connection_state(self) -> str:
+        return self.state
+
+
 def test_unknown_sdk_metric_fails_loudly() -> None:
     probe = ChaosProbe()
     r = _evaluate("client.sdkMetric('quonfig_no_such_metric_total') == 0", probe)
@@ -44,7 +52,7 @@ def test_server_metric_leaf_is_skipped_with_reason() -> None:
 
 
 def test_skipped_leaf_is_neutral_in_and() -> None:
-    # The other leaf is still enforced: a fresh probe is "disconnected", so
+    # The other leaf is still enforced: a fresh probe is "initializing", so
     # requiring "connected" must fail even though the server_metric leaf skips.
     probe = ChaosProbe()
     r = _evaluate(
@@ -55,8 +63,7 @@ def test_skipped_leaf_is_neutral_in_and() -> None:
     assert r.status == "fail"
     assert "connectionState=" in r.reason
     assert len(r.skipped) == 1
-    with probe.lock:
-        probe.conn_state = "connected"
+    probe.set_client(_StateClient("connected"))
     r = _evaluate(
         "client.connectionState() == 'connected' "
         "AND server_metric('quonfig_subscriber_lag_seconds') == 0",
@@ -75,8 +82,7 @@ def test_skipped_leaf_is_neutral_in_or() -> None:
     )
     assert r.status == "fail"
     assert len(r.skipped) == 1
-    with probe.lock:
-        probe.conn_state = "connected"
+    probe.set_client(_StateClient("connected"))
     r = _evaluate(
         "server_metric('quonfig_subscriber_lag_seconds') == 0 "
         "OR client.connectionState() == 'connected'",

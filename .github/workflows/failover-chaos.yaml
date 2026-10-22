@@ -65,12 +65,9 @@ jobs:
           path: integration-test-data
           # Pinned so the failover gate moves only when the scenarios are
           # deliberately rev'd. Kept equal to the unit/contract pin in
-          # test.yaml (qfg-goi1.1.4). v2026.06.19.1 introduced the reframed
-          # corpus (qfg-7h5d.1.14: o01 cold-standby, o05, o03 heal-forward).
-          # v2026.10.16.2 adds after_ms + strict expectation keys (qfg-goi1.7);
-          # the harness implements both (chaos/timeline.py), so this chaos pin
-          # leads test.yaml's until that one is bumped.
-          ref: v2026.10.16.2
+          # test.yaml (qfg-goi1.1.4). scripts/check-itd-pins.sh (run by
+          # test.yaml) fails CI when the three ITD refs differ (qfg-6vno.7).
+          ref: v2026.10.21.1
 
       - name: Checkout api-delivery
         # api-delivery is private; the default GITHUB_TOKEN cannot read it. A PAT
