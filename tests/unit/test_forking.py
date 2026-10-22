@@ -1661,3 +1661,170 @@ def test_p7_keys_in_a_pending_child_returns_its_own_fetched_content() -> None:
     finally:
         client.close()
         server.close()
+
+
+# ----------------------------------------------------------------------
+# Outage at fork under on_init_failure (qfg-6vno.23; Decision 3 on
+# qfg-6vno.16, plan project/plans/2026-10-22-fork-snapshot.md section 6).
+# The lazy child rebuild applies the same mode as a fresh boot (init-failure
+# design B.3 "Fork"): under ``fail`` the first content call raises
+# QuonfigInitError and every later one raises the SAME error without a new
+# init until the child heals; ``continue`` serves the default and heals.
+# ----------------------------------------------------------------------
+
+
+def _stop_listening(server: _ConfigServer) -> int:
+    """Take the fake delivery server down so connects are refused; return its
+    port so ``_listen_again`` can bring it back on the same address."""
+    port = server._server.server_address[1]
+    server._server.shutdown()
+    server._server.server_close()
+    return port
+
+
+def _listen_again(server: _ConfigServer, port: int) -> None:
+    handler = server._server.RequestHandlerClass
+    srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    srv.daemon_threads = True
+    server._server = srv
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+
+def _outage_child(
+    send: Callable[[str], None], client: Quonfig, go_fd: int, inits: "list[int]"
+) -> None:
+    from quonfig.exceptions import QuonfigInitError
+
+    def attempt(tag: str) -> None:
+        t0 = time.monotonic()
+        try:
+            v = client.get("flag", default="code-default")
+            send(f"{tag} value={v} elapsed={time.monotonic() - t0:.3f} inits={len(inits)}")
+        except QuonfigInitError as e:
+            send(
+                f"{tag} raised={e.reason} id={id(e)} elapsed={time.monotonic() - t0:.3f} "
+                f"inits={len(inits)}"
+            )
+
+    attempt("first")
+    # From here on count every init() the child runs: a sticky error must
+    # not re-run the blocking fetch.
+    real_init = client.init
+
+    def counting_init() -> Quonfig:
+        inits.append(1)
+        return real_init()
+
+    client.init = counting_init  # type: ignore[method-assign]
+    attempt("second")
+    os.read(go_fd, 1)  # the parent restarted the server with v2
+    deadline = time.monotonic() + 5.0
+    last = ""
+    while time.monotonic() < deadline:
+        try:
+            last = str(client.get("flag", default="code-default"))
+        except Exception as e:  # noqa: BLE001
+            last = f"raised:{type(e).__name__}"
+        if last == "v2":
+            break
+        time.sleep(0.05)
+    send(f"healed value={last} inits={len(inits)}")
+
+
+def _run_outage_at_fork(mode: str) -> "tuple[list[str], list[str]]":
+    server = _ConfigServer(configs=[_string_config("flag", "parent")])
+    client = _make_client(
+        server,
+        on_init_failure=mode,
+        init_timeout_ms=500,
+        fallback_poll_interval_ms=1000,
+    )
+    parent_values: "list[str]" = []
+    go_r, go_w = os.pipe()
+    try:
+        client.init()
+        _await_ready(client)
+        assert client.get("flag") == "parent"
+        port = _stop_listening(server)
+        pid, pipe = _fork_child(lambda send: _outage_child(send, client, go_r, []))
+        try:
+            lines = [pipe.read_line(timeout=10.0), pipe.read_line(timeout=10.0)]
+            parent_values.append(str(client.get("flag", default="code-default")))
+            server.configs = [_string_config("flag", "v2")]
+            server.generation = 2
+            _listen_again(server, port)
+            os.write(go_w, b"g")
+            lines.append(pipe.read_line(timeout=10.0))
+        finally:
+            pipe.close()
+            status = _reap(pid)
+        assert status == "exit=0", (status, lines)
+        return lines, parent_values
+    finally:
+        os.close(go_r)
+        os.close(go_w)
+        client.close()
+        server.close()
+
+
+def _field(line: str, name: str) -> str:
+    for part in line.split():
+        if part.startswith(name + "="):
+            return part.split("=", 1)[1]
+    return ""
+
+
+@requires_fork
+def test_fail_lazy_child_raises_from_first_get_and_stays_raised_until_heal() -> None:
+    lines, parent_values = _run_outage_at_fork("fail")
+    first, second, healed = lines
+    assert first.startswith("first raised=unavailable"), lines
+    assert float(_field(first, "elapsed")) >= 0.4, first  # init_timeout_ms applied
+    assert second.startswith("second raised=unavailable"), lines
+    assert _field(second, "id") == _field(first, "id"), "sticky error is not the same one"
+    assert float(_field(second, "elapsed")) < 0.2, f"second get re-ran the fetch: {second}"
+    assert _field(second, "inits") == "0", second
+    assert healed == "healed value=v2 inits=0", lines
+    assert parent_values == ["parent"]
+
+
+@requires_fork
+def test_continue_lazy_child_serves_default_then_heals() -> None:
+    lines, parent_values = _run_outage_at_fork("continue")
+    first, second, healed = lines
+    assert first.startswith("first value=code-default"), lines
+    assert float(_field(first, "elapsed")) >= 0.4, first
+    assert second.startswith("second value=code-default"), lines
+    assert float(_field(second, "elapsed")) < 0.2, second
+    assert healed.startswith("healed value=v2"), lines
+    assert parent_values == ["parent"]
+
+
+def test_sticky_fork_init_error_raises_only_from_content_reads_and_clears_on_heal() -> None:
+    """The sticky error (qfg-6vno.23) raises from plain getters only: a
+    ``*_details`` getter reports PROVIDER_NOT_READY, a logging filter's
+    ``should_log`` and ``with_context`` never raise, and the first installed
+    envelope clears it."""
+    from quonfig.exceptions import QuonfigInitError
+
+    server = _ConfigServer(configs=[_string_config("flag", "live")])
+    client = _make_client(server, on_init_failure="fail", fallback_poll_interval_ms=30_000)
+    try:
+        err = QuonfigInitError("delivery down", reason="unavailable")
+        client._fork_init_error = err
+        with pytest.raises(QuonfigInitError) as got:
+            client.get("flag", default="code-default")
+        assert got.value is err
+        with pytest.raises(QuonfigInitError):
+            client.get_string("flag", default="code-default")
+        d = client.get_string_details("flag")
+        assert d.reason == "ERROR" and d.error_code == "PROVIDER_NOT_READY", d
+        assert client.should_log(config_key="flag", desired_level="INFO") is True
+        client.with_context({"user": {"key": "u"}})
+        client.init()
+        _await_ready(client)
+        assert client.get("flag", default="code-default") == "live"
+        assert client._fork_init_error is None
+    finally:
+        client.close()
+        server.close()
