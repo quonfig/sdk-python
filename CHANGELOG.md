@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- Getters no longer raise on malformed input (minor, error-path behavior
+  change, qfg-6vno.14). A context namespace that is not a mapping (e.g.
+  `contexts={"user": None}`) is ignored instead of raising `TypeError` from
+  every getter; a config whose criterion has a non-string `propertyName` is
+  skipped at decode with a WARN (like a malformed weight) instead of raising
+  `AttributeError` for that key; and a telemetry failure (e.g. a context key
+  whose `__str__` raises) can no longer escape a plain getter. Plain getters
+  return the default, `*_details` keep returning their normal result.
+
 ### Tests
 
 - The chaos harness reads every asserted value from the SDK: `connection_state()`,

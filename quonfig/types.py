@@ -79,9 +79,14 @@ class Criterion:
     @classmethod
     def from_dict(cls, data: dict) -> "Criterion":
         vtm = data.get("valueToMatch")
+        prop = data.get("propertyName")
+        if prop is not None and not isinstance(prop, str):
+            # Fail this config's decode so it is skipped with a WARN, instead
+            # of raising AttributeError out of every getter (qfg-6vno.14).
+            raise ValueError(f"propertyName must be a string (got {type(prop).__name__})")
         return cls(
             operator=data["operator"],
-            property_name=data.get("propertyName"),
+            property_name=prop,
             value_to_match=Value.from_dict(vtm) if vtm else None,
         )
 
