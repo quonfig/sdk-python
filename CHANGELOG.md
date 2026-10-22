@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Tests
+
+- The chaos harness reads every asserted value from the SDK: `connection_state()`,
+  `fallback_poller_active()` and a test-only `_chaos_diagnostics()` hook (SSE
+  connect attempts, Layer 1 restarts, SSE worker liveness; not public API). It no
+  longer invents a `reconnecting` state, reports the layer-2 restart counter
+  SKIPPED (the poller has no restart supervisor), fails on an unknown inject or
+  process action, and implements the scenario 00 init-failure vocabulary. Chaos
+  and failover pins move to ITD v2026.10.21.1, and CI fails when the three ITD
+  refs differ (qfg-6vno.5, qfg-6vno.7).
+
 ## 2.0.0 - 2026-10-21
 
 ### Breaking changes

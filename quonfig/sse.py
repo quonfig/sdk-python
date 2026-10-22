@@ -96,8 +96,15 @@ class SSEClient:
         install: Optional[Callable[[ConfigEnvelope], bool]] = None,
         record_refresh: Optional[Callable[[], None]] = None,
         wait_hook: Optional[Callable[[str, float], float]] = None,
+        on_diagnostic: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.transport = transport
+        # Test-only diagnostics hook (qfg-6vno.5), not public API: called with
+        # ``"sse_connect_attempt"`` before every stream request and
+        # ``"worker_restart"`` each time the loop restarts the worker after an
+        # abnormal connection end. Feeds ``Quonfig._chaos_diagnostics()`` so
+        # the chaos probe reads these counters from the SDK.
+        self._on_diagnostic = on_diagnostic
         # Test seam (supervisor contract Test 8): maps each requested
         # reconnect sleep to the duration actually slept, so a test can record
         # the requested value and compress it. ``None`` in production.
@@ -168,6 +175,19 @@ class SSEClient:
             self._state_listener(state)
         except Exception as e:  # noqa: BLE001 — listener errors must not kill SSE loop
             _LOG.debug("SSE state listener raised: %s: %s", type(e).__name__, e)
+
+    def _diag(self, kind: str) -> None:
+        if self._on_diagnostic is None:
+            return
+        try:
+            self._on_diagnostic(kind)
+        except Exception as e:  # noqa: BLE001 — a diagnostics hook must not kill SSE
+            _LOG.debug("SSE diagnostics hook raised: %s: %s", type(e).__name__, e)
+
+    def is_alive(self) -> bool:
+        """Whether the SSE worker thread is running (test-only diagnostics)."""
+        thread = self._thread
+        return thread is not None and thread.is_alive()
 
     def _stream_url(self) -> str:
         # Test seam mirroring sdk-node's `__testStreamUrlOverride` so chaos
@@ -321,6 +341,7 @@ class SSEClient:
             try:
                 url = self._stream_url()
                 headers = self.transport._headers({"Accept": "text/event-stream"})
+                self._diag("sse_connect_attempt")
                 response = requests.get(
                     url,
                     headers=headers,
@@ -364,6 +385,7 @@ class SSEClient:
                     e,
                 )
                 self._emit("error")
+                self._diag("worker_restart")
                 # Exponential backoff with jitter
                 self._sleep(backoff)
                 backoff = min(

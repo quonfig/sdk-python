@@ -42,6 +42,7 @@ Excluded from default pytest collection (testpaths = ["tests"]); invoke via
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import socket
@@ -55,6 +56,7 @@ import pytest
 import requests
 import yaml
 
+from chaos.test_chaos import _LOG_LEVELS, _LogTap, _split_outside_quotes_and_regex
 from chaos.timeline import ExpState, step, validate_expectations
 from quonfig import Quonfig
 
@@ -273,6 +275,18 @@ class ChaosProbe:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._client: Optional[Quonfig] = None
+        self._logs: List[Tuple[str, str]] = []
+
+    def log(self, level: str, msg: str) -> None:
+        """Captured SDK log line (fed by ``_LogTap``) for ``sdkLog``."""
+        canonical = _LOG_LEVELS.get(level.upper(), level.lower())
+        with self._lock:
+            self._logs.append((canonical, msg))
+
+    def log_matches(self, level: str, regex: "re.Pattern[str]") -> int:
+        want = _LOG_LEVELS.get(level.upper(), level.lower())
+        with self._lock:
+            return sum(1 for lvl, msg in self._logs if lvl == want and regex.search(msg))
 
     def set_client(self, c: Quonfig) -> None:
         with self._lock:
@@ -310,6 +324,9 @@ _RE_RESOLVED = re.compile(r"^client\.resolvedFrom\(\)\s*(==|!=)\s*'([^']+)'$")
 _RE_HELD_GEN = re.compile(r"^client\.heldGeneration\(\)\s*(>=|<=|==|!=|<|>)\s*(-?\d+)$")
 _RE_INSTALL = re.compile(r"^client\.configInstallCount\(\)\s*(>=|<=|==|!=|<|>)\s*(-?\d+)$")
 _RE_SSE_FAILOVER = re.compile(r"^client\.sseFailedOverToSecondary\(\)\s*==\s*(true|false)$")
+_RE_SDK_LOG = re.compile(
+    r"^client\.sdkLog\(\s*'([^']+)'\s*,\s*/(.+)/(i?)\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)$"
+)
 
 
 def _compare(op: str, a: float, b: float) -> bool:
@@ -351,6 +368,14 @@ def _eval_leaf(expr: str, probe: ChaosProbe) -> Tuple[bool, str]:
         want = m.group(1) == "true"
         got = probe.sse_failed_over_to_secondary()
         return got == want, f"sseFailedOverToSecondary={got} want {want}"
+    m = _RE_SDK_LOG.match(expr)
+    if m:
+        level, pattern, flags, op, want_str = m.groups()
+        got_n = probe.log_matches(level, re.compile(pattern, re.I if flags else 0))
+        want_n = int(want_str)
+        return _compare(
+            op, got_n, want_n
+        ), f"sdkLog({level},/{pattern}/{flags})={got_n} {op} {want_n}"
     return False, f"unrecognized expression: {expr}"
 
 
@@ -360,14 +385,14 @@ def _evaluate(expr: str, probe: ChaosProbe) -> Tuple[bool, str]:
         return True, ""
     if " OR " in expr:
         reasons = []
-        for p in expr.split(" OR "):
+        for p in _split_outside_quotes_and_regex(expr, " OR "):
             ok, why = _evaluate(p, probe)
             if ok:
                 return True, ""
             reasons.append(why)
         return False, "OR: " + " | ".join(reasons)
     if " AND " in expr:
-        for p in expr.split(" AND "):
+        for p in _split_outside_quotes_and_regex(expr, " AND "):
             ok, why = _evaluate(p, probe)
             if not ok:
                 return False, "AND: " + why
@@ -408,7 +433,7 @@ def _apply_inject(tp: Toxiproxy, inj: Dict[str, Any]) -> None:
         tp.set_enabled("sse", False)
         _restore_after(int(inj["sse_down_ms"]), lambda: tp.set_enabled("sse", True))
     else:
-        print(f"_apply_inject: unhandled inject shape {inj} — no-op")
+        raise ValueError(f"unknown inject shape {inj!r}: the failover runner does not implement it")
 
 
 # ----- scenario runner -----
@@ -448,6 +473,14 @@ def _run_rig_scenario(
     scheduled = [ev for ev in events if ev.get("inject") and int(ev.get("at_ms") or 0) > 0]
 
     client: Optional[Quonfig] = None
+    # Scheduled injects that fail to apply fail the scenario (qfg-6vno.5).
+    event_errors: List[str] = []
+    # SDK log capture for sdkLog assertions (f01/f04 init-log contract).
+    quonfig_logger = logging.getLogger("quonfig")
+    prev_level = quonfig_logger.level
+    quonfig_logger.setLevel(logging.DEBUG)
+    tap = _LogTap(probe)
+    quonfig_logger.addHandler(tap)
     try:
         # Apply pre-init injects synchronously — _apply_inject's toxiproxy admin
         # calls block until the fault is in place, and it folds in any self-restore
@@ -494,20 +527,29 @@ def _run_rig_scenario(
             at = int(ev.get("at_ms") or 0)
 
             def _fire(inj: Dict[str, Any] = inj, at: int = at) -> None:
-                _apply_inject(tp, inj)
-                print(f"[{at}ms] inject {inj}")
+                try:
+                    _apply_inject(tp, inj)
+                    print(f"[{at}ms] inject {inj}")
+                except Exception as e:  # noqa: BLE001
+                    event_errors.append(f"[{at}ms] inject {inj!r} failed: {e}")
 
             timer = threading.Timer(at / 1000.0, _fire)
             timer.daemon = True
             timer.start()
 
-        return _eval_expectations(run, baseline, probe, wall_clock)
+        passed, failed, details = _eval_expectations(run, baseline, probe, wall_clock)
+        for err in event_errors:
+            failed += 1
+            details.append(f"FAIL  {err}")
+        return passed, failed, details
     finally:
         if client is not None:
             try:
                 client.close()
             except Exception:
                 pass
+        quonfig_logger.removeHandler(tap)
+        quonfig_logger.setLevel(prev_level)
 
 
 def _eval_expectations(
