@@ -75,16 +75,24 @@ def _client(**kw) -> Quonfig:  # noqa: ANN003
     )
 
 
-def test_callback_throw_caught_by_supervisor_counts_a_layer1_restart() -> None:
+def test_callback_throw_counts_callback_errors_not_a_restart() -> None:
+    """Contract Test 5 (qfg-6vno.25): a caught user-callback throw is
+    ``callback_errors_total{callback}``, never ``worker_restart_total``."""
+
     def boom() -> None:
         raise RuntimeError("user callback")
 
     c = _client(on_config_update=boom)
     try:
-        assert c._chaos_diagnostics()["worker_restart_layer1"] == 0
+        d = c._chaos_diagnostics()
+        assert d["worker_restart_layer1"] == 0
+        assert d["callback_errors"] == {"on_config_update": 0, "on_connection_state_change": 0}
         c._fire_on_config_update()
         c._fire_on_config_update()
-        assert c._chaos_diagnostics()["worker_restart_layer1"] == 2
+        d = c._chaos_diagnostics()
+        assert d["worker_restart_layer1"] == 0
+        assert d["callback_errors"]["on_config_update"] == 2
+        assert d["callback_errors"]["on_connection_state_change"] == 0
     finally:
         c.close()
 

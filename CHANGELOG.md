@@ -17,6 +17,16 @@
   episode naming the source host and the cap; repeats are DEBUG. The caps are
   constants, not options.
 
+- A raise from a user callback is a callback error, not a worker restart
+  (minor, qfg-6vno.29; supervisor contract Test 5). A caught raise from
+  `on_config_update` or `on_sse_connection_state_change` is counted in the
+  test-only `_chaos_diagnostics()["callback_errors"]`
+  (`quonfig_sdk_callback_errors_total{callback}`, `callback` in
+  `on_config_update` / `on_connection_state_change`) and no longer bumps the
+  Layer 1 restart counter. Both are logged at ERROR with the traceback; an
+  `on_sse_connection_state_change` raise was logged at WARNING without one.
+  The diagnostics hook is not public API.
+
 ### Fixed
 
 - The SSE parser no longer rescans the carried unterminated tail on every
@@ -42,6 +52,10 @@
   process action, and implements the scenario 00 init-failure vocabulary. Chaos
   and failover pins move to ITD v2026.10.21.1, and CI fails when the three ITD
   refs differ (qfg-6vno.5, qfg-6vno.7).
+- The chaos probe reads `sdkMetric('quonfig_sdk_callback_errors_total',
+  callback=...)` from the SDK, and all ITD pins move to v2026.10.22.2 (size
+  caps Test 10, callback-error Test 5, scenario 10 on the new counter, regex
+  corpus cases) (qfg-6vno.29).
 
 ## 2.0.0 - 2026-10-21
 
