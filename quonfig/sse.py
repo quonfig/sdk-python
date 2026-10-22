@@ -9,7 +9,7 @@ from typing import Callable, Iterable, Iterator, List, Optional
 import requests  # type: ignore[import-untyped]
 
 from .store import ConfigStore
-from .transport import Transport
+from .transport import Transport, _redact_source
 from .types import ConfigEnvelope
 
 _LOG = logging.getLogger(__name__)
@@ -30,6 +30,12 @@ _CLEAN_EOF_RECONNECT_DELAY_S = 0.5
 # MaxDelay) and sdk-node (SSE_RECONNECT_MAX_DELAY_MS): 30 s, so the first
 # attempt after a long outage clears lands within 30 s (qfg-q8lb).
 _SSE_RECONNECT_MAX_DELAY_S = 30.0
+
+
+# Size cap for one SSE event (supervisor contract "Rule — size caps",
+# qfg-6vno.8): any single line, and the sum of a block's lines. A constant, not
+# an option.
+MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024
 
 
 # Upper bound for one read of the stream body. ``read1`` returns whatever has
@@ -61,6 +67,11 @@ def _iter_body(response: requests.Response) -> Iterator[bytes]:
 class _FramelessStreamError(Exception):
     """A 200 stream that ended before its first valid frame: a failed attempt
     (qfg-goi1.10.44), handled exactly like a connect error."""
+
+
+class _OversizedEventError(Exception):
+    """An SSE event over MAX_SSE_EVENT_BYTES: not a frame, and the connection
+    is a failed attempt (size-caps rule)."""
 
 
 def _clean_eof_reconnect_sleep() -> float:
@@ -140,6 +151,10 @@ class SSEClient:
         # successful run and resets the backoff (supervisor contract
         # Test 2 Reset; sdk-go sse_client.go connectOnce).
         self._frame_seen = False
+        # Oversized-event episode (size-caps rule; sdk-go's ``oversized``
+        # gate): set when an event passes the cap, cleared by the next valid
+        # envelope. While set, a keepalive is not a frame.
+        self._oversized = False
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, daemon=True, name="quonfig-sse")
@@ -218,13 +233,26 @@ class SSEClient:
         envelope installs.
         """
         frame_seen = False
-        buf = b""
+        # Unterminated tail carried to the next chunk. Only each NEW chunk is
+        # scanned for a line terminator, so one huge line costs linear time
+        # (the old parser re-split the whole tail on every chunk).
+        buf = bytearray()
         data_lines: List[str] = []
         saw_comment = False
         saw_field = False
+        # Bytes of the current block (every line so far, terminators
+        # included). With the carried tail it is capped at MAX_SSE_EVENT_BYTES
+        # (size-caps rule): over it the event is not a frame and the
+        # connection is a failed attempt.
+        block_bytes = 0
 
-        def on_frame() -> None:
+        def on_frame(envelope: bool = False) -> None:
             nonlocal frame_seen
+            if envelope:
+                # An envelope ends an oversized episode; a keepalive does not.
+                self._oversized = False
+            elif self._oversized:
+                return
             if frame_seen:
                 return
             frame_seen = True
@@ -233,11 +261,12 @@ class SSEClient:
                 self._emit("connected")
 
         def end_block() -> None:
-            nonlocal saw_comment, saw_field
+            nonlocal saw_comment, saw_field, block_bytes
             data = "\n".join(data_lines) if data_lines else None
             comment_only = saw_comment and not saw_field
             data_lines.clear()
             saw_comment = saw_field = False
+            block_bytes = 0
             if data is not None:
                 self._handle_data(data, on_frame)
             elif comment_only:
@@ -248,15 +277,21 @@ class SSEClient:
                 break
             if not chunk:
                 continue
-            buf += chunk
-            lines = buf.splitlines(keepends=True)
-            buf = b""
             # Carry a tail with no LF to the next chunk: it is unterminated, or
             # it ends in a CR whose LF may still be coming. (A CR-only stream
             # therefore lags one line; api-delivery sends LF.)
-            if lines and not lines[-1].endswith(b"\n"):
-                buf = lines.pop()
-            for raw in lines:
+            last_lf = chunk.rfind(b"\n")
+            if last_lf < 0:
+                buf += chunk
+                if block_bytes + len(buf) > MAX_SSE_EVENT_BYTES:
+                    self._oversized_event()
+                continue
+            region = bytes(buf) + chunk[: last_lf + 1] if buf else chunk[: last_lf + 1]
+            buf = bytearray(chunk[last_lf + 1 :])
+            for raw in region.splitlines(keepends=True):
+                block_bytes += len(raw)
+                if block_bytes > MAX_SSE_EVENT_BYTES:
+                    self._oversized_event()
                 line = raw.rstrip(b"\r\n").decode("utf-8", errors="replace")
                 if line == "":
                     end_block()
@@ -269,10 +304,36 @@ class SSEClient:
                         value = value[1:]
                     if name == "data":
                         data_lines.append(value)
+            if block_bytes + len(buf) > MAX_SSE_EVENT_BYTES:
+                self._oversized_event()
         # Anything still buffered was cut off by EOF: not a frame.
         return frame_seen
 
-    def _handle_data(self, data: str, on_frame: Callable[[], None]) -> None:
+    def _oversized_event(self) -> None:
+        """An SSE event passed MAX_SSE_EVENT_BYTES: stop reading it and fail
+        this connection (size-caps rule). One WARN per oversized episode,
+        repeats at DEBUG; until an envelope installs, later connections do
+        not report ``connected`` on keepalives alone."""
+        source = _redact_source(self._stream_url())
+        if self._oversized:
+            _LOG.debug(
+                "Quonfig SSE: event from %s exceeds the maximum size (%d bytes) again",
+                source,
+                MAX_SSE_EVENT_BYTES,
+            )
+        else:
+            _LOG.warning(
+                "Quonfig SSE: event from %s exceeds the maximum size (%d bytes); "
+                "dropping it and backing off (fallback polling will take over)",
+                source,
+                MAX_SSE_EVENT_BYTES,
+            )
+        self._oversized = True
+        raise _OversizedEventError(
+            f"SSE event exceeds the maximum size ({MAX_SSE_EVENT_BYTES} bytes)"
+        )
+
+    def _handle_data(self, data: str, on_frame: Callable[..., None]) -> None:
         try:
             # from_wire rejects non-envelopes ({} / {"error": ..}), dropped
             # below like malformed JSON (qfg-9dxb.3).
@@ -284,8 +345,9 @@ class SSEClient:
                 e,
             )
             return
-        # A valid envelope is a frame: connected before it installs.
-        on_frame()
+        # A valid envelope is a frame: connected before it installs. It also
+        # ends an oversized-event episode.
+        on_frame(True)
         try:
             if self._install is not None:
                 installed = self._install(envelope)

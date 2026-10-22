@@ -2,7 +2,26 @@
 
 ## Unreleased
 
+### Changed
+
+- Size caps on delivery payloads (minor, qfg-6vno.20.4; supervisor contract
+  "Rule — size caps", qfg-6vno.8). One SSE event is capped at 4 MiB
+  (4,194,304 bytes), counting every line of the event, so a multi-line `data:`
+  sum is capped too. An oversized event is not a frame: the connection is a
+  failed attempt (backoff grows, never `connected`, the fallback poller takes
+  over), and a later keepalive-only connection does not report `connected`
+  until an envelope installs. A 200 body from `/api/v2/configs` is capped at
+  16 MiB (16,777,216 bytes): a `Content-Length` over it fails before reading,
+  otherwise reading stops at the cap + 1, and the leg fails like a 5xx
+  (nothing installed, no ETag stored). Each logs one WARN per oversized
+  episode naming the source host and the cap; repeats are DEBUG. The caps are
+  constants, not options.
+
 ### Fixed
+
+- The SSE parser no longer rescans the carried unterminated tail on every
+  chunk, so one large event parses in linear time instead of quadratic
+  (qfg-6vno.20.4).
 
 - Getters no longer raise on malformed input (minor, error-path behavior
   change, qfg-6vno.14). A context namespace that is not a mapping (e.g.
