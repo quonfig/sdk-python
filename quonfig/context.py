@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 from .types import Contexts
 
@@ -23,12 +23,19 @@ _MAGIC_TIME_PROPS = frozenset(
 
 
 def merge_contexts(*contexts_list: Contexts) -> Contexts:
-    """Shallow merge per namespace; later wins."""
+    """Shallow merge per namespace; later wins.
+
+    A namespace whose value is not a mapping (e.g. ``{"user": None}``) is
+    skipped, so it reads as absent instead of raising out of every getter
+    (qfg-6vno.14; sdk-node tolerates it the same way).
+    """
     result: Contexts = {}
     for ctx in contexts_list:
         if not ctx:
             continue
         for namespace, values in ctx.items():
+            if not isinstance(values, Mapping):
+                continue
             result[namespace] = dict(values)
     return result
 

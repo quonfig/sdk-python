@@ -1999,9 +1999,12 @@ class Quonfig:
             result.reportable_value = compute_reportable_value_for(
                 result.value, result.weighted_value_index
             )
-            self._telemetry.record_evaluation(result)
-            if merged:
-                self._telemetry.record_context(merged)
+            try:
+                self._telemetry.record_evaluation(result)
+                if merged:
+                    self._telemetry.record_context(merged)
+            except Exception:
+                pass  # telemetry must never break a getter (qfg-6vno.14)
 
         return resolved
 
