@@ -84,7 +84,38 @@ DEFAULT_CONFIG_FETCH_HEDGE_DELAY_SECONDS = 2.0
 DEFAULT_CONFIG_FETCH_HEDGE_ABORT_SECONDS = 6.0
 
 
-def _read_body_within_deadline(response: "requests.Response", deadline: float) -> bytes:
+# Size cap for a 200 body from /api/v2/configs (supervisor contract "Rule —
+# size caps", qfg-6vno.8). 4x the SSE event cap, so an envelope too big for SSE
+# still stays fresh through the fallback poller. A constant, not an option.
+MAX_CONFIG_BODY_BYTES = 16 * 1024 * 1024
+
+
+class ConfigBodyTooLargeError(Exception):
+    """A 200 config body over MAX_CONFIG_BODY_BYTES: a failed leg, exactly like
+    a 5xx (size-caps rule). Nothing is installed and no ETag is stored."""
+
+    def __init__(self) -> None:
+        super().__init__(f"config body exceeds the maximum size ({MAX_CONFIG_BODY_BYTES} bytes)")
+
+
+def _redact_source(url: str) -> str:
+    """``scheme://host[:port]`` of ``url``: no userinfo, path or query, for
+    log lines that name a source."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if parts.port is not None:
+            host = f"{host}:{parts.port}"
+        return f"{parts.scheme}://{host}" if parts.scheme else host
+    except ValueError:
+        return "?"
+
+
+def _read_body_within_deadline(
+    response: "requests.Response",
+    deadline: float,
+    max_bytes: int = MAX_CONFIG_BODY_BYTES,
+) -> bytes:
     """Drain a ``stream=True`` response body under a WALL-CLOCK deadline
     (``time.monotonic()`` seconds), raising ``requests.Timeout`` once it passes.
 
@@ -93,6 +124,11 @@ def _read_body_within_deadline(response: "requests.Response", deadline: float) -
     timeout tick, body never finishes) resets the read timer forever, so the
     "per-leg hard abort" was not actually wall-clock and a dripping leg wedged
     the fallback-poll loop while SSE was already down.
+
+    Size cap (size-caps rule, qfg-6vno.8): a ``Content-Length`` over
+    ``max_bytes`` fails before reading; otherwise bytes are counted as they
+    arrive and reading stops at ``max_bytes + 1``. Either way it raises
+    :class:`ConfigBodyTooLargeError`, so memory stays bounded near the cap.
 
     Reads at most one raw socket recv at a time so the deadline is checked as
     bytes arrive, never after a full chunk accumulates:
@@ -107,6 +143,13 @@ def _read_body_within_deadline(response: "requests.Response", deadline: float) -
     recv in flight when the deadline passes), i.e. ~2x the per-leg budget —
     versus unbounded before.
     """
+    declared = getattr(response, "headers", {}).get("Content-Length")
+    if declared is not None:
+        try:
+            if int(declared) > max_bytes:
+                raise ConfigBodyTooLargeError()
+        except ValueError:
+            pass
     buf = bytearray()
     raw = getattr(response, "raw", None)
     read1 = getattr(raw, "read1", None)
@@ -114,14 +157,18 @@ def _read_body_within_deadline(response: "requests.Response", deadline: float) -
         while True:
             if time.monotonic() >= deadline:
                 raise requests.Timeout("per-leg wall-clock deadline exceeded reading body")
-            piece = read1(16384, decode_content=True)
+            piece = read1(min(16384, max_bytes + 1 - len(buf)), decode_content=True)
             if not piece:
                 return bytes(buf)
             buf += piece
+            if len(buf) > max_bytes:
+                raise ConfigBodyTooLargeError()
     for piece in response.iter_content(chunk_size=1):
         if time.monotonic() >= deadline:
             raise requests.Timeout("per-leg wall-clock deadline exceeded reading body")
         buf += piece
+        if len(buf) > max_bytes:
+            raise ConfigBodyTooLargeError()
     return bytes(buf)
 
 
@@ -233,6 +280,10 @@ class Transport:
         # base URL so it survives a leg-index reshuffle.
         self._etags: dict[str, str] = {}
         self._etag_lock = threading.Lock()
+        # Legs in an oversized-body episode (size-caps rule): one WARN per
+        # episode, ended by the next valid envelope from that leg. Guarded by
+        # ``_etag_lock``.
+        self._oversized_sources: set[str] = set()
         self._session = requests.Session()
         # Test seam: when set, SSE routes here instead of deriving the URL
         # from `api_urls`. Mirrors sdk-node's `__testStreamUrlOverride`.
@@ -281,6 +332,31 @@ class Transport:
             with self._etag_lock:
                 self._etags.pop(self.api_urls[idx], None)
 
+    def _read_config_body(
+        self, response: "requests.Response", deadline: float, base_url: str
+    ) -> bytes:
+        """Read a 200 config body under the leg deadline and the size cap. An
+        oversized body logs one WARN per episode for its source (repeats at
+        DEBUG) and re-raises, failing the leg like a 5xx."""
+        try:
+            return _read_body_within_deadline(response, deadline)
+        except ConfigBodyTooLargeError:
+            with self._etag_lock:
+                first = base_url not in self._oversized_sources
+                self._oversized_sources.add(base_url)
+            log = _LOG.warning if first else _LOG.debug
+            log(
+                "Quonfig: config body from %s exceeds the maximum size (%d bytes); "
+                "the fetch failed",
+                _redact_source(base_url),
+                MAX_CONFIG_BODY_BYTES,
+            )
+            raise
+
+    def _end_oversized_episode(self, base_url: str) -> None:
+        with self._etag_lock:
+            self._oversized_sources.discard(base_url)
+
     def fetch(self, etag: Optional[str] = None) -> Optional[ConfigEnvelope]:
         """
         Fetch configs from API.
@@ -315,12 +391,13 @@ class Transport:
                         self.last_fetch_index = idx
                         return None
                     response.raise_for_status()
-                    body = _read_body_within_deadline(response, deadline)
+                    body = self._read_config_body(response, deadline, self.api_urls[idx])
                 finally:
                     response.close()
                 # A non-envelope 200 (proxy/WAF junk) is a leg error, so the
                 # loop fails over instead of installing it (qfg-9dxb.3).
                 envelope = _decode_envelope(body)
+                self._end_oversized_episode(self.api_urls[idx])
                 self.last_fetch_index = idx
                 return envelope
             except (
@@ -332,6 +409,7 @@ class Transport:
                 urllib3.exceptions.HTTPError,
                 OSError,
                 InvalidEnvelopeError,
+                ConfigBodyTooLargeError,
             ) as e:
                 last_error = e
                 continue
@@ -376,7 +454,7 @@ class Transport:
                     return LegResult(source_index=idx, not_changed=True, status=status)
                 response.raise_for_status()
                 new_etag = response.headers.get("ETag")
-                body = _read_body_within_deadline(response, deadline)
+                body = self._read_config_body(response, deadline, base_url)
             finally:
                 response.close()
             # Validate BEFORE recording the ETag: a non-envelope 200 is a leg
@@ -390,6 +468,7 @@ class Transport:
             if new_etag:
                 with self._etag_lock:
                     self._etags[base_url] = new_etag
+            self._end_oversized_episode(base_url)
             self.last_fetch_index = idx
             return LegResult(source_index=idx, envelope=envelope, status=status)
         except Exception as e:  # noqa: BLE001
