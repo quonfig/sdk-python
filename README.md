@@ -578,6 +578,40 @@ The 1.x spellings `"raise"` (= `"fail"`) and `"return"` /
 `"return_zero_value"` (= `"continue"`) still work and log a one-time
 deprecation WARN.
 
+### Forking servers (Gunicorn, Celery prefork)
+
+A forked worker never serves the parent's config: it rebuilds its own snapshot
+on first use and applies the same `on_init_failure` mode as a fresh boot (see
+[Forking servers](#forking-servers-gunicorn---preload-celery-uwsgi-multiprocessing)).
+If delivery is unreachable when a worker is recycled:
+
+- `"fail"` (default): the worker's first content read raises
+  `QuonfigInitError`, and later reads keep raising until delivery heals
+  (2.1.0+; 2.0.x served code defaults).
+- `"wait"`: the worker's first request blocks until delivery is back.
+- `"continue"`: the worker serves code defaults until it heals. Apps that
+  recycle workers often (low `max_requests`, a fork per job) should use this
+  and keep their defaults safe.
+
+If you call `client.init()` in Gunicorn's `post_fork` hook, wrap it in
+`try`/`except QuonfigInitError`: an uncaught error there halts the master and
+every worker.
+
+```python
+# gunicorn.conf.py
+from quonfig import QuonfigInitError
+from app import client
+
+
+def post_fork(server, worker):
+    try:
+        client.init()
+    except QuonfigInitError:
+        pass  # the worker keeps retrying in the background
+```
+
+Details: [Startup failure: forked workers](https://docs.quonfig.com/docs/explanations/architecture/startup-failure#forked-workers-and-worker-recycling).
+
 ## Configuration
 
 | Param | Env var | Default |
