@@ -602,6 +602,7 @@ every worker.
 from quonfig import QuonfigInitError
 from app import client
 
+
 def post_fork(server, worker):
     try:
         client.init()
