@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Docs: README note on forking servers during a delivery outage (qfg-6vno.24).** Under Init failure: a forked worker rebuilds its own snapshot under the same `on_init_failure` mode, `"fail"` raises until delivery heals, `"wait"` blocks the first request, frequent recyclers should use `"continue"`, and an `init()` in Gunicorn `post_fork` must catch `QuonfigInitError`. Links to the startup-failure docs page. No code change.
+
 ## 2.1.0 - 2026-10-23
 
 ### Upgrade notes
