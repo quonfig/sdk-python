@@ -1,7 +1,89 @@
 # Changelog
 
-## Unreleased
+## 3.0.0 - 2026-10-26
 
+The typed-getter contract (qfg-zvyy), shared by every Quonfig SDK and pinned
+by the integration-test-data matrix (`getter.contract.*`, ITD
+`v2026.10.23`). A typed read that cannot return a value of the getter's type
+now gives you your default instead of a made-up value. sdk-go 2.0.0 is the
+reference implementation.
+
+### UPGRADE to 3.0
+
+1. **No string coercion.** 2.x ran values through `bool()`, `str()`, `int()`
+   and `float()`, so `get_bool` on a stored string `"false"` returned `True`
+   (a flag meant to be OFF read as ON), `get_string` on an int returned its
+   text and `get_string_list("fast")` returned `["fast"]`. In 3.0 a value of
+   another type is a type mismatch: `get_bool`, `get_int`, `get_float`,
+   `get_duration`, `get_string_list` and `get_json` never parse strings, and
+   `get_string` reads only string and log_level configs. Store values with the
+   config type you read them with.
+
+2. **A failed read returns your default.** A type mismatch, a malformed value,
+   an unset ENV_VAR or a decryption failure now:
+   - returns `default` when you pass one (2.x raised `QuonfigEnvVarNotSetError`
+     / `QuonfigDecryptionError` even with a default, and reported a wrong type
+     as `QuonfigKeyNotFoundError`);
+   - with no default, raises under `on_no_default="error"` (the default, and
+     the get-or-raise form): the new `QuonfigTypeMismatchError` for a wrong
+     type, `QuonfigEnvVarCoerceError` for a malformed value, and the existing
+     `QuonfigEnvVarNotSetError` / `QuonfigDecryptionError`;
+   - with no default under `"warn"` / `"ignore"`, returns `None`.
+
+   `get(key, default=...)` (untyped) follows the same rule for resolution
+   errors.
+
+3. **Numbers convert only when exact.** `get_int` on a double config returns
+   the value only when it is whole and within +/-(2^53-1) (`3.0` -> `3`). 2.x
+   truncated (`3.9` -> `3`); 3.0 reports a type mismatch, as it does for
+   `1e300`, NaN and infinities. `get_float` on an int config still works
+   (`30` -> `30.0`). A bool is never a number.
+
+4. **`is_feature_enabled` never raises.** It returns `True` only for a bool
+   `True`. A missing key, a flag with no matching rule, a non-bool value
+   (including the string `"true"`, which 2.x read as `True`) or any resolution
+   error returns its `default` (`False`) and logs once per key. This includes
+   the sticky `QuonfigInitError` of a forked child under
+   `on_init_failure="fail"`; the other content reads still raise it.
+
+5. **One WARN per key.** A failed read logs one WARN per key per client
+   (`quonfig: read of '<key>' returned no value; the caller's default
+   applies: ...`), naming the key and types, never the value. A missing key is
+   not logged (except under `on_no_default="warn"`, as before).
+   **A wrong decryption key in production now degrades to your defaults with
+   these WARNs.** If that must be fatal, read the secret without a default
+   under `on_no_default="error"` so the getter raises
+   `QuonfigDecryptionError`.
+
+6. **Defaults are returned unchanged.** 2.x passed `default` through the same
+   coercion (`get_bool("k", default="false")` returned `True`). 3.0 returns
+   exactly what you passed.
+
+7. **`*_details` getters agree with the plain getters.** A value of another
+   type is `reason="ERROR"`, `error_code="TYPE_MISMATCH"`. 2.x parsed
+   `"true"`/`"false"` and numeric strings in the details getters, so
+   `get_bool_details` and `get_bool` disagreed on a stored `"false"`, and
+   `get_string_details` never reported a mismatch. `get_json_details` is now
+   typed: a non-json config is `TYPE_MISMATCH`.
+
+### Added
+
+- `QuonfigTypeMismatchError` (a `QuonfigError`), raised by a typed getter on a
+  value of another type when there is no default and
+  `on_no_default="error"`.
+
+### Changed
+
+- The typed getters implement the contract above. `QuonfigEnvVarCoerceError`
+  (still a `QuonfigKeyNotFoundError` subclass) now also covers a malformed
+  stored int or double, as it already did for a malformed duration
+  (qfg-zqoh).
+- Tests: integration-test-data pins move to `v2026.10.23` (the
+  `getter.contract.*` matrix: 183 new cases through the public getters).
+
+### Docs
+
+- README: a typed-getter section with the full table.
 - **Docs: README note on forking servers during a delivery outage (qfg-6vno.24).** Under Init failure: a forked worker rebuilds its own snapshot under the same `on_init_failure` mode, `"fail"` raises until delivery heals, `"wait"` blocks the first request, frequent recyclers should use `"continue"`, and an `init()` in Gunicorn `post_fork` must catch `QuonfigInitError`. Links to the startup-failure docs page. No code change.
 
 ## 2.1.0 - 2026-10-23
