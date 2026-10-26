@@ -123,7 +123,11 @@ def _typed_value(value: Any, value_type: str, expected: str) -> tuple[Any, Optio
         if value_type in ("double", "int"):
             if not _is_number(value) or (value_type == "int" and not isinstance(value, int)):
                 return None, _MALFORMED
-            return float(value), None
+            try:
+                return float(value), None
+            except OverflowError:
+                # An int too large for a double has no safe conversion.
+                return None, _MISMATCH
         return None, _MISMATCH
     if expected == "string_list":
         if value_type == "string_list" and isinstance(value, list):
@@ -135,7 +139,10 @@ def _typed_value(value: Any, value_type: str, expected: str) -> tuple[Any, Optio
         return None, _MISMATCH
     if expected == "duration":
         if value_type == "duration" and _is_number(value):
-            return float(value), None
+            try:
+                return float(value), None
+            except OverflowError:
+                return None, _MISMATCH
         return None, _MISMATCH
     return value, None
 

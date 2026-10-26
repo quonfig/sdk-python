@@ -140,6 +140,25 @@ def test_float_getter_reads_ints() -> None:
     assert c.get_float_details("i").value == 30.0
 
 
+def test_float_getter_on_an_int_too_large_for_a_float_is_a_mismatch() -> None:
+    huge = 10**400
+    c = _client([_plain("i", "int", huge)])
+    assert c.get_float("i", default=1.5) == 1.5
+    assert c.get_float("i") is None
+    details = c.get_float_details("i")
+    assert (details.reason, details.error_code, details.value) == ("ERROR", "TYPE_MISMATCH", None)
+    with pytest.raises(QuonfigTypeMismatchError):
+        _client([_plain("i", "int", huge)], on_no_default="error").get_float("i")
+
+
+def test_type_mismatch_error_is_exported_from_the_package_root() -> None:
+    import quonfig
+
+    assert quonfig.QuonfigTypeMismatchError is QuonfigTypeMismatchError
+    assert "QuonfigTypeMismatchError" in quonfig.__all__
+    assert issubclass(quonfig.QuonfigTypeMismatchError, quonfig.QuonfigError)
+
+
 def test_bool_is_never_a_number() -> None:
     c = _client([_plain("b", "bool", True)])
     assert c.get_int("b", default=7) == 7

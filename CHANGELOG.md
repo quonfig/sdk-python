@@ -68,9 +68,11 @@ reference implementation.
 
 ### Added
 
-- `QuonfigTypeMismatchError` (a `QuonfigError`), raised by a typed getter on a
-  value of another type when there is no default and
-  `on_no_default="error"`.
+- `QuonfigTypeMismatchError` (a `QuonfigError`, importable as
+  `from quonfig import QuonfigTypeMismatchError`), raised by a typed getter on
+  a value of another type when there is no default and
+  `on_no_default="error"`. An int too large for a float read with
+  `get_float` is also a type mismatch, so it falls back to the default.
 
 ### Changed
 

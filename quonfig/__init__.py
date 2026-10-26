@@ -13,6 +13,7 @@ from .exceptions import (
     QuonfigInitTimeoutError,
     QuonfigKeyNotFoundError,
     QuonfigNotInitializedError,
+    QuonfigTypeMismatchError,
 )
 from .logging import QuonfigLoggerFilter, QuonfigLoggerProcessor
 from .types import (
@@ -34,6 +35,7 @@ __all__ = [
     "QuonfigEnvVarCoerceError",
     "QuonfigEnvVarNotSetError",
     "QuonfigDecryptionError",
+    "QuonfigTypeMismatchError",
     "Contexts",
     "QUONFIG_SDK_LOGGING_CONTEXT_NAME",
     "QUONFIG_SDK_LOGGING_CONTEXT_KEY_PROP",
