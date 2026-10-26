@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import logging
+import math
 import os
 import random
 import re
@@ -28,12 +29,12 @@ from .context import (
 )
 from .evaluator import Evaluator
 from .exceptions import (
-    QuonfigDecryptionError,
     QuonfigEnvVarCoerceError,
-    QuonfigEnvVarNotSetError,
+    QuonfigError,
     QuonfigInitError,
     QuonfigInitTimeoutError,
     QuonfigKeyNotFoundError,
+    QuonfigTypeMismatchError,
 )
 from .resolver import LOG_LEVEL_ORDER, Resolver, compute_reportable_value_for
 from .store import ConfigStore
@@ -57,56 +58,118 @@ logger = logging.getLogger(__name__)
 _NO_DEFAULT = object()
 
 
-def _coerce_value(value: Any, expected_type: str) -> tuple[Any, bool]:
-    """Coerce a resolved native value to the caller's expected type.
+# Largest integer a double holds exactly (2^53-1). An int read of a stored
+# double succeeds only within +/- this bound, matching the int grammar
+# ``qfg verify`` enforces and sdk-go's ``maxSafeInt``.
+_MAX_SAFE_INT = 2**53 - 1
 
-    Returns ``(coerced, True)`` on success, ``(None, False)`` on a hard
-    type mismatch. ``expected_type`` mirrors the evaluator's value-type
-    vocabulary plus an "any" passthrough for ``get_json``.
+# Outcomes of ``_typed_value`` other than success.
+_MISMATCH = "mismatch"
+_MALFORMED = "malformed"
 
-    Behavior matches the existing ``get_int`` / ``get_string`` permissive
-    path: numeric strings coerce to ints/floats, non-bool values coerce
-    to bool only via ``bool()`` semantics for the existing ``get_bool``,
-    and lists go through ``get_string_list`` style ``str()`` coercion.
+# Getter vocabulary -> the config type named in a type-mismatch message.
+_EXPECTED_TYPE_NAMES = {
+    "string": "string",
+    "bool": "bool",
+    "int": "int",
+    "float": "double",
+    "string_list": "string_list",
+    "json": "json",
+    "duration": "duration",
+}
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _typed_value(value: Any, value_type: str, expected: str) -> tuple[Any, Optional[str]]:
+    """The typed-getter contract (qfg-zvyy), shared by the plain and
+    ``*_details`` getters so they always agree.
+
+    ``value`` is the resolved native value, ``value_type`` the config type of
+    the Value it came from, and ``expected`` the getter's type. Returns
+    ``(value, None)`` on success, or ``(None, _MISMATCH)`` /
+    ``(None, _MALFORMED)``. There is no string coercion: a stored ``"false"``
+    is never a bool and ``"3"`` is never an int. The only conversions are the
+    safe int <-> double ones: a double getter reads an int (30 -> 30.0), and
+    an int getter reads a double only when it is whole and within
+    +/-(2^53-1) (3.0 -> 3). It never truncates.
     """
-    if expected_type == "any":
-        return value, True
-    if expected_type == "bool":
-        if isinstance(value, bool):
-            return value, True
-        if isinstance(value, str):
-            lowered = value.lower()
-            if lowered == "true":
-                return True, True
-            if lowered == "false":
-                return False, True
-        return None, False
-    if expected_type == "string":
-        if isinstance(value, str):
-            return value, True
-        # Match get_string's permissive str() coercion.
-        return str(value), True
-    if expected_type == "int":
-        if isinstance(value, bool):
-            # bool is a subclass of int in Python — reject explicitly so
-            # asking for an int doesn't silently accept True/False.
-            return None, False
-        try:
-            return int(value), True
-        except (TypeError, ValueError):
-            return None, False
-    if expected_type == "float":
-        if isinstance(value, bool):
-            return None, False
-        try:
-            return float(value), True
-        except (TypeError, ValueError):
-            return None, False
-    if expected_type == "string_list":
-        if isinstance(value, list):
-            return [str(x) for x in value], True
-        return None, False
-    return value, True
+    if expected == "any":
+        return value, None
+    if expected == "string":
+        if value_type in ("string", "log_level") and isinstance(value, str):
+            return value, None
+        return None, _MISMATCH
+    if expected == "bool":
+        if value_type == "bool" and isinstance(value, bool):
+            return value, None
+        return None, _MISMATCH
+    if expected == "int":
+        if value_type == "int":
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value, None
+            return None, _MALFORMED
+        if value_type == "double":
+            if not _is_number(value):
+                return None, _MALFORMED
+            f = float(value)
+            if math.isfinite(f) and f.is_integer() and abs(f) <= _MAX_SAFE_INT:
+                return int(f), None
+            return None, _MISMATCH
+        return None, _MISMATCH
+    if expected == "float":
+        if value_type in ("double", "int"):
+            if not _is_number(value) or (value_type == "int" and not isinstance(value, int)):
+                return None, _MALFORMED
+            return float(value), None
+        return None, _MISMATCH
+    if expected == "string_list":
+        if value_type == "string_list" and isinstance(value, list):
+            return [str(x) for x in value], None
+        return None, _MISMATCH
+    if expected == "json":
+        if value_type == "json":
+            return value, None
+        return None, _MISMATCH
+    if expected == "duration":
+        if value_type == "duration" and _is_number(value):
+            return float(value), None
+        return None, _MISMATCH
+    return value, None
+
+
+def _resolved_value_type(result: EvalResult) -> str:
+    """Config type of the Value a read resolved to: the selected variant of a
+    weighted value, or the config's declared ``valueType`` for an ENV_VAR
+    (``provided``) value or a Value without a type."""
+    value = result.value
+    vtype = getattr(value, "type", "") or ""
+    if vtype == "weighted_values":
+        vtype = ""
+        raw = value.value
+        variants = raw.get("weightedValues") if isinstance(raw, dict) else None
+        idx = result.weighted_value_index
+        if isinstance(variants, list) and 0 <= idx < len(variants):
+            entry = variants[idx]
+            selected = entry.get("value") if isinstance(entry, dict) else None
+            if isinstance(selected, dict):
+                vtype = str(selected.get("type") or "")
+    if vtype in ("", "provided", "weighted_values"):
+        vtype = result.value_type or ""
+    return vtype
+
+
+def _typed_read_error(key: str, value_type: str, expected: str, kind: str) -> QuonfigError:
+    """The error for a failed typed read. Names the key and the types, never
+    the value (it may be a secret)."""
+    want = _EXPECTED_TYPE_NAMES.get(expected, expected)
+    if kind == _MALFORMED:
+        return QuonfigEnvVarCoerceError(f'Config "{key}" has a malformed {value_type} value')
+    return QuonfigTypeMismatchError(
+        f'Config "{key}" has type {value_type or "unknown"}, expected {want}'
+    )
 
 
 # Default domain that governs the api/sse/telemetry URL defaults. A single
@@ -477,7 +540,12 @@ class Quonfig:
         # property was missing from context (qfg-9dxb.8). One warning per key
         # per client; bounded by the number of flags.
         self._hash_missing_warned: Set[str] = set()
-        self._coerce_warned: Set[str] = set()
+        # Config keys already warned about a failed read: type mismatch,
+        # malformed value, unset ENV_VAR, decryption failure, or (for
+        # is_feature_enabled) a missing key. One WARN per key per client
+        # (qfg-zvyy).
+        self._read_failure_warned: Set[str] = set()
+        self._read_failure_lock = threading.Lock()
 
         # Telemetry (optional).
         #
@@ -2002,12 +2070,21 @@ class Quonfig:
     # Core evaluate + resolve
     # ------------------------------------------------------------------
 
-    def _get(
+    def _read(
         self,
         key: str,
-        contexts: Optional[Contexts] = None,
-        default: Any = _NO_DEFAULT,
-    ) -> Any:
+        contexts: Optional[Contexts],
+        expected: str,
+    ) -> "tuple[Any, Optional[BaseException]]":
+        """Evaluate and resolve ``key`` and apply the typed-getter contract.
+
+        Returns ``(value, None)`` on success, ``(_NO_DEFAULT, None)`` for a
+        missing key (or a flag with no matching rule), and
+        ``(_NO_DEFAULT, err)`` for a failed read: a type mismatch, a malformed
+        value, an unset ENV_VAR, a decryption failure or any other resolution
+        error. Never raises for a failed read; the caller decides between
+        default, ``None`` and raising (qfg-zvyy).
+        """
         self._wait_initialized()
         assert self._evaluator is not None
         merged = self._effective_contexts(contexts)
@@ -2016,7 +2093,7 @@ class Quonfig:
             self._warn_hash_property_missing(key, result)
 
         if result.reason == "MISSING" or result.value is None:
-            return _NO_DEFAULT
+            return _NO_DEFAULT, None
 
         try:
             resolved = self._resolver.resolve(
@@ -2026,18 +2103,8 @@ class Quonfig:
                 weighted_value_index=result.weighted_value_index,
                 value_type=result.value_type,
             )
-        except QuonfigEnvVarCoerceError as e:
-            # Malformed ENV_VAR value (qfg-2agi decision 3): warn once per key,
-            # then fall back to the caller's default; get_or_raise raises.
-            self._warn_coerce_failed(key, e)
-            if default is _NO_DEFAULT and self._on_no_default == "error":
-                raise
-            return _NO_DEFAULT
-        except (QuonfigEnvVarNotSetError, QuonfigDecryptionError):
-            raise
-        except Exception as e:
-            logger.warning("Error resolving value for key '%s': %s", key, e)
-            return _NO_DEFAULT
+        except Exception as e:  # noqa: BLE001 - every resolution error is a failed read
+            return _NO_DEFAULT, e
 
         # Record telemetry after resolving so resolved_value is available
         if self._telemetry is not None:
@@ -2055,7 +2122,38 @@ class Quonfig:
             except Exception:
                 pass  # telemetry must never break a getter (qfg-6vno.14)
 
-        return resolved
+        value_type = _resolved_value_type(result)
+        typed, failure = _typed_value(resolved, value_type, expected)
+        if failure is not None:
+            return _NO_DEFAULT, _typed_read_error(key, value_type, expected, failure)
+        return typed, None
+
+    def _typed_get(
+        self,
+        key: str,
+        default: Any,
+        contexts: Optional[Contexts],
+        expected: str,
+    ) -> Any:
+        """The plain getters (qfg-zvyy). A found value of the right type is
+        returned. A missing key follows ``default`` / ``on_no_default``. A
+        failed read logs one WARN per key, then returns ``default`` if one was
+        given; with no default it raises the read error under
+        ``on_no_default="error"`` (``get_or_raise``) and returns ``None``
+        otherwise."""
+        value, err = self._read(key, contexts, expected)
+        if err is None:
+            if value is _NO_DEFAULT:
+                return self._handle_missing(key, default)
+            return value
+        self._warn_read_failure(key, str(err))
+        if default is not _NO_DEFAULT:
+            return default
+        if self._on_no_default == "error":
+            if isinstance(err, QuonfigError):
+                raise err
+            raise QuonfigKeyNotFoundError(f"No value found for key '{key}': {err}") from err
+        return None
 
     def _telemetry_reason_to_string(self, telemetry_reason: int, eval_reason: str) -> str:
         """Translate the internal telemetry-reason code to the OF-aligned
@@ -2149,31 +2247,8 @@ class Quonfig:
                     weighted_value_index=result.weighted_value_index,
                     value_type=result.value_type,
                 )
-            except QuonfigEnvVarCoerceError as e:
-                self._warn_coerce_failed(key, e)
-                return EvaluationDetails(
-                    value=None,
-                    reason="ERROR",
-                    error_code="GENERAL",
-                    error_message=str(e),
-                    variant=self._build_variant("ERROR", None, None),
-                    flag_metadata=self._build_flag_metadata(
-                        result.config_id, result.config_type, None, None, None
-                    ),
-                )
-            except (QuonfigEnvVarNotSetError, QuonfigDecryptionError) as e:
-                return EvaluationDetails(
-                    value=None,
-                    reason="ERROR",
-                    error_code="GENERAL",
-                    error_message=str(e),
-                    variant=self._build_variant("ERROR", None, None),
-                    flag_metadata=self._build_flag_metadata(
-                        result.config_id, result.config_type, None, None, None
-                    ),
-                )
-            except Exception as e:
-                logger.warning("Error resolving value for key '%s': %s", key, e)
+            except Exception as e:  # noqa: BLE001 - a failed read, reported as ERROR
+                self._warn_read_failure(key, str(e))
                 return EvaluationDetails(
                     value=None,
                     reason="ERROR",
@@ -2202,19 +2277,20 @@ class Quonfig:
 
             reason_str = self._telemetry_reason_to_string(result.telemetry_reason, result.reason)
 
-            # Type coercion. We try to coerce the resolved value to the
-            # caller's expected_type — surfacing TYPE_MISMATCH on failure
-            # rather than letting a string sneak through a bool channel.
-            coerced, ok = _coerce_value(resolved, expected_type)
-            if not ok:
+            # The typed-getter contract (qfg-zvyy), shared with the plain
+            # getters: no string coercion, safe int <-> double only. A wrong
+            # type is TYPE_MISMATCH; a malformed stored number is GENERAL,
+            # like a malformed ENV_VAR value or duration.
+            value_type = _resolved_value_type(result)
+            coerced, failure = _typed_value(resolved, value_type, expected_type)
+            if failure is not None:
+                err = _typed_read_error(key, value_type, expected_type, failure)
+                self._warn_read_failure(key, str(err))
                 return EvaluationDetails(
                     value=None,
                     reason="ERROR",
-                    error_code="TYPE_MISMATCH",
-                    error_message=(
-                        f"Flag '{key}' could not be coerced to {expected_type}; "
-                        f"got {type(resolved).__name__}"
-                    ),
+                    error_code="TYPE_MISMATCH" if failure == _MISMATCH else "GENERAL",
+                    error_message=str(err),
                     variant=self._build_variant("ERROR", None, None),
                     flag_metadata=self._build_flag_metadata(
                         result.config_id, result.config_type, None, None, None
@@ -2315,13 +2391,19 @@ class Quonfig:
             prop,
         )
 
-    def _warn_coerce_failed(self, key: str, err: Exception) -> None:
-        """Log once per config key that its ENV_VAR value could not be
-        coerced. The message never includes the raw value."""
-        if key in self._coerce_warned:
-            return
-        self._coerce_warned.add(key)
-        logger.warning("quonfig: %s; using the default", err)
+    def _warn_read_failure(self, key: str, reason: str) -> None:
+        """Log once per config key per client that a read returned no value,
+        so a broken config is not mistaken for "using the default". The
+        reason names the key and types, never the value (qfg-zvyy)."""
+        with self._read_failure_lock:
+            if key in self._read_failure_warned:
+                return
+            self._read_failure_warned.add(key)
+        logger.warning(
+            "quonfig: read of '%s' returned no value; the caller's default applies: %s",
+            key,
+            reason,
+        )
 
     def _handle_missing(self, key: str, default: Any) -> Any:
         if default is not _NO_DEFAULT:
@@ -2344,11 +2426,12 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Any:
-        """Get any config value by key, returning raw Python type."""
-        result = self._get(key, contexts, default)
-        if result is _NO_DEFAULT:
-            return self._handle_missing(key, default)
-        return result
+        """Get any config value by key, returning the raw Python value.
+
+        Untyped, so there is no type check; a resolution failure (unset
+        ENV_VAR, decryption failure) follows the same rule as the typed
+        getters."""
+        return self._typed_get(key, default, contexts, "any")
 
     def get_string(
         self,
@@ -2356,11 +2439,8 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[str]:
-        result = self._get(key, contexts, default)
-        if result is _NO_DEFAULT:
-            val = self._handle_missing(key, default)
-            return str(val) if val is not None else None
-        return str(result) if result is not None else None
+        """A string (or log_level) config. Any other type is a type mismatch."""
+        return self._typed_get(key, default, contexts, "string")
 
     def get_int(
         self,
@@ -2368,15 +2448,9 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[int]:
-        result = self._get(key, contexts, default)
-        if result is _NO_DEFAULT:
-            val = self._handle_missing(key, default)
-            return int(val) if val is not None else None
-        try:
-            return int(result)
-        except (TypeError, ValueError):
-            # Coercion failed (e.g. env-var-provided value is not a valid int)
-            return self._handle_missing(key, default)
+        """An int config, or a double holding a whole number within
+        +/-(2^53-1). Never truncates: 3.9 is a type mismatch."""
+        return self._typed_get(key, default, contexts, "int")
 
     def get_float(
         self,
@@ -2384,14 +2458,8 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[float]:
-        result = self._get(key, contexts, default)
-        if result is _NO_DEFAULT:
-            val = self._handle_missing(key, default)
-            return float(val) if val is not None else None
-        try:
-            return float(result)
-        except (TypeError, ValueError):
-            return self._handle_missing(key, default)
+        """A double config, or an int config (30 -> 30.0)."""
+        return self._typed_get(key, default, contexts, "float")
 
     def get_bool(
         self,
@@ -2399,11 +2467,9 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[bool]:
-        result = self._get(key, contexts, default)
-        if result is _NO_DEFAULT:
-            val = self._handle_missing(key, default)
-            return bool(val) if val is not None else None
-        return bool(result)
+        """A bool config. A stored string ``"false"`` is a type mismatch,
+        never a bool."""
+        return self._typed_get(key, default, contexts, "bool")
 
     def get_string_list(
         self,
@@ -2411,17 +2477,9 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Optional[List[str]]:
-        result = self._get(key, contexts, default)
-        if result is _NO_DEFAULT:
-            val = self._handle_missing(key, default)
-            if val is None:
-                return None
-            if isinstance(val, list):
-                return [str(x) for x in val]
-            return [str(val)]
-        if isinstance(result, list):
-            return [str(x) for x in result]
-        return [str(result)] if result is not None else None
+        """A string_list config. A stored string is a type mismatch, never a
+        one-element list."""
+        return self._typed_get(key, default, contexts, "string_list")
 
     def get_json(
         self,
@@ -2429,10 +2487,8 @@ class Quonfig:
         default: Any = _NO_DEFAULT,
         contexts: Optional[Contexts] = None,
     ) -> Any:
-        result = self._get(key, contexts, default)
-        if result is _NO_DEFAULT:
-            return self._handle_missing(key, default)
-        return result
+        """A json config. Any other type is a type mismatch."""
+        return self._typed_get(key, default, contexts, "json")
 
     def get_duration(
         self,
@@ -2443,20 +2499,12 @@ class Quonfig:
         """Get a duration value in seconds.
 
         The stored or ENV_VAR string must match the ISO-8601 grammar
-        (qfg-2agi decision 1). A malformed value returns ``default`` and logs
-        a warning once per key; with no default it returns None, or raises
-        ``QuonfigEnvVarCoerceError`` when ``on_no_default="error"``.
+        (qfg-2agi decision 1). A malformed value or a config of another type
+        returns ``default`` and logs a warning once per key; with no default
+        it returns None, or raises (``QuonfigEnvVarCoerceError`` /
+        ``QuonfigTypeMismatchError``) when ``on_no_default="error"``.
         """
-        result = self._get(key, contexts, default)
-        if result is _NO_DEFAULT:
-            val = self._handle_missing(key, default)
-            return float(val) if val is not None else None
-        # The resolver returns float seconds for a duration config. Anything
-        # else (a non-duration config read as a duration) is never parsed
-        # with float(): "30", "nan" and "1e3" are not durations.
-        if isinstance(result, (int, float)) and not isinstance(result, bool):
-            return float(result)
-        return self._handle_missing(key, default)
+        return self._typed_get(key, default, contexts, "duration")
 
     def is_feature_enabled(
         self,
@@ -2464,20 +2512,25 @@ class Quonfig:
         default: bool = False,
         contexts: Optional[Contexts] = None,
     ) -> bool:
-        """Returns True only if the config is a boolean True value.
-        Returns False for missing keys, non-boolean types, or boolean False."""
-        result = self._get(key, contexts, default)
-        if result is _NO_DEFAULT:
-            return default
-        if isinstance(result, bool):
-            return result
-        if isinstance(result, str):
-            if result.lower() == "true":
-                return True
-            if result.lower() == "false":
-                return False
-        # Non-boolean types (int, float, list, dict, etc.) return False
-        return False
+        """True only when the flag resolves to the bool ``True``.
+
+        Never raises. A missing key, a flag with no matching rule, a
+        non-bool value (including the string ``"true"``) and any resolution
+        error return ``default`` (False unless given) and log one WARN per
+        key (qfg-zvyy)."""
+        try:
+            value, err = self._read(key, contexts, "bool")
+        except Exception as e:  # noqa: BLE001 - is_feature_enabled never raises
+            value, err = _NO_DEFAULT, e
+        if err is None and value is not _NO_DEFAULT:
+            return bool(value)
+        reason = (
+            str(err)
+            if err is not None
+            else "missing key or no matching rule; is_feature_enabled returns the default"
+        )
+        self._warn_read_failure(key, reason)
+        return default
 
     # ------------------------------------------------------------------
     # *_details API — value + reason + error_code, no exceptions
@@ -2533,9 +2586,9 @@ class Quonfig:
         key: str,
         contexts: Optional[Contexts] = None,
     ) -> EvaluationDetails[Any]:
-        """Resolve a JSON flag (or any flag, untyped) and surface the
-        evaluation reason."""
-        return self._evaluate_details(key, "any", contexts)
+        """Resolve a JSON flag and surface the evaluation reason. A config of
+        any other type is ``TYPE_MISMATCH`` (3.0.0; 2.x was untyped)."""
+        return self._evaluate_details(key, "json", contexts)
 
     @property
     def logger_key(self) -> Optional[str]:
@@ -2616,7 +2669,7 @@ class Quonfig:
 
         # Evaluate the config; any error (missing, resolver failure) → log it.
         try:
-            result = self._get(resolved_config_key, resolved_contexts)
+            result, _ = self._read(resolved_config_key, resolved_contexts, "any")
         except Exception:
             return True
 

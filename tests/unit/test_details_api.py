@@ -242,9 +242,9 @@ class TestTypeMismatch:
         assert details.error_code == "TYPE_MISMATCH"
         assert details.error_message and "string.flag" in details.error_message
 
-    def test_int_details_coerces_numeric_string(self):
-        """Match the existing get_int permissive path — a numeric
-        string should coerce, not error."""
+    def test_int_details_rejects_numeric_string(self):
+        """No string coercion (qfg-zvyy, 3.0.0): a stored "42" is a string,
+        so the int details getter reports TYPE_MISMATCH, like get_int."""
         config = ConfigResponse(
             id="cfg-4",
             key="numeric.string",
@@ -264,5 +264,7 @@ class TestTypeMismatch:
         c = _client_with_configs([config])
 
         details = c.get_int_details("numeric.string")
-        assert details.value == 42
-        assert details.reason == "STATIC"
+        assert details.value is None
+        assert details.reason == "ERROR"
+        assert details.error_code == "TYPE_MISMATCH"
+        assert c.get_int("numeric.string", default=7) == 7
