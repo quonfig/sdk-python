@@ -41,8 +41,8 @@ DATA_DIR = str(
 )
 ENV_ID = "Production"
 
-# Mirror telemetry_helpers.py — ensure the env vars referenced by the
-# integration fixtures are set before any evaluator runs.
+# Ensure the env vars referenced by the integration fixtures are set before
+# any evaluator runs.
 os.environ.setdefault(
     "PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY",
     "c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221",
@@ -127,7 +127,7 @@ def feed_aggregator(
             return
         keys = data.get("keys") or []
         for key in keys:
-            result = _evaluate_for_telemetry(key, contexts)
+            result = evaluate_for_telemetry(key, contexts)
             if result is not None:
                 agg.record(result)
         # Some YAML cases use keys_without_context to evaluate the same
@@ -135,7 +135,7 @@ def feed_aggregator(
         # different bucket and exercises rule fallthrough.
         keys_without = data.get("keys_without_context") or []
         for key in keys_without:
-            result = _evaluate_for_telemetry(key, {})
+            result = evaluate_for_telemetry(key, {})
             if result is not None:
                 agg.record(result)
         return
@@ -172,7 +172,7 @@ def aggregator_post(agg, kind: str, endpoint: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _evaluate_for_telemetry(key: str, contexts: Optional[Contexts] = None) -> Optional[EvalResult]:
+def evaluate_for_telemetry(key: str, contexts: Optional[Contexts] = None) -> Optional[EvalResult]:
     """Evaluate ``key`` via the public getter and return the EvalResult the
     client recorded for telemetry, or ``None`` if it recorded nothing
     (missing key, unresolvable value)."""
@@ -349,4 +349,5 @@ __all__ = [
     "build_aggregator",
     "feed_aggregator",
     "aggregator_post",
+    "evaluate_for_telemetry",
 ]

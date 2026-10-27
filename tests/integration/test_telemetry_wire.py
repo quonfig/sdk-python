@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import json
 
-from quonfig.telemetry.models import TelemetryPayload
-
-from .telemetry_helpers import (
+from quonfig.telemetry.collectors import (
     ContextShapeCollector,
     EvaluationSummaryCollector,
-    evaluate_for_telemetry,
 )
+from quonfig.telemetry.models import TelemetryPayload
+
+from .aggregator_helpers import evaluate_for_telemetry
 
 
 def test_evaluation_summary_json_contains_required_fields_including_reason():
