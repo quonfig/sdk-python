@@ -324,7 +324,8 @@ class Transport:
         """Drop leg ``idx``'s remembered ETag so its next request is a full GET.
 
         Used when a 200 was fetched but deliberately not installed (a gen<=0
-        payload ignored over a held generation, qfg-9dxb.9): the server can
+        payload ignored over a held generation, qfg-9dxb.9, or one dropped as
+        strictly older, qfg-j7ui): the server can
         later repair the generation for the SAME sha, so keeping that ETag
         would 304 the fix away until the next commit.
         """

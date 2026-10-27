@@ -1339,12 +1339,17 @@ class Quonfig:
             elif held_at_rejection is not None and 0 < envelope.meta.generation < held_at_rejection:
                 self._telemetry.record_guard_rejected()
 
-        # An ignored gen<=0 200 must not leave its ETag on the leg: the server
-        # can repair the generation for the same sha (same ETag), and a kept
-        # ETag would 304 that repair away until the next commit.
+        # An ignored gen<=0 200, or one dropped as STRICTLY older, must not
+        # leave its ETag on the leg: the server can repair the generation for
+        # the same sha (same ETag), and a kept ETag would 304 that repair away
+        # until the next commit (qfg-9dxb.9, qfg-j7ui; supervisor contract
+        # Test 11). Only a same-generation re-delivery keeps its ETag.
+        strictly_older = (
+            held_at_rejection is not None and 0 < envelope.meta.generation < held_at_rejection
+        )
         if (
             not accepted
-            and envelope.meta.generation <= 0
+            and (envelope.meta.generation <= 0 or strictly_older)
             and from_http
             and source_index is not None
             and self._transport is not None
