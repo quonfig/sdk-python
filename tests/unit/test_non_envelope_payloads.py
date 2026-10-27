@@ -306,6 +306,50 @@ def test_ignored_gen0_200_does_not_pin_its_etag() -> None:
         server.close()
 
 
+def test_rejected_older_200_does_not_pin_its_etag() -> None:
+    # qfg-j7ui (supervisor contract Test 11): a 200 the guard drops as STRICTLY
+    # older must not leave its ETag behind either. A shallow-clone server can
+    # serve sha B at a low generation and later repair it to a higher one for
+    # the SAME sha, so a remembered ETag would 304 the repair away until the
+    # next commit.
+    state = {"phase": "A"}
+    seen_inm: List[Optional[str]] = []
+
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        seen_inm.append(req.headers.get("If-None-Match"))
+        if state["phase"] == "A":
+            _write(req, _envelope_json(10, ["a"], version="shaA"), etag='"shaA"')
+        elif state["phase"] == "B3":
+            _write(req, _envelope_json(3, ["b"], version="shaB"), etag='"shaB"')
+        elif req.headers.get("If-None-Match") == '"shaB"':
+            req.send_response(304)
+            req.end_headers()
+        else:
+            _write(req, _envelope_json(11, ["b"], version="shaB"), etag='"shaB"')
+
+    server = _Server(handler)
+    client = _make_client([server.url])
+    try:
+        client.init()
+        _await_ready(client)
+        assert client.keys() == ["a"]
+        assert client.held_generation() == 10
+
+        state["phase"] = "B3"
+        client.refresh()
+        assert client.keys() == ["a"], "gen 3 is older than the held gen 10"
+        assert client.held_generation() == 10
+
+        state["phase"] = "B11"
+        client.refresh()
+        assert seen_inm[-1] != '"shaB"', "the rejected-older ETag must not be sent"
+        assert client.keys() == ["b"], "repaired same-sha payload must install"
+        assert client.held_generation() == 11
+    finally:
+        client.close()
+        server.close()
+
+
 def test_qfg_serve_only_client_keeps_installing_unversioned_payloads() -> None:
     # A client that has only ever seen unversioned payloads (``qfg serve``)
     # installs each one.
