@@ -20,6 +20,43 @@ value = client.get_string("my.key", default="fallback")
 enabled = client.is_feature_enabled("my.flag")
 ```
 
+## Typed getters
+
+`get_string`, `get_int`, `get_float`, `get_bool`, `get_string_list`,
+`get_json` and `get_duration` (seconds) return the config's value when it has
+the getter's type. When there is no such value, what you get depends on
+`default=` and `on_no_default`:
+
+| Situation | With `default=` | No default, `on_no_default="error"` (the default) | No default, `"warn"` / `"ignore"` | Logged |
+|---|---|---|---|---|
+| Value of the getter's type | the value | the value | the value | no |
+| Missing key, or no rule matched | `default` | raises `QuonfigKeyNotFoundError` | `None` | only under `"warn"` |
+| Value of another type (e.g. `get_bool` on a string config) | `default` | raises `QuonfigTypeMismatchError` | `None` | once per key |
+| Malformed stored or ENV_VAR value (an int `"twelve"`, a duration `"30s"`) | `default` | raises `QuonfigEnvVarCoerceError` | `None` | once per key |
+| ENV_VAR not set | `default` | raises `QuonfigEnvVarNotSetError` | `None` | once per key |
+| Secret cannot be decrypted | `default` | raises `QuonfigDecryptionError` | `None` | once per key |
+
+Strings are never coerced: a stored `"false"` is a string, so `get_bool`
+reports a type mismatch instead of returning `True` or `False`. The only
+conversions are between numbers, and only when exact: `get_float` reads an int
+config (`30` -> `30.0`), and `get_int` reads a double config holding a whole
+number within +/-(2^53-1) (`3.0` -> `3`; `3.9` is a type mismatch, never
+truncated). `default` is returned exactly as you passed it. `get` is untyped:
+it returns any stored value, and resolution errors follow the same rule.
+
+The `*_details` getters (`get_bool_details`, `get_string_details`, ...) never
+raise and agree with the plain getters: a value of another type is
+`reason="ERROR"`, `error_code="TYPE_MISMATCH"`.
+
+`is_feature_enabled` never raises: it returns `True` only for a bool `True`,
+and otherwise (a missing key, a flag with no matching rule, a non-bool value
+such as the string `"true"`, or any resolution error) returns its `default`
+(`False` unless you pass one), logging once per key.
+
+A wrong decryption key or an unset ENV_VAR therefore degrades to your defaults
+with one WARN per key. If a broken config must stop your service, read it
+without a default under `on_no_default="error"` so the getter raises.
+
 ## Context
 
 ```python
@@ -587,7 +624,8 @@ If delivery is unreachable when a worker is recycled:
 
 - `"fail"` (default): the worker's first content read raises
   `QuonfigInitError`, and later reads keep raising until delivery heals
-  (2.1.0+; 2.0.x served code defaults).
+  (2.1.0+; 2.0.x served code defaults). `is_feature_enabled` never raises
+  (3.0.0+): it returns its default instead.
 - `"wait"`: the worker's first request blocks until delivery is back.
 - `"continue"`: the worker serves code defaults until it heals. Apps that
   recycle workers often (low `max_requests`, a fork per job) should use this

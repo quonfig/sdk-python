@@ -1475,3 +1475,98 @@ def test_returns_false_for_prop_greater_than_30_when_the_given_prop_is_a_numeric
     c = config_client
     result = c.is_feature_enabled("feature-flag.greater-than", contexts={"user": {"age": "35"}})
     assert result is False
+
+
+# enabled on stored bool true returns true
+def test_enabled_on_stored_bool_true_returns_true(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.bool")
+    assert result is True
+
+
+# enabled on env-var-provided bool "true" returns true
+def test_enabled_on_env_var_provided_bool_true_returns_true() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_GETTER_BOOL"] = os.environ.get("QUONFIG_ITD_GETTER_BOOL")
+    os.environ["QUONFIG_ITD_GETTER_BOOL"] = "true"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.is_feature_enabled("getter.contract.provided.bool")
+        assert result is True
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# enabled on stored string returns false
+def test_enabled_on_stored_string_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.string")
+    assert result is False
+
+
+# enabled on stored int returns false
+def test_enabled_on_stored_int_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.int")
+    assert result is False
+
+
+# enabled on stored double returns false
+def test_enabled_on_stored_double_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.double")
+    assert result is False
+
+
+# enabled on stored string_list returns false
+def test_enabled_on_stored_string_list_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.string_list")
+    assert result is False
+
+
+# enabled on stored json returns false
+def test_enabled_on_stored_json_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.json")
+    assert result is False
+
+
+# enabled on stored duration returns false
+def test_enabled_on_stored_duration_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.duration")
+    assert result is False
+
+
+# enabled on stored string "true" returns false
+def test_enabled_on_stored_string_true_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.string.true")
+    assert result is False
+
+
+# enabled on stored malformed int "twelve" returns false
+def test_enabled_on_stored_malformed_int_twelve_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.int.malformed")
+    assert result is False
+
+
+# enabled on a missing bool env var returns false
+def test_enabled_on_a_missing_bool_env_var_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("getter.contract.provided.bool.missing")
+    assert result is False
+
+
+# enabled on a decryption failure returns false
+def test_enabled_on_a_decryption_failure_returns_false(config_client) -> None:
+    c = config_client
+    result = c.is_feature_enabled("a.broken.secret.config")
+    assert result is False

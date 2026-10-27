@@ -542,3 +542,929 @@ def test_env_var_provided_malformed_duration_garbage_with_no_default_returns_nil
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+# STRING getter on stored int returns the default
+def test_string_getter_on_stored_int_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string("getter.contract.int", default="DEFAULT")
+    assert result == "DEFAULT"
+
+
+# STRING getter on stored int with no default returns nil
+def test_string_getter_on_stored_int_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string("getter.contract.int")
+    assert result is None
+
+
+# STRING getter on stored double returns the default
+def test_string_getter_on_stored_double_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string("getter.contract.double", default="DEFAULT")
+    assert result == "DEFAULT"
+
+
+# STRING getter on stored double with no default returns nil
+def test_string_getter_on_stored_double_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string("getter.contract.double")
+    assert result is None
+
+
+# STRING getter on stored bool returns the default
+def test_string_getter_on_stored_bool_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string("getter.contract.bool", default="DEFAULT")
+    assert result == "DEFAULT"
+
+
+# STRING getter on stored bool with no default returns nil
+def test_string_getter_on_stored_bool_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string("getter.contract.bool")
+    assert result is None
+
+
+# STRING getter on stored string_list returns the default
+def test_string_getter_on_stored_string_list_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string("getter.contract.string_list", default="DEFAULT")
+    assert result == "DEFAULT"
+
+
+# STRING getter on stored string_list with no default returns nil
+def test_string_getter_on_stored_string_list_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string("getter.contract.string_list")
+    assert result is None
+
+
+# STRING getter on stored json returns the default
+def test_string_getter_on_stored_json_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string("getter.contract.json", default="DEFAULT")
+    assert result == "DEFAULT"
+
+
+# STRING getter on stored json with no default returns nil
+def test_string_getter_on_stored_json_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string("getter.contract.json")
+    assert result is None
+
+
+# STRING getter on stored duration returns the default
+def test_string_getter_on_stored_duration_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string("getter.contract.duration", default="DEFAULT")
+    assert result == "DEFAULT"
+
+
+# STRING getter on stored duration with no default returns nil
+def test_string_getter_on_stored_duration_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string("getter.contract.duration")
+    assert result is None
+
+
+# INT getter on stored string returns the default
+def test_int_getter_on_stored_string_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.string", default=7)
+    assert result == 7
+
+
+# INT getter on stored string with no default returns nil
+def test_int_getter_on_stored_string_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.string")
+    assert result is None
+
+
+# INT getter on stored double 3.9 returns the default
+def test_int_getter_on_stored_double_3_9_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.double", default=7)
+    assert result == 7
+
+
+# INT getter on stored double 3.9 with no default returns nil
+def test_int_getter_on_stored_double_3_9_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.double")
+    assert result is None
+
+
+# INT getter on stored bool returns the default
+def test_int_getter_on_stored_bool_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.bool", default=7)
+    assert result == 7
+
+
+# INT getter on stored bool with no default returns nil
+def test_int_getter_on_stored_bool_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.bool")
+    assert result is None
+
+
+# INT getter on stored string_list returns the default
+def test_int_getter_on_stored_string_list_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.string_list", default=7)
+    assert result == 7
+
+
+# INT getter on stored string_list with no default returns nil
+def test_int_getter_on_stored_string_list_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.string_list")
+    assert result is None
+
+
+# INT getter on stored json returns the default
+def test_int_getter_on_stored_json_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.json", default=7)
+    assert result == 7
+
+
+# INT getter on stored json with no default returns nil
+def test_int_getter_on_stored_json_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.json")
+    assert result is None
+
+
+# INT getter on stored duration returns the default
+def test_int_getter_on_stored_duration_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.duration", default=7)
+    assert result == 7
+
+
+# INT getter on stored duration with no default returns nil
+def test_int_getter_on_stored_duration_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.duration")
+    assert result is None
+
+
+# DOUBLE getter on stored string returns the default
+def test_double_getter_on_stored_string_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_float("getter.contract.string", default=7.5)
+    assert abs(result - 7.5) < 1e-9
+
+
+# DOUBLE getter on stored string with no default returns nil
+def test_double_getter_on_stored_string_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_float("getter.contract.string")
+    assert result is None
+
+
+# DOUBLE getter on stored bool returns the default
+def test_double_getter_on_stored_bool_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_float("getter.contract.bool", default=7.5)
+    assert abs(result - 7.5) < 1e-9
+
+
+# DOUBLE getter on stored bool with no default returns nil
+def test_double_getter_on_stored_bool_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_float("getter.contract.bool")
+    assert result is None
+
+
+# DOUBLE getter on stored string_list returns the default
+def test_double_getter_on_stored_string_list_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_float("getter.contract.string_list", default=7.5)
+    assert abs(result - 7.5) < 1e-9
+
+
+# DOUBLE getter on stored string_list with no default returns nil
+def test_double_getter_on_stored_string_list_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_float("getter.contract.string_list")
+    assert result is None
+
+
+# DOUBLE getter on stored json returns the default
+def test_double_getter_on_stored_json_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_float("getter.contract.json", default=7.5)
+    assert abs(result - 7.5) < 1e-9
+
+
+# DOUBLE getter on stored json with no default returns nil
+def test_double_getter_on_stored_json_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_float("getter.contract.json")
+    assert result is None
+
+
+# DOUBLE getter on stored duration returns the default
+def test_double_getter_on_stored_duration_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_float("getter.contract.duration", default=7.5)
+    assert abs(result - 7.5) < 1e-9
+
+
+# DOUBLE getter on stored duration with no default returns nil
+def test_double_getter_on_stored_duration_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_float("getter.contract.duration")
+    assert result is None
+
+
+# BOOLEAN getter on stored string returns the default
+def test_boolean_getter_on_stored_string_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.string", default=False)
+    assert result is False
+
+
+# BOOLEAN getter on stored string with no default returns nil
+def test_boolean_getter_on_stored_string_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_bool("getter.contract.string")
+    assert result is None
+
+
+# BOOLEAN getter on stored int returns the default
+def test_boolean_getter_on_stored_int_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.int", default=False)
+    assert result is False
+
+
+# BOOLEAN getter on stored int with no default returns nil
+def test_boolean_getter_on_stored_int_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_bool("getter.contract.int")
+    assert result is None
+
+
+# BOOLEAN getter on stored double returns the default
+def test_boolean_getter_on_stored_double_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.double", default=False)
+    assert result is False
+
+
+# BOOLEAN getter on stored double with no default returns nil
+def test_boolean_getter_on_stored_double_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_bool("getter.contract.double")
+    assert result is None
+
+
+# BOOLEAN getter on stored string_list returns the default
+def test_boolean_getter_on_stored_string_list_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.string_list", default=False)
+    assert result is False
+
+
+# BOOLEAN getter on stored string_list with no default returns nil
+def test_boolean_getter_on_stored_string_list_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_bool("getter.contract.string_list")
+    assert result is None
+
+
+# BOOLEAN getter on stored json returns the default
+def test_boolean_getter_on_stored_json_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.json", default=False)
+    assert result is False
+
+
+# BOOLEAN getter on stored json with no default returns nil
+def test_boolean_getter_on_stored_json_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_bool("getter.contract.json")
+    assert result is None
+
+
+# BOOLEAN getter on stored duration returns the default
+def test_boolean_getter_on_stored_duration_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.duration", default=False)
+    assert result is False
+
+
+# BOOLEAN getter on stored duration with no default returns nil
+def test_boolean_getter_on_stored_duration_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_bool("getter.contract.duration")
+    assert result is None
+
+
+# STRING_LIST getter on stored string returns the default
+def test_string_list_getter_on_stored_string_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string_list("getter.contract.string", default=["DEFAULT"])
+    assert result == ["DEFAULT"]
+
+
+# STRING_LIST getter on stored string with no default returns nil
+def test_string_list_getter_on_stored_string_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string_list("getter.contract.string")
+    assert result is None
+
+
+# STRING_LIST getter on stored int returns the default
+def test_string_list_getter_on_stored_int_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string_list("getter.contract.int", default=["DEFAULT"])
+    assert result == ["DEFAULT"]
+
+
+# STRING_LIST getter on stored int with no default returns nil
+def test_string_list_getter_on_stored_int_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string_list("getter.contract.int")
+    assert result is None
+
+
+# STRING_LIST getter on stored double returns the default
+def test_string_list_getter_on_stored_double_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string_list("getter.contract.double", default=["DEFAULT"])
+    assert result == ["DEFAULT"]
+
+
+# STRING_LIST getter on stored double with no default returns nil
+def test_string_list_getter_on_stored_double_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string_list("getter.contract.double")
+    assert result is None
+
+
+# STRING_LIST getter on stored bool returns the default
+def test_string_list_getter_on_stored_bool_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string_list("getter.contract.bool", default=["DEFAULT"])
+    assert result == ["DEFAULT"]
+
+
+# STRING_LIST getter on stored bool with no default returns nil
+def test_string_list_getter_on_stored_bool_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string_list("getter.contract.bool")
+    assert result is None
+
+
+# STRING_LIST getter on stored json returns the default
+def test_string_list_getter_on_stored_json_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string_list("getter.contract.json", default=["DEFAULT"])
+    assert result == ["DEFAULT"]
+
+
+# STRING_LIST getter on stored json with no default returns nil
+def test_string_list_getter_on_stored_json_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string_list("getter.contract.json")
+    assert result is None
+
+
+# STRING_LIST getter on stored duration returns the default
+def test_string_list_getter_on_stored_duration_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string_list("getter.contract.duration", default=["DEFAULT"])
+    assert result == ["DEFAULT"]
+
+
+# STRING_LIST getter on stored duration with no default returns nil
+def test_string_list_getter_on_stored_duration_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string_list("getter.contract.duration")
+    assert result is None
+
+
+# JSON getter on stored string returns the default
+def test_json_getter_on_stored_string_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_json("getter.contract.string", default={"default": True})
+    assert result == {"default": True}
+
+
+# JSON getter on stored string with no default returns nil
+def test_json_getter_on_stored_string_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_json("getter.contract.string")
+    assert result is None
+
+
+# JSON getter on stored int returns the default
+def test_json_getter_on_stored_int_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_json("getter.contract.int", default={"default": True})
+    assert result == {"default": True}
+
+
+# JSON getter on stored int with no default returns nil
+def test_json_getter_on_stored_int_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_json("getter.contract.int")
+    assert result is None
+
+
+# JSON getter on stored double returns the default
+def test_json_getter_on_stored_double_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_json("getter.contract.double", default={"default": True})
+    assert result == {"default": True}
+
+
+# JSON getter on stored double with no default returns nil
+def test_json_getter_on_stored_double_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_json("getter.contract.double")
+    assert result is None
+
+
+# JSON getter on stored bool returns the default
+def test_json_getter_on_stored_bool_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_json("getter.contract.bool", default={"default": True})
+    assert result == {"default": True}
+
+
+# JSON getter on stored bool with no default returns nil
+def test_json_getter_on_stored_bool_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_json("getter.contract.bool")
+    assert result is None
+
+
+# JSON getter on stored string_list returns the default
+def test_json_getter_on_stored_string_list_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_json("getter.contract.string_list", default={"default": True})
+    assert result == {"default": True}
+
+
+# JSON getter on stored string_list with no default returns nil
+def test_json_getter_on_stored_string_list_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_json("getter.contract.string_list")
+    assert result is None
+
+
+# JSON getter on stored duration returns the default
+def test_json_getter_on_stored_duration_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_json("getter.contract.duration", default={"default": True})
+    assert result == {"default": True}
+
+
+# JSON getter on stored duration with no default returns nil
+def test_json_getter_on_stored_duration_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_json("getter.contract.duration")
+    assert result is None
+
+
+# DURATION getter on stored string returns the default
+def test_duration_getter_on_stored_string_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("getter.contract.string", default=7)
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
+
+
+# DURATION getter on stored string with no default returns nil
+def test_duration_getter_on_stored_string_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("getter.contract.string")
+    assert result is None
+
+
+# DURATION getter on stored int returns the default
+def test_duration_getter_on_stored_int_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("getter.contract.int", default=7)
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
+
+
+# DURATION getter on stored int with no default returns nil
+def test_duration_getter_on_stored_int_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("getter.contract.int")
+    assert result is None
+
+
+# DURATION getter on stored double returns the default
+def test_duration_getter_on_stored_double_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("getter.contract.double", default=7)
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
+
+
+# DURATION getter on stored double with no default returns nil
+def test_duration_getter_on_stored_double_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("getter.contract.double")
+    assert result is None
+
+
+# DURATION getter on stored bool returns the default
+def test_duration_getter_on_stored_bool_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("getter.contract.bool", default=7)
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
+
+
+# DURATION getter on stored bool with no default returns nil
+def test_duration_getter_on_stored_bool_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("getter.contract.bool")
+    assert result is None
+
+
+# DURATION getter on stored string_list returns the default
+def test_duration_getter_on_stored_string_list_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("getter.contract.string_list", default=7)
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
+
+
+# DURATION getter on stored string_list with no default returns nil
+def test_duration_getter_on_stored_string_list_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("getter.contract.string_list")
+    assert result is None
+
+
+# DURATION getter on stored json returns the default
+def test_duration_getter_on_stored_json_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("getter.contract.json", default=7)
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
+
+
+# DURATION getter on stored json with no default returns nil
+def test_duration_getter_on_stored_json_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("getter.contract.json")
+    assert result is None
+
+
+# BOOLEAN getter on stored string "false" returns the default
+def test_boolean_getter_on_stored_string_false_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.string.false", default=False)
+    assert result is False
+
+
+# BOOLEAN getter on stored string "false" with no default returns nil
+def test_boolean_getter_on_stored_string_false_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_bool("getter.contract.string.false")
+    assert result is None
+
+
+# BOOLEAN getter on stored string "false" returns a true default
+def test_boolean_getter_on_stored_string_false_returns_a_true_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.string.false", default=True)
+    assert result is True
+
+
+# BOOLEAN getter on stored string "true" returns the default
+def test_boolean_getter_on_stored_string_true_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.string.true", default=False)
+    assert result is False
+
+
+# BOOLEAN getter on stored string "true" with no default returns nil
+def test_boolean_getter_on_stored_string_true_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_bool("getter.contract.string.true")
+    assert result is None
+
+
+# INT getter on stored string "3" returns the default
+def test_int_getter_on_stored_string_3_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.string.number", default=7)
+    assert result == 7
+
+
+# INT getter on stored string "3" with no default returns nil
+def test_int_getter_on_stored_string_3_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.string.number")
+    assert result is None
+
+
+# DOUBLE getter on stored string "3" returns the default
+def test_double_getter_on_stored_string_3_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_float("getter.contract.string.number", default=7.5)
+    assert abs(result - 7.5) < 1e-9
+
+
+# DOUBLE getter on stored string "3" with no default returns nil
+def test_double_getter_on_stored_string_3_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_float("getter.contract.string.number")
+    assert result is None
+
+
+# DURATION getter on stored string "PT1S" returns the default
+def test_duration_getter_on_stored_string_pt1s_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_duration("getter.contract.string.duration", default=7)
+    assert result == 7000 / 1000, f"Expected exactly 7000ms (7000 / 1000 s), got {result!r}s"
+
+
+# DURATION getter on stored string "PT1S" with no default returns nil
+def test_duration_getter_on_stored_string_pt1s_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_duration("getter.contract.string.duration")
+    assert result is None
+
+
+# DOUBLE get on stored int 30 returns 30.0
+def test_double_get_on_stored_int_30_returns_30_0(config_client) -> None:
+    c = config_client
+    result = c.get_float("getter.contract.int")
+    assert result == 30
+
+
+# INT get on stored whole double 3.0 returns 3
+def test_int_get_on_stored_whole_double_3_0_returns_3(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.double.whole")
+    assert result == 3
+
+
+# DOUBLE getter on stored int 30 ignores the default
+def test_double_getter_on_stored_int_30_ignores_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_float("getter.contract.int", default=7.5)
+    assert result == 30
+
+
+# INT getter on stored whole double 3.0 ignores the default
+def test_int_getter_on_stored_whole_double_3_0_ignores_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.double.whole", default=7)
+    assert result == 3
+
+
+# INT getter on stored double 1e300 returns the default
+def test_int_getter_on_stored_double_1e300_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.double.huge", default=7)
+    assert result == 7
+
+
+# INT getter on stored double 1e300 with no default returns nil
+def test_int_getter_on_stored_double_1e300_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.double.huge")
+    assert result is None
+
+
+# INT getter on stored double 2^53 (outside the safe int range) returns the default
+def test_int_getter_on_stored_double_2_53_outside_the_safe_int_range_returns_the_default(
+    config_client,
+) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.double.unsafe", default=7)
+    assert result == 7
+
+
+# INT getter on stored double 2^53 (outside the safe int range) with no default returns nil
+def test_int_getter_on_stored_double_2_53_outside_the_safe_int_range_with_no_default_returns_nil() -> (
+    None
+):
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.double.unsafe")
+    assert result is None
+
+
+# INT getter on stored malformed int "twelve" returns the default
+def test_int_getter_on_stored_malformed_int_twelve_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_int("getter.contract.int.malformed", default=7)
+    assert result == 7
+
+
+# INT getter on stored malformed int "twelve" with no default returns nil
+def test_int_getter_on_stored_malformed_int_twelve_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_int("getter.contract.int.malformed")
+    assert result is None
+
+
+# DOUBLE getter on stored malformed double "abc" returns the default
+def test_double_getter_on_stored_malformed_double_abc_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_float("getter.contract.double.malformed", default=7.5)
+    assert abs(result - 7.5) < 1e-9
+
+
+# DOUBLE getter on stored malformed double "abc" with no default returns nil
+def test_double_getter_on_stored_malformed_double_abc_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_float("getter.contract.double.malformed")
+    assert result is None
+
+
+# INT getter on env-var-provided malformed int "twelve" returns the default
+def test_int_getter_on_env_var_provided_malformed_int_twelve_returns_the_default() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_GETTER_INT"] = os.environ.get("QUONFIG_ITD_GETTER_INT")
+    os.environ["QUONFIG_ITD_GETTER_INT"] = "twelve"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.get_int("getter.contract.provided.int.malformed", default=7)
+        assert result == 7
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# INT getter on env-var-provided malformed int "twelve" with no default returns nil
+def test_int_getter_on_env_var_provided_malformed_int_twelve_with_no_default_returns_nil() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_GETTER_INT"] = os.environ.get("QUONFIG_ITD_GETTER_INT")
+    os.environ["QUONFIG_ITD_GETTER_INT"] = "twelve"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+        c.init()
+        result = c.get_int("getter.contract.provided.int.malformed")
+        assert result is None
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# DOUBLE getter on env-var-provided malformed double "abc" returns the default
+def test_double_getter_on_env_var_provided_malformed_double_abc_returns_the_default() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_GETTER_DOUBLE"] = os.environ.get("QUONFIG_ITD_GETTER_DOUBLE")
+    os.environ["QUONFIG_ITD_GETTER_DOUBLE"] = "abc"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.get_float("getter.contract.provided.double.malformed", default=7.5)
+        assert abs(result - 7.5) < 1e-9
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# DOUBLE getter on env-var-provided malformed double "abc" with no default returns nil
+def test_double_getter_on_env_var_provided_malformed_double_abc_with_no_default_returns_nil() -> (
+    None
+):
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_GETTER_DOUBLE"] = os.environ.get("QUONFIG_ITD_GETTER_DOUBLE")
+    os.environ["QUONFIG_ITD_GETTER_DOUBLE"] = "abc"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+        c.init()
+        result = c.get_float("getter.contract.provided.double.malformed")
+        assert result is None
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# STRING getter on a missing env var returns the default
+def test_string_getter_on_a_missing_env_var_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string("provided.by.missing.env.var", default="DEFAULT")
+    assert result == "DEFAULT"
+
+
+# STRING getter on a missing env var with no default returns nil
+def test_string_getter_on_a_missing_env_var_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string("provided.by.missing.env.var")
+    assert result is None
+
+
+# STRING getter on a decryption failure returns the default
+def test_string_getter_on_a_decryption_failure_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string("a.broken.secret.config", default="DEFAULT")
+    assert result == "DEFAULT"
+
+
+# STRING getter on a decryption failure with no default returns nil
+def test_string_getter_on_a_decryption_failure_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string("a.broken.secret.config")
+    assert result is None
+
+
+# BOOLEAN getter on a missing bool env var returns the default
+def test_boolean_getter_on_a_missing_bool_env_var_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_bool("getter.contract.provided.bool.missing", default=True)
+    assert result is True
+
+
+# BOOLEAN getter on a missing bool env var with no default returns nil
+def test_boolean_getter_on_a_missing_bool_env_var_with_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_bool("getter.contract.provided.bool.missing")
+    assert result is None
+
+
+# BOOLEAN getter on env-var-provided bool "false" returns false
+def test_boolean_getter_on_env_var_provided_bool_false_returns_false() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_GETTER_BOOL"] = os.environ.get("QUONFIG_ITD_GETTER_BOOL")
+    os.environ["QUONFIG_ITD_GETTER_BOOL"] = "false"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.get_bool("getter.contract.provided.bool")
+        assert result is False
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v

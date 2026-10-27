@@ -19,6 +19,7 @@ from quonfig.exceptions import (
     QuonfigEnvVarNotSetError,
     QuonfigInitTimeoutError,
     QuonfigKeyNotFoundError,
+    QuonfigTypeMismatchError,
 )
 
 DATADIR = os.path.join(
@@ -599,3 +600,471 @@ def test_raises_an_error_if_a_stored_duration_empty_cannot_be_coerced() -> None:
     c.init()
     with pytest.raises(QuonfigKeyNotFoundError):
         c.get_duration("test.duration.malformed.empty")
+
+
+# STRING get_or_raise on stored int raises type_mismatch
+def test_string_get_or_raise_on_stored_int_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string("getter.contract.int")
+
+
+# STRING get_or_raise on stored double raises type_mismatch
+def test_string_get_or_raise_on_stored_double_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string("getter.contract.double")
+
+
+# STRING get_or_raise on stored bool raises type_mismatch
+def test_string_get_or_raise_on_stored_bool_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string("getter.contract.bool")
+
+
+# STRING get_or_raise on stored string_list raises type_mismatch
+def test_string_get_or_raise_on_stored_string_list_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string("getter.contract.string_list")
+
+
+# STRING get_or_raise on stored json raises type_mismatch
+def test_string_get_or_raise_on_stored_json_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string("getter.contract.json")
+
+
+# STRING get_or_raise on stored duration raises type_mismatch
+def test_string_get_or_raise_on_stored_duration_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string("getter.contract.duration")
+
+
+# INT get_or_raise on stored string raises type_mismatch
+def test_int_get_or_raise_on_stored_string_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_int("getter.contract.string")
+
+
+# INT get_or_raise on stored double 3.9 raises type_mismatch
+def test_int_get_or_raise_on_stored_double_3_9_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_int("getter.contract.double")
+
+
+# INT get_or_raise on stored bool raises type_mismatch
+def test_int_get_or_raise_on_stored_bool_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_int("getter.contract.bool")
+
+
+# INT get_or_raise on stored string_list raises type_mismatch
+def test_int_get_or_raise_on_stored_string_list_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_int("getter.contract.string_list")
+
+
+# INT get_or_raise on stored json raises type_mismatch
+def test_int_get_or_raise_on_stored_json_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_int("getter.contract.json")
+
+
+# INT get_or_raise on stored duration raises type_mismatch
+def test_int_get_or_raise_on_stored_duration_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_int("getter.contract.duration")
+
+
+# DOUBLE get_or_raise on stored string raises type_mismatch
+def test_double_get_or_raise_on_stored_string_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_float("getter.contract.string")
+
+
+# DOUBLE get_or_raise on stored bool raises type_mismatch
+def test_double_get_or_raise_on_stored_bool_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_float("getter.contract.bool")
+
+
+# DOUBLE get_or_raise on stored string_list raises type_mismatch
+def test_double_get_or_raise_on_stored_string_list_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_float("getter.contract.string_list")
+
+
+# DOUBLE get_or_raise on stored json raises type_mismatch
+def test_double_get_or_raise_on_stored_json_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_float("getter.contract.json")
+
+
+# DOUBLE get_or_raise on stored duration raises type_mismatch
+def test_double_get_or_raise_on_stored_duration_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_float("getter.contract.duration")
+
+
+# BOOLEAN get_or_raise on stored string raises type_mismatch
+def test_boolean_get_or_raise_on_stored_string_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_bool("getter.contract.string")
+
+
+# BOOLEAN get_or_raise on stored int raises type_mismatch
+def test_boolean_get_or_raise_on_stored_int_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_bool("getter.contract.int")
+
+
+# BOOLEAN get_or_raise on stored double raises type_mismatch
+def test_boolean_get_or_raise_on_stored_double_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_bool("getter.contract.double")
+
+
+# BOOLEAN get_or_raise on stored string_list raises type_mismatch
+def test_boolean_get_or_raise_on_stored_string_list_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_bool("getter.contract.string_list")
+
+
+# BOOLEAN get_or_raise on stored json raises type_mismatch
+def test_boolean_get_or_raise_on_stored_json_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_bool("getter.contract.json")
+
+
+# BOOLEAN get_or_raise on stored duration raises type_mismatch
+def test_boolean_get_or_raise_on_stored_duration_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_bool("getter.contract.duration")
+
+
+# STRING_LIST get_or_raise on stored string raises type_mismatch
+def test_string_list_get_or_raise_on_stored_string_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string_list("getter.contract.string")
+
+
+# STRING_LIST get_or_raise on stored int raises type_mismatch
+def test_string_list_get_or_raise_on_stored_int_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string_list("getter.contract.int")
+
+
+# STRING_LIST get_or_raise on stored double raises type_mismatch
+def test_string_list_get_or_raise_on_stored_double_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string_list("getter.contract.double")
+
+
+# STRING_LIST get_or_raise on stored bool raises type_mismatch
+def test_string_list_get_or_raise_on_stored_bool_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string_list("getter.contract.bool")
+
+
+# STRING_LIST get_or_raise on stored json raises type_mismatch
+def test_string_list_get_or_raise_on_stored_json_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string_list("getter.contract.json")
+
+
+# STRING_LIST get_or_raise on stored duration raises type_mismatch
+def test_string_list_get_or_raise_on_stored_duration_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_string_list("getter.contract.duration")
+
+
+# JSON get_or_raise on stored string raises type_mismatch
+def test_json_get_or_raise_on_stored_string_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_json("getter.contract.string")
+
+
+# JSON get_or_raise on stored int raises type_mismatch
+def test_json_get_or_raise_on_stored_int_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_json("getter.contract.int")
+
+
+# JSON get_or_raise on stored double raises type_mismatch
+def test_json_get_or_raise_on_stored_double_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_json("getter.contract.double")
+
+
+# JSON get_or_raise on stored bool raises type_mismatch
+def test_json_get_or_raise_on_stored_bool_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_json("getter.contract.bool")
+
+
+# JSON get_or_raise on stored string_list raises type_mismatch
+def test_json_get_or_raise_on_stored_string_list_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_json("getter.contract.string_list")
+
+
+# JSON get_or_raise on stored duration raises type_mismatch
+def test_json_get_or_raise_on_stored_duration_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_json("getter.contract.duration")
+
+
+# DURATION get_or_raise on stored string raises type_mismatch
+def test_duration_get_or_raise_on_stored_string_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_duration("getter.contract.string")
+
+
+# DURATION get_or_raise on stored int raises type_mismatch
+def test_duration_get_or_raise_on_stored_int_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_duration("getter.contract.int")
+
+
+# DURATION get_or_raise on stored double raises type_mismatch
+def test_duration_get_or_raise_on_stored_double_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_duration("getter.contract.double")
+
+
+# DURATION get_or_raise on stored bool raises type_mismatch
+def test_duration_get_or_raise_on_stored_bool_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_duration("getter.contract.bool")
+
+
+# DURATION get_or_raise on stored string_list raises type_mismatch
+def test_duration_get_or_raise_on_stored_string_list_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_duration("getter.contract.string_list")
+
+
+# DURATION get_or_raise on stored json raises type_mismatch
+def test_duration_get_or_raise_on_stored_json_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_duration("getter.contract.json")
+
+
+# BOOLEAN get_or_raise on stored string "false" raises type_mismatch
+def test_boolean_get_or_raise_on_stored_string_false_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_bool("getter.contract.string.false")
+
+
+# BOOLEAN get_or_raise on stored string "true" raises type_mismatch
+def test_boolean_get_or_raise_on_stored_string_true_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_bool("getter.contract.string.true")
+
+
+# INT get_or_raise on stored string "3" raises type_mismatch
+def test_int_get_or_raise_on_stored_string_3_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_int("getter.contract.string.number")
+
+
+# DOUBLE get_or_raise on stored string "3" raises type_mismatch
+def test_double_get_or_raise_on_stored_string_3_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_float("getter.contract.string.number")
+
+
+# DURATION get_or_raise on stored string "PT1S" raises type_mismatch
+def test_duration_get_or_raise_on_stored_string_pt1s_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_duration("getter.contract.string.duration")
+
+
+# DOUBLE get_or_raise on stored int 30 returns 30.0
+def test_double_get_or_raise_on_stored_int_30_returns_30_0() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    result = c.get_float("getter.contract.int")
+    assert result == 30
+
+
+# INT get_or_raise on stored whole double 3.0 returns 3
+def test_int_get_or_raise_on_stored_whole_double_3_0_returns_3() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    result = c.get_int("getter.contract.double.whole")
+    assert result == 3
+
+
+# INT get_or_raise on stored double 1e300 raises type_mismatch
+def test_int_get_or_raise_on_stored_double_1e300_raises_type_mismatch() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_int("getter.contract.double.huge")
+
+
+# INT get_or_raise on stored double 2^53 (outside the safe int range) raises type_mismatch
+def test_int_get_or_raise_on_stored_double_2_53_outside_the_safe_int_range_raises_type_mismatch() -> (
+    None
+):
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigTypeMismatchError):
+        c.get_int("getter.contract.double.unsafe")
+
+
+# INT get_or_raise on stored malformed int "twelve" raises unable_to_coerce_env_var
+def test_int_get_or_raise_on_stored_malformed_int_twelve_raises_unable_to_coerce_env_var() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigKeyNotFoundError):
+        c.get_int("getter.contract.int.malformed")
+
+
+# DOUBLE get_or_raise on stored malformed double "abc" raises unable_to_coerce_env_var
+def test_double_get_or_raise_on_stored_malformed_double_abc_raises_unable_to_coerce_env_var() -> (
+    None
+):
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigKeyNotFoundError):
+        c.get_float("getter.contract.double.malformed")
+
+
+# INT get_or_raise on env-var-provided malformed int "twelve" raises unable_to_coerce_env_var
+def test_int_get_or_raise_on_env_var_provided_malformed_int_twelve_raises_unable_to_coerce_env_var() -> (
+    None
+):
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_GETTER_INT"] = os.environ.get("QUONFIG_ITD_GETTER_INT")
+    os.environ["QUONFIG_ITD_GETTER_INT"] = "twelve"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigKeyNotFoundError):
+            c.get_int("getter.contract.provided.int.malformed")
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# DOUBLE get_or_raise on env-var-provided malformed double "abc" raises unable_to_coerce_env_var
+def test_double_get_or_raise_on_env_var_provided_malformed_double_abc_raises_unable_to_coerce_env_var() -> (
+    None
+):
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_ITD_GETTER_DOUBLE"] = os.environ.get("QUONFIG_ITD_GETTER_DOUBLE")
+    os.environ["QUONFIG_ITD_GETTER_DOUBLE"] = "abc"
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigKeyNotFoundError):
+            c.get_float("getter.contract.provided.double.malformed")
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# BOOLEAN get_or_raise on a missing bool env var raises missing_env_var
+def test_boolean_get_or_raise_on_a_missing_bool_env_var_raises_missing_env_var() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigEnvVarNotSetError):
+        c.get_bool("getter.contract.provided.bool.missing")

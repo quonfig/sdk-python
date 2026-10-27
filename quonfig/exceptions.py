@@ -65,3 +65,12 @@ class QuonfigEnvVarCoerceError(QuonfigKeyNotFoundError):
     (the ``unable_to_coerce_env_var`` contract). Subclasses
     ``QuonfigKeyNotFoundError`` so existing handlers keep catching it.
     """
+
+
+class QuonfigTypeMismatchError(QuonfigError):
+    """A typed getter read a config whose stored value has another type.
+
+    Raised only when no default was given and ``on_no_default="error"``
+    (``get_or_raise``). With a default the getter returns the default and
+    logs once per key; with no default it returns ``None``.
+    """
