@@ -2194,10 +2194,15 @@ class Quonfig:
         Returns an ``EvaluationDetails`` describing how the value was selected
         — STATIC / TARGETING_MATCH / SPLIT for successful evaluations, DEFAULT
         when the flag exists but no rule matched, and ERROR (with an
-        ``error_code``) for FLAG_NOT_FOUND, TYPE_MISMATCH, and unexpected
-        failures. Never raises — callers can rely on a return value in all
-        cases.
+        ``error_code``) for FLAG_NOT_FOUND, TYPE_MISMATCH, PARSE_ERROR (a
+        malformed ENV_VAR or stored value) and other failures (GENERAL).
+        Never raises — callers can rely on a return value in all cases.
+
+        ``expected_type="stored"`` is the stored-form read behind
+        ``evaluate_details``: no type check, durations stay ISO 8601 text, and
+        ``value_type`` is set on the result.
         """
+        stored = expected_type == "stored"
         try:
             self._wait_initialized()
             assert self._evaluator is not None
@@ -2258,8 +2263,24 @@ class Quonfig:
                     config_key=key,
                     weighted_value_index=result.weighted_value_index,
                     value_type=result.value_type,
+                    stored_form=stored,
+                )
+            except QuonfigEnvVarCoerceError as e:
+                # A malformed ENV_VAR value or stored duration: present, but
+                # not parseable as the config's type (qfg-wg1n).
+                self._warn_read_failure(key, str(e))
+                return EvaluationDetails(
+                    value=None,
+                    reason="ERROR",
+                    error_code="PARSE_ERROR",
+                    error_message=str(e),
+                    variant=self._build_variant("ERROR", None, None),
+                    flag_metadata=self._build_flag_metadata(
+                        result.config_id, result.config_type, None, None, None
+                    ),
                 )
             except Exception as e:  # noqa: BLE001 - a failed read, reported as ERROR
+                # Unset ENV_VAR, decryption failure, stringified JSON.
                 self._warn_read_failure(key, str(e))
                 return EvaluationDetails(
                     value=None,
@@ -2291,17 +2312,21 @@ class Quonfig:
 
             # The typed-getter contract (qfg-zvyy), shared with the plain
             # getters: no string coercion, safe int <-> double only. A wrong
-            # type is TYPE_MISMATCH; a malformed stored number is GENERAL,
-            # like a malformed ENV_VAR value or duration.
+            # type is TYPE_MISMATCH; a malformed stored number is PARSE_ERROR,
+            # like a malformed ENV_VAR value or duration (qfg-wg1n). The
+            # stored-form read skips the check.
             value_type = _resolved_value_type(result)
-            coerced, failure = _typed_value(resolved, value_type, expected_type)
+            if stored:
+                coerced, failure = resolved, None
+            else:
+                coerced, failure = _typed_value(resolved, value_type, expected_type)
             if failure is not None:
                 err = _typed_read_error(key, value_type, expected_type, failure)
                 self._warn_read_failure(key, str(err))
                 return EvaluationDetails(
                     value=None,
                     reason="ERROR",
-                    error_code="TYPE_MISMATCH" if failure == _MISMATCH else "GENERAL",
+                    error_code="TYPE_MISMATCH" if failure == _MISMATCH else "PARSE_ERROR",
                     error_message=str(err),
                     variant=self._build_variant("ERROR", None, None),
                     flag_metadata=self._build_flag_metadata(
@@ -2322,6 +2347,7 @@ class Quonfig:
                     reason_str,
                     hash_property_missing=result.hash_property_missing,
                 ),
+                value_type=(value_type or None) if stored else None,
             )
         except QuonfigInitError as e:
             # A forked child's sticky ``fail`` rebuild error (qfg-6vno.23): the
@@ -2556,7 +2582,8 @@ class Quonfig:
         """Resolve a bool flag and surface the evaluation reason.
 
         Never raises. Errors come back as ``reason="ERROR"`` with an
-        ``error_code`` of ``"FLAG_NOT_FOUND"``, ``"TYPE_MISMATCH"``, or
+        ``error_code`` of ``"FLAG_NOT_FOUND"``, ``"TYPE_MISMATCH"``,
+        ``"PARSE_ERROR"`` (a malformed ENV_VAR or stored value), or
         ``"GENERAL"``.
         """
         return self._evaluate_details(key, "bool", contexts)
@@ -2601,6 +2628,29 @@ class Quonfig:
         """Resolve a JSON flag and surface the evaluation reason. A config of
         any other type is ``TYPE_MISMATCH`` (3.0.0; 2.x was untyped)."""
         return self._evaluate_details(key, "json", contexts)
+
+    def evaluate_details(
+        self,
+        key: str,
+        contexts: Optional[Contexts] = None,
+    ) -> EvaluationDetails[Any]:
+        """Evaluate a config of any type and return its value in its stored
+        form, with evaluation details.
+
+        There is no type check or conversion: a duration is its ISO 8601 text
+        exactly as stored (``"PT90S"``, where ``get_duration`` returns
+        seconds), a ``json`` config its object, a ``string_list`` its list.
+        ``value_type`` on the result is the config's stored type. ENV_VAR
+        provision and decryption still apply, and an ENV_VAR value is coerced
+        to the config's type as in the typed getters. Reason, variant,
+        ``flag_metadata``, error codes and telemetry match the typed
+        ``*_details`` getters. A malformed ENV_VAR value or a malformed stored
+        duration is ``reason="ERROR"`` with ``error_code="PARSE_ERROR"``. An
+        unset ENV_VAR or a decryption failure is ``GENERAL``. Never raises.
+        Matches ``evaluateDetails`` in sdk-node and ``evaluate_details`` in
+        sdk-ruby (qfg-177f).
+        """
+        return self._evaluate_details(key, "stored", contexts)
 
     @property
     def logger_key(self) -> Optional[str]:

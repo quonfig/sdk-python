@@ -72,6 +72,11 @@ class BoundQuonfig:
     def get_json_details(self, key: str) -> EvaluationDetails[Any]:
         return self._client.get_json_details(key, contexts=self._contexts)
 
+    def evaluate_details(self, key: str) -> EvaluationDetails[Any]:
+        """Stored-form read with the bound contexts; see
+        ``Quonfig.evaluate_details``."""
+        return self._client.evaluate_details(key, contexts=self._contexts)
+
     def should_log(
         self,
         config_key: Optional[str] = None,
