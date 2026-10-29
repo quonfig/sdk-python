@@ -278,7 +278,7 @@ def test_malformed_stored_int_raises_coerce_error_without_default() -> None:
     assert "twelve" not in str(excinfo.value)
     # Still a QuonfigKeyNotFoundError subclass, so 2.x handlers keep working.
     assert isinstance(excinfo.value, QuonfigKeyNotFoundError)
-    assert c.get_int_details("i").error_code == "GENERAL"
+    assert c.get_int_details("i").error_code == "PARSE_ERROR"
 
 
 # --------------------------------------------------------------------------

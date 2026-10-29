@@ -1,5 +1,38 @@
 # Changelog
 
+## 3.1.0 - 2026-10-29
+
+### Added
+
+- `evaluate_details(key, contexts=None)` reads a config's value in its stored
+  form, for example a duration's ISO 8601 text (`"PT90S"`) exactly as stored,
+  where `get_duration` returns seconds. It reads any config type with the same
+  `reason`, `variant`, `flag_metadata`, error codes and telemetry as the
+  `*_details` getters, and the new `EvaluationDetails.value_type` names the
+  config's stored type (`None` for the typed getters and when nothing
+  resolved). There is no type check. ENV_VAR provision and decryption still
+  apply, and an ENV_VAR value is coerced to the config's type as in the typed
+  getters. It is on `Quonfig` and `BoundQuonfig` and never raises. The
+  existing getters are unchanged. It matches `evaluateDetails` in sdk-node
+  2.1.0 and `evaluate_details` in sdk-ruby 2.1.0, with one difference: the
+  duration text is still validated, so a malformed stored duration is
+  `PARSE_ERROR` here rather than returned as stored. (qfg-177f)
+
+### Changed
+
+- The `*_details` getters report `error_code="PARSE_ERROR"` instead of
+  `"GENERAL"` for a value that is present but cannot be parsed as its config
+  type: a malformed ENV_VAR value (`"banana"` for an int config), a malformed
+  stored int or double, and a malformed stored duration (all raise
+  `QuonfigEnvVarCoerceError` in the plain getters). `reason="ERROR"`, the
+  value (`None`) and the message are unchanged. These cases deliberately stay
+  `GENERAL`: an unset ENV_VAR (`QuonfigEnvVarNotSetError`), a decryption
+  failure (`QuonfigDecryptionError`) and a stringified JSON value
+  (`QuonfigValueTypeError`). A wrong type stays `TYPE_MISMATCH`. OpenFeature
+  providers can now pass the code straight through as `PARSE_ERROR`. The
+  plain getters are unchanged. An error-path edge case, shipped as a minor per
+  the SDK semver policy for malformed-value edges. (qfg-wg1n)
+
 ## 3.0.0 - 2026-10-26
 
 The typed-getter contract (qfg-zvyy), shared by every Quonfig SDK and pinned

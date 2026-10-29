@@ -33,14 +33,18 @@ class EvaluationDetails(Generic[T]):
     value: Optional[T]
     # "STATIC" | "TARGETING_MATCH" | "SPLIT" | "DEFAULT" | "ERROR"
     reason: str
-    # "FLAG_NOT_FOUND" | "TYPE_MISMATCH" | "GENERAL" — only set when
-    # ``reason == "ERROR"``.
+    # "FLAG_NOT_FOUND" | "TYPE_MISMATCH" | "PARSE_ERROR" | "GENERAL" |
+    # "PROVIDER_NOT_READY" — only set when ``reason == "ERROR"``.
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     # OpenFeature variant string. See the cross-SDK spec §2.
     variant: Optional[str] = None
     # OpenFeature flag metadata. See the cross-SDK spec §3.
     flag_metadata: Optional[Dict[str, Any]] = None
+    # The config's stored value type ("duration", "int", ...). Set only by
+    # ``evaluate_details``; ``None`` for the typed getters and when nothing
+    # resolved.
+    value_type: Optional[str] = None
 
 
 # Top-level context name under which Quonfig.should_log(logger_path=...)

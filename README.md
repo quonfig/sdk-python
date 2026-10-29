@@ -46,7 +46,17 @@ it returns any stored value, and resolution errors follow the same rule.
 
 The `*_details` getters (`get_bool_details`, `get_string_details`, ...) never
 raise and agree with the plain getters: a value of another type is
-`reason="ERROR"`, `error_code="TYPE_MISMATCH"`.
+`reason="ERROR"`, `error_code="TYPE_MISMATCH"`, and a value that cannot be
+parsed as its config type (a malformed ENV_VAR value, a malformed stored
+number or duration) is `error_code="PARSE_ERROR"`. An unset ENV_VAR or a
+decryption failure is `error_code="GENERAL"`.
+
+`evaluate_details(key, contexts=None)` reads a config of any type in its
+stored form, with the same details: a duration comes back as its ISO 8601
+text exactly as stored (`"PT90S"`, where `get_duration` returns `90.0`), and
+`value_type` names the stored type. ENV_VAR provision and decryption still
+apply. It is for OpenFeature providers and other callers that do their own
+typing.
 
 `is_feature_enabled` never raises: it returns `True` only for a bool `True`,
 and otherwise (a missing key, a flag with no matching rule, a non-bool value

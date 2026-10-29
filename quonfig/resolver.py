@@ -104,6 +104,7 @@ class Resolver:
         config_key: str = "",
         weighted_value_index: int = -1,
         value_type: str = "",
+        stored_form: bool = False,
     ) -> Any:
         """Resolve a Value object to a Python native type.
 
@@ -115,7 +116,11 @@ class Resolver:
         for a weighted value (``EvalResult.weighted_value_index``). When given
         it is served as-is, so the served value always agrees with the index
         reported in details and telemetry. Without a hash property the pick
-        is random, so drawing again here would disagree (qfg-3ibo)."""
+        is random, so drawing again here would disagree (qfg-3ibo).
+
+        ``stored_form`` (``evaluate_details``, qfg-177f) keeps a duration as
+        its ISO 8601 text instead of seconds. The text is still validated, so
+        a malformed duration raises ``QuonfigEnvVarCoerceError`` either way."""
         if value is None:
             return None
 
@@ -126,7 +131,11 @@ class Resolver:
         if vtype == "provided":
             env_var_name = raw.get("lookup", "") if isinstance(raw, dict) else ""
             return self._coerce_env_var(
-                self._resolve_provided(raw), value_type, config_key, env_var_name
+                self._resolve_provided(raw),
+                value_type,
+                config_key,
+                env_var_name,
+                stored_form=stored_form,
             )
 
         # Handle weighted values
@@ -138,13 +147,14 @@ class Resolver:
                 config_key=config_key,
                 weighted_value_index=weighted_value_index,
                 value_type=value_type,
+                stored_form=stored_form,
             )
 
         # Handle decryption
         if value.confidential and value.decrypt_with:
             raw = self._decrypt_value(raw, value.decrypt_with, contexts, (config_key,))
 
-        return self._coerce(raw, vtype, config_key)
+        return self._coerce(raw, vtype, config_key, stored_form=stored_form)
 
     def _resolve_provided(self, raw: Any) -> Any:
         """Handle ENV_VAR provided values."""
@@ -162,7 +172,12 @@ class Resolver:
         raise QuonfigEnvVarNotSetError(f"Unknown provided source: {source!r}")
 
     def _coerce_env_var(
-        self, raw: Any, value_type: str, config_key: str = "", env_var_name: str = ""
+        self,
+        raw: Any,
+        value_type: str,
+        config_key: str = "",
+        env_var_name: str = "",
+        stored_form: bool = False,
     ) -> Any:
         """Strictly coerce an ENV_VAR string to the config's valueType.
 
@@ -191,7 +206,7 @@ class Resolver:
         elif value_type == "duration":
             ms = parse_duration_millis(raw)
             if ms is not None:
-                coerced = ms / 1000
+                coerced = raw if stored_form else ms / 1000
         elif value_type == "log_level":
             coerced = raw.upper()
         else:
@@ -212,6 +227,7 @@ class Resolver:
         config_key: str = "",
         weighted_value_index: int = -1,
         value_type: str = "",
+        stored_form: bool = False,
     ) -> Any:
         """Hash-based weighted value selection.
 
@@ -235,6 +251,7 @@ class Resolver:
                 contexts,
                 config_key,
                 value_type,
+                stored_form=stored_form,
             )
 
         # Determine hash fraction
@@ -274,10 +291,17 @@ class Resolver:
         if selected is None:
             selected = weighted_values[0].get("value") if weighted_values else None
 
-        return self._resolve_selected(selected, contexts, config_key, value_type)
+        return self._resolve_selected(
+            selected, contexts, config_key, value_type, stored_form=stored_form
+        )
 
     def _resolve_selected(
-        self, selected: Any, contexts: Contexts, config_key: str, value_type: str = ""
+        self,
+        selected: Any,
+        contexts: Contexts,
+        config_key: str,
+        value_type: str = "",
+        stored_form: bool = False,
     ) -> Any:
         if selected is None:
             return None
@@ -287,7 +311,13 @@ class Resolver:
         # (qfg-goi1.10.6, matches sdk-go).
         if isinstance(selected, dict):
             inner_value = Value.from_dict(selected)
-            return self.resolve(inner_value, contexts, config_key=config_key, value_type=value_type)
+            return self.resolve(
+                inner_value,
+                contexts,
+                config_key=config_key,
+                value_type=value_type,
+                stored_form=stored_form,
+            )
         return selected
 
     def _decrypt_value(
@@ -345,7 +375,7 @@ class Resolver:
             return self._decrypt_value(value.value, value.decrypt_with, contexts, key_path)
         return value.value
 
-    def _coerce(self, raw: Any, vtype: str, config_key: str = "") -> Any:
+    def _coerce(self, raw: Any, vtype: str, config_key: str = "", stored_form: bool = False) -> Any:
         """Coerce raw value to the appropriate Python type."""
         if raw is None:
             # JSON's `null` is a legitimate native value — allow None to pass through.
@@ -379,7 +409,7 @@ class Resolver:
                 raise QuonfigEnvVarCoerceError(
                     f"Stored value for '{config_key}' could not be coerced to duration"
                 )
-            return ms / 1000
+            return raw if stored_form else ms / 1000
 
         try:
             if vtype == "bool":
