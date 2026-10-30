@@ -688,6 +688,7 @@ class Quonfig:
         # ``_chaos_diagnostics()``; guarded by ``_health_lock``. Not public API.
         self._diag_sse_connect_attempts = 0
         self._diag_worker_restart_layer1 = 0
+        self._diag_worker_restart_layer2 = 0
         # ``quonfig_sdk_callback_errors_total{callback}`` (contract Test 5,
         # qfg-6vno.29): caught user-callback raises. Never a worker restart.
         self._diag_callback_errors: Dict[str, int] = {
@@ -790,6 +791,7 @@ class Quonfig:
             on_auth_failed=self._enter_auth_failed,
             on_auth_recovered=self._exit_auth_failed,
             polling_mode=not self._enable_sse,
+            on_diagnostic=self._record_diagnostic,
         )
 
     def _requested_wait(self, kind: str, seconds: float) -> float:
@@ -1208,6 +1210,8 @@ class Quonfig:
                 self._diag_sse_connect_attempts += 1
             elif kind == "worker_restart":
                 self._diag_worker_restart_layer1 += 1
+            elif kind == "worker_restart_layer2":
+                self._diag_worker_restart_layer2 += 1
 
     def _record_callback_error(self, callback: str) -> None:
         """Count one caught user-callback raise (test-only, qfg-6vno.29)."""
@@ -1228,8 +1232,12 @@ class Quonfig:
           read timeout, a stream that ended before its first frame, an
           oversized event). A clean EOF after a frame is a transparent
           reconnect, not a restart, and a user callback raise is never a
-          restart. There is no layer-2 counter: the fallback poller has no
-          restart supervisor.
+          restart.
+        - ``worker_restart_layer2``: Layer 2 supervisor recoveries
+          (``quonfig_sdk_worker_restart_total{layer="2"}``): each restart of
+          the fallback poller's loop after it crashed with an unhandled
+          exception (qfg-11ct). A disengage, a close, or the poller ending to
+          hand back to SSE is never a restart.
         - ``callback_errors``: ``{callback: count}`` for
           ``quonfig_sdk_callback_errors_total{callback}``, ``callback`` in
           ``on_config_update`` / ``on_connection_state_change`` (the
@@ -1242,11 +1250,13 @@ class Quonfig:
         with self._health_lock:
             attempts = self._diag_sse_connect_attempts
             restarts = self._diag_worker_restart_layer1
+            restarts_layer2 = self._diag_worker_restart_layer2
             callback_errors = dict(self._diag_callback_errors)
         sse = self._sse
         return {
             "sse_connect_attempts": attempts,
             "worker_restart_layer1": restarts,
+            "worker_restart_layer2": restarts_layer2,
             "callback_errors": callback_errors,
             "sse_worker_alive": bool(sse is not None and sse.is_alive()),
         }
