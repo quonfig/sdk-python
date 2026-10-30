@@ -33,6 +33,7 @@ class FakeClient:
         self.diag = {
             "sse_connect_attempts": 0,
             "worker_restart_layer1": 0,
+            "worker_restart_layer2": 0,
             "sse_worker_alive": True,
         }
         self.diag.update(diag or {})
@@ -109,15 +110,19 @@ def test_connect_attempts_is_the_sdks() -> None:
     assert r.status == "pass", r.reason
 
 
-def test_worker_restart_layer2_is_skipped_not_a_constant_zero() -> None:
-    # sdk-python's fallback poller has no restart supervisor, so there is no
-    # layer-2 counter to read. A constant 0 would make 11[4] vacuous.
+def test_worker_restart_layer2_is_the_sdks() -> None:
+    # Read from the Layer 2 restart supervisor's counter (qfg-11ct), never a
+    # constant: a non-zero count must fail 11[4]'s `== 0`.
+    p = _probe(FakeClient(diag={"worker_restart_layer2": 2}))
+    r = chaos._evaluate("client.sdkMetric('quonfig_sdk_worker_restart_total', layer='2') >= 2", p)
+    assert r.status == "pass", r.reason
+    r = chaos._evaluate("client.sdkMetric('quonfig_sdk_worker_restart_total', layer='2') == 0", p)
+    assert r.status == "fail", r.reason
     r = chaos._evaluate(
         "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='2') == 0",
         _probe(FakeClient()),
     )
-    assert r.status == "skip"
-    assert "layer-2" in r.reason
+    assert r.status == "pass", r.reason
 
 
 # ----- processStillAlive comes from the SDK's SSE worker -----

@@ -614,6 +614,12 @@ class Transport:
                 return
 
 
+# Layer 2 restart supervisor backoff (qfg-11ct): 500ms doubling to a 30s cap,
+# the same schedule as sdk-go's supervisor.
+_RESTART_INITIAL_DELAY_S = 0.5
+_RESTART_MAX_DELAY_S = 30.0
+
+
 class FallbackPoller:
     """Layer 2 HTTP fallback poller.
 
@@ -639,8 +645,13 @@ class FallbackPoller:
         on_auth_failed: Optional[Callable[[int, str], None]] = None,
         on_auth_recovered: Optional[Callable[[], None]] = None,
         polling_mode: bool = False,
+        on_diagnostic: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._transport = transport
+        # Test-only diagnostics hook (qfg-11ct), not public API: called with
+        # ``"worker_restart_layer2"`` each time the restart supervisor restarts
+        # the loop body after a crash. Feeds ``Quonfig._chaos_diagnostics()``.
+        self._on_diagnostic = on_diagnostic
         # Test seam (supervisor contract Test 8): maps each requested wait to
         # the duration actually waited. ``None`` in production.
         self._wait_hook = wait_hook
@@ -732,7 +743,53 @@ class FallbackPoller:
         _LOG.info("[quonfig] HTTP fallback poll disengaged (%s)", reason)
         return True
 
+    def _stopped(self, stop_event: threading.Event) -> bool:
+        return stop_event.is_set() or self._shutdown.is_set()
+
     def _loop(self, stop_event: threading.Event) -> None:
+        """Layer 2 restart supervisor (qfg-11ct): the thread boundary.
+
+        Runs the loop body; an unhandled exception that is not a wind-down
+        (disengage or close) logs at ERROR, counts one
+        ``quonfig_sdk_worker_restart_total{layer="2"}``, waits an exponential
+        backoff (500ms doubling to a 30s cap) and restarts the body, unless
+        the poller was disengaged or the client closed meanwhile. A normal
+        return of the body is a deliberate exit and is never restarted.
+        Mirrors sdk-go ``supervisor.runWorker`` (Layer "2"), including its
+        backoff that does not reset between crashes.
+        """
+        delay = _RESTART_INITIAL_DELAY_S
+        while True:
+            try:
+                self._loop_body(stop_event)
+                return
+            except Exception as e:  # noqa: BLE001 — supervisor boundary
+                if self._stopped(stop_event):
+                    return
+                _LOG.error(
+                    "[quonfig] worker 2 (fallback poll) crashed; restarting in %sms: %s: %s",
+                    int(delay * 1000),
+                    type(e).__name__,
+                    e,
+                    exc_info=True,
+                )
+                if self._on_diagnostic is not None:
+                    try:
+                        self._on_diagnostic("worker_restart_layer2")
+                    except Exception:  # noqa: BLE001 — diagnostics only
+                        pass
+            if stop_event.wait(self._requested_wait("restart", delay)):
+                return
+            if self._shutdown.is_set():
+                return
+            with self._lock:
+                if self._stop_event is not stop_event:
+                    # The slot moved on (disengaged and re-engaged): a newer
+                    # poller thread owns it, so this one must not respawn.
+                    return
+            delay = min(delay * 2, _RESTART_MAX_DELAY_S)
+
+    def _loop_body(self, stop_event: threading.Event) -> None:
         # Fetch IMMEDIATELY on engage, then settle into the interval cadence
         # (qfg-41nh.10, matches sdk-go/java/net). The poller only engages when
         # SSE is already unavailable, so the held config is already suspect —
@@ -785,9 +842,13 @@ class FallbackPoller:
         finally:
             with self._lock:
                 self._auth_failed = False
-                if not self._polling_mode and self._stop_event is stop_event:
+        if not self._polling_mode:
+            with self._lock:
+                if self._stop_event is stop_event:
                     # SSE mode: release the slot before SSE restarts, so the
                     # restarted stream's state edges can engage a new poller.
+                    # Not done on a crash (the finally above): the restart
+                    # supervisor keeps the slot and restarts the body.
                     self._stop_event = None
                     self._thread = None
         if self._polling_mode:

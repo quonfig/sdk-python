@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The Layer 2 HTTP fallback poller now runs under a restart supervisor, like
+  the SSE worker. Before, an unhandled exception in the poll loop ended the
+  poller thread and nothing restarted it, so a client that had fallen back to
+  polling stopped receiving config updates. Now the exception is logged at
+  ERROR, the loop restarts after an exponential backoff (500ms doubling to a
+  30s cap, the same schedule as sdk-go), and each restart counts toward
+  `quonfig_sdk_worker_restart_total{layer="2"}`. A disengage or `close()`
+  during the backoff stops it for good. The chaos harness now reads this
+  counter for scenario 11 instead of skipping that check. (qfg-11ct)
+
 ## 3.1.0 - 2026-10-29
 
 ### Added

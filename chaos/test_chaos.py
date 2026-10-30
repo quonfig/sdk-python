@@ -249,14 +249,6 @@ CONNECTION_STATES = ("initializing", "connected", "disconnected", "falling_back"
 
 INIT_STATES = ("pending", "returned", "raised")
 
-# worker_restart_total{layer="2"}: sdk-python's Layer 2 fallback poller has no
-# restart supervisor, so the SDK has no such counter. Reported SKIPPED rather
-# than answered with a constant 0 (qfg-6vno.5).
-LAYER2_RESTART_SKIP_REASON = (
-    "sdk-python has no layer-2 worker restart counter: the fallback poller has no "
-    "restart supervisor (qfg-6vno.5, qfg-11ct)"
-)
-
 
 class ChaosProbe:
     """Reads every asserted value from the SDK (qfg-6vno.5).
@@ -312,6 +304,7 @@ class ChaosProbe:
             return {
                 "sse_connect_attempts": 0,
                 "worker_restart_layer1": 0,
+                "worker_restart_layer2": 0,
                 "callback_errors": {"on_config_update": 0, "on_connection_state_change": 0},
                 "sse_worker_alive": False,
             }
@@ -350,15 +343,17 @@ class ChaosProbe:
         """Return ``(value, status)`` for an SDK-side metric, read from the
         SDK's ``_chaos_diagnostics()``.
 
-        ``status`` is ``"known"``, ``"skip"`` (the SDK has no such counter;
-        see ``LAYER2_RESTART_SKIP_REASON``) or ``"unknown"`` (a metric name
+        ``status`` is ``"known"`` or ``"unknown"`` (a metric name
         the probe does not implement, so the evaluator fails loudly instead of
         comparing against a silent 0). Mirrors sdk-go's ``chaosProbe.sdkMetric``.
         """
         if name == "quonfig_sdk_worker_restart_total":
-            if labels.get("layer") == "2":
-                return 0.0, "skip"
-            return float(self.diagnostics()["worker_restart_layer1"]), "known"
+            # Layer 1 = SSE worker, layer 2 = fallback poller supervisor
+            # (qfg-11ct). Any other layer is a probe gap, not a silent 0.
+            layer = labels.get("layer", "1")
+            if layer not in ("1", "2"):
+                return 0.0, "unknown"
+            return float(self.diagnostics()[f"worker_restart_layer{layer}"]), "known"
         if name == "quonfig_sse_connect_attempts_total":
             return float(self.diagnostics()["sse_connect_attempts"]), "known"
         if name == "quonfig_sdk_callback_errors_total":
@@ -534,9 +529,6 @@ def _eval_leaf(expr: str, probe: ChaosProbe) -> EvalResult:
         labels = {label: label_value} if label else {}
         shown = f"{metric},{label}={label_value}" if label else metric
         got, status = probe.sdk_metric(metric, labels)
-        if status == "skip":
-            why = f"sdkMetric({shown}) {op} {want_str}: {LAYER2_RESTART_SKIP_REASON}"
-            return EvalResult("skip", why, [why])
         if status != "known":
             return _leaf(
                 False, f"unknown sdkMetric {shown!r}: the chaos probe does not implement it"
@@ -732,7 +724,7 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
                 _schedule(ev, 0)
 
         # Track expectation states. SKIPPED is shape-based (a whole-expression
-        # server_metric / missing SDK counter), so it is read off a blank probe
+        # server_metric), so it is read off a blank probe
         # once, up front.
         states: List[ExpState] = [
             ExpState(i, e) for i, e in enumerate(run.get("expectations") or [])
@@ -789,6 +781,7 @@ def _run_scenario(tp: Toxiproxy, run: Dict[str, Any], api_url: str) -> tuple[int
             f"summary: {passed} passed, {failed} failed, {skipped} skipped "
             f"(state={probe.connection_state()}, initState={probe.init_state}, "
             f"restartLayer1={diag['worker_restart_layer1']}, "
+            f"restartLayer2={diag['worker_restart_layer2']}, "
             f"sseAttempts={diag['sse_connect_attempts']}, "
             f"fallback={probe.fallback_poller_active()}, lastRefreshMs={probe.last_refresh_ms()})"
         )
