@@ -308,6 +308,49 @@ def test_log_once_is_per_client(caplog: pytest.LogCaptureFixture) -> None:
     assert len(_read_failure_warnings(caplog, "a")) == 2
 
 
+# The WARN must say what the read actually did: with no default under
+# on_no_default="error" the read raises, so "the caller's default applies"
+# would be false.
+def test_warning_says_read_raises_with_no_default_under_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    c = _client([_plain("a", "string", "x")], on_no_default="error")
+    with caplog.at_level(logging.WARNING, logger="quonfig"):
+        with pytest.raises(QuonfigTypeMismatchError):
+            c.get_bool("a")
+    [line] = _read_failure_warnings(caplog, "a")
+    assert "no default was passed, so the read raises" in line
+    assert "default applies" not in line
+
+
+def test_warning_says_default_returned_when_passed(caplog: pytest.LogCaptureFixture) -> None:
+    c = _client([_plain("a", "string", "x")], on_no_default="error")
+    with caplog.at_level(logging.WARNING, logger="quonfig"):
+        assert c.get_bool("a", default=True) is True
+    assert "returning the caller's default" in _read_failure_warnings(caplog, "a")[0]
+
+
+def test_warning_says_none_returned_under_ignore(caplog: pytest.LogCaptureFixture) -> None:
+    c = _client([_plain("a", "string", "x")], on_no_default="ignore")
+    with caplog.at_level(logging.WARNING, logger="quonfig"):
+        assert c.get_bool("a") is None
+    assert "no default was passed, returning None" in _read_failure_warnings(caplog, "a")[0]
+
+
+def test_warning_says_is_feature_enabled_returns_false(caplog: pytest.LogCaptureFixture) -> None:
+    c = _client([_plain("a", "string", "x")], on_no_default="error")
+    with caplog.at_level(logging.WARNING, logger="quonfig"):
+        assert c.is_feature_enabled("a") is False
+    assert "returning False" in _read_failure_warnings(caplog, "a")[0]
+
+
+def test_warning_says_details_return_error(caplog: pytest.LogCaptureFixture) -> None:
+    c = _client([_plain("a", "string", "x")], on_no_default="error")
+    with caplog.at_level(logging.WARNING, logger="quonfig"):
+        assert c.get_bool_details("a").reason == "ERROR"
+    assert 'returning reason "ERROR"' in _read_failure_warnings(caplog, "a")[0]
+
+
 def test_missing_key_is_not_a_read_failure(caplog: pytest.LogCaptureFixture) -> None:
     c = _client([])
     with caplog.at_level(logging.WARNING, logger="quonfig"):
