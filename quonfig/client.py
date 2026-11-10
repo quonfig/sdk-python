@@ -57,6 +57,9 @@ logger = logging.getLogger(__name__)
 
 _NO_DEFAULT = object()
 
+# Outcome text for the never-raising ``*_details`` reads.
+_DETAILS_ERROR_OUTCOME = 'returning reason "ERROR" with no value'
+
 
 # Largest integer a double holds exactly (2^53-1). An int read of a stored
 # double succeeds only within +/- this bound, matching the int grammar
@@ -2168,7 +2171,13 @@ class Quonfig:
             if value is _NO_DEFAULT:
                 return self._handle_missing(key, default)
             return value
-        self._warn_read_failure(key, str(err))
+        if default is not _NO_DEFAULT:
+            outcome = "returning the caller's default"
+        elif self._on_no_default == "error":
+            outcome = 'no default was passed, so the read raises (on_no_default="error")'
+        else:
+            outcome = "no default was passed, returning None"
+        self._warn_read_failure(key, str(err), outcome)
         if default is not _NO_DEFAULT:
             return default
         if self._on_no_default == "error":
@@ -2278,7 +2287,7 @@ class Quonfig:
             except QuonfigEnvVarCoerceError as e:
                 # A malformed ENV_VAR value or stored duration: present, but
                 # not parseable as the config's type (qfg-wg1n).
-                self._warn_read_failure(key, str(e))
+                self._warn_read_failure(key, str(e), _DETAILS_ERROR_OUTCOME)
                 return EvaluationDetails(
                     value=None,
                     reason="ERROR",
@@ -2291,7 +2300,7 @@ class Quonfig:
                 )
             except Exception as e:  # noqa: BLE001 - a failed read, reported as ERROR
                 # Unset ENV_VAR, decryption failure, stringified JSON.
-                self._warn_read_failure(key, str(e))
+                self._warn_read_failure(key, str(e), _DETAILS_ERROR_OUTCOME)
                 return EvaluationDetails(
                     value=None,
                     reason="ERROR",
@@ -2332,7 +2341,7 @@ class Quonfig:
                 coerced, failure = _typed_value(resolved, value_type, expected_type)
             if failure is not None:
                 err = _typed_read_error(key, value_type, expected_type, failure)
-                self._warn_read_failure(key, str(err))
+                self._warn_read_failure(key, str(err), _DETAILS_ERROR_OUTCOME)
                 return EvaluationDetails(
                     value=None,
                     reason="ERROR",
@@ -2439,18 +2448,22 @@ class Quonfig:
             prop,
         )
 
-    def _warn_read_failure(self, key: str, reason: str) -> None:
+    def _warn_read_failure(self, key: str, reason: str, outcome: str) -> None:
         """Log once per config key per client that a read returned no value,
         so a broken config is not mistaken for "using the default". The
-        reason names the key and types, never the value (qfg-zvyy)."""
+        reason names the key and types, never the value (qfg-zvyy).
+        ``outcome`` says what the read then did (returned the default,
+        returned None/False, returned reason ERROR, or raised), so the line
+        never claims a default applied when the read actually raised."""
         with self._read_failure_lock:
             if key in self._read_failure_warned:
                 return
             self._read_failure_warned.add(key)
         logger.warning(
-            "quonfig: read of '%s' returned no value; the caller's default applies: %s",
+            "quonfig: read of '%s' failed (%s); %s",
             key,
             reason,
+            outcome,
         )
 
     def _handle_missing(self, key: str, default: Any) -> Any:
@@ -2572,12 +2585,8 @@ class Quonfig:
             value, err = _NO_DEFAULT, e
         if err is None and value is not _NO_DEFAULT:
             return bool(value)
-        reason = (
-            str(err)
-            if err is not None
-            else "missing key or no matching rule; is_feature_enabled returns the default"
-        )
-        self._warn_read_failure(key, reason)
+        reason = str(err) if err is not None else "missing key or no matching rule"
+        self._warn_read_failure(key, reason, f"returning {default!r}")
         return default
 
     # ------------------------------------------------------------------
