@@ -1,12 +1,32 @@
+"""DEPRECATED: helpers for the old ``ciphertext--iv--tag`` secret format.
+
+The SDK no longer reads that format: secrets live in ``secrets/`` as qf1
+values (qfg-8seuf.10), and a config value that still carries ``decryptWith``
+fails with ``QuonfigDecryptionError``. Nothing in the SDK imports this module.
+It stays importable, unchanged in behaviour, so existing callers keep working;
+each function emits a ``DeprecationWarning``. Removal is planned for a future
+major version.
+"""
+
 from __future__ import annotations
 
 import base64
+import warnings
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .exceptions import QuonfigDecryptionError
 
 SEPARATOR = "--"
+
+_DEPRECATION = (
+    "quonfig.crypto.{name} is deprecated: the old decryptWith secret format is no "
+    "longer read by the SDK; use qf1 secrets (secrets/, QUONFIG_KEYSET*) instead"
+)
+
+
+def _warn(name: str) -> None:
+    warnings.warn(_DEPRECATION.format(name=name), DeprecationWarning, stacklevel=3)
 
 
 def _decode_key(encryption_key: str) -> bytes:
@@ -36,6 +56,8 @@ def _decode_key(encryption_key: str) -> bytes:
 
 def decrypt(encrypted_value: str, encryption_key: str) -> str:
     """
+    DEPRECATED (old decryptWith format; see module docstring).
+
     Decrypt an AES-256-GCM encrypted value.
 
     The encrypted format matches the Node SDK:
@@ -43,6 +65,7 @@ def decrypt(encrypted_value: str, encryption_key: str) -> str:
 
     The encryption_key is a hex-encoded 32-byte key (64 hex characters).
     """
+    _warn("decrypt")
     try:
         parts = encrypted_value.split(SEPARATOR)
         if len(parts) != 3:
@@ -68,11 +91,14 @@ def decrypt(encrypted_value: str, encryption_key: str) -> str:
 
 def encrypt(clear_text: str, encryption_key: str) -> str:
     """
+    DEPRECATED (old decryptWith format; see module docstring).
+
     Encrypt a string using AES-256-GCM.
 
     Returns "<ciphertext_hex>--<iv_hex>--<auth_tag_hex>", matching the Node SDK format.
     The encryption_key is a hex-encoded 32-byte key (64 hex characters).
     """
+    _warn("encrypt")
     import secrets
 
     try:
@@ -91,7 +117,9 @@ def encrypt(clear_text: str, encryption_key: str) -> str:
 
 
 def generate_new_hex_key() -> str:
-    """Generate a new random 32-byte key, hex-encoded (64 characters)."""
+    """DEPRECATED (old decryptWith format). Generate a new random 32-byte key,
+    hex-encoded (64 characters)."""
+    _warn("generate_new_hex_key")
     import secrets
 
     return secrets.token_hex(32)
@@ -99,5 +127,9 @@ def generate_new_hex_key() -> str:
 
 # Legacy alias
 def generate_new_b64_key() -> str:
-    """Deprecated: use generate_new_hex_key instead."""
-    return generate_new_hex_key()
+    """DEPRECATED (old decryptWith format, and a legacy alias of
+    generate_new_hex_key)."""
+    _warn("generate_new_b64_key")
+    import secrets
+
+    return secrets.token_hex(32)

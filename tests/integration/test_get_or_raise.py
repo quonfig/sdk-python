@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import threading
 import time
@@ -89,6 +91,14 @@ def _init_failure_client(
             s.shutdown()
 
     return client, err, elapsed_ms, close
+
+
+def _qf1_test_keyset(*labels: str) -> str:
+    entries = []
+    for label in labels:
+        digest = hashlib.sha256(("qf1 test vector private key: " + label).encode("utf-8")).digest()
+        entries.append("qf1-priv-" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii"))
+    return ",".join(entries)
 
 
 # get_or_raise can raise an error if value not found
@@ -422,6 +432,28 @@ def test_raises_an_error_if_a_config_is_provided_by_a_missing_environment_variab
         c.get_string("provided.by.missing.env.var")
 
 
+# raises an error if a weighted variant is provided by a missing environment variable
+def test_raises_an_error_if_a_weighted_variant_is_provided_by_a_missing_environment_variable() -> (
+    None
+):
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    with pytest.raises(QuonfigEnvVarNotSetError):
+        c.get_string(
+            "weighted.variant.provided.missing", contexts={"user": {"tracking_id": "92a202f2"}}
+        )
+
+
+# get_or_raise on a weighted ENV_VAR variant returns the env var coerced to int
+def test_get_or_raise_on_a_weighted_env_var_variant_returns_the_env_var_coerced_to_int() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+    c.init()
+    result = c.get_int(
+        "weighted.variant.provided.int", contexts={"user": {"tracking_id": "92a202f2"}}
+    )
+    assert result == 1234
+
+
 # raises an error if an env-var-provided config cannot be coerced to configured type
 def test_raises_an_error_if_an_env_var_provided_config_cannot_be_coerced_to_configured_type() -> (
     None
@@ -482,12 +514,238 @@ def test_coercion_error_for_a_double_env_var_names_the_variable_and_never_its_va
                 os.environ[k] = v
 
 
-# raises an error for decryption failure
-def test_raises_an_error_for_decryption_failure() -> None:
+# get_or_raise decrypts a qf1 secret
+def test_get_or_raise_decrypts_a_qf1_secret() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        result = c.get_string("qf1.secret.short")
+        assert result == "hello"
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises unable_to_decrypt for a qf1 secret on a keyset the environment does not hold
+def test_raises_unable_to_decrypt_for_a_qf1_secret_on_a_keyset_the_environment_does_not_hold() -> (
+    None
+):
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigDecryptionError) as excinfo:
+            c.get_string("qf1.secret.keyset.missing")
+        message = str(excinfo.value)
+        assert "qf1-priv-" not in message
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises unable_to_decrypt for a qf1 secret whose fingerprint is not held
+def test_raises_unable_to_decrypt_for_a_qf1_secret_whose_fingerprint_is_not_held() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigDecryptionError) as excinfo:
+            c.get_string("qf1.secret.key.not.held")
+        message = str(excinfo.value)
+        assert "qf1-priv-" not in message
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises unable_to_decrypt for a qf1 secret held only under another keyset
+def test_raises_unable_to_decrypt_for_a_qf1_secret_held_only_under_another_keyset() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigDecryptionError) as excinfo:
+            c.get_string("qf1.secret.cross.keyset")
+        message = str(excinfo.value)
+        assert "qf1-priv-" not in message
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises unable_to_decrypt for a qf1 secret with a tampered header
+def test_raises_unable_to_decrypt_for_a_qf1_secret_with_a_tampered_header() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigDecryptionError) as excinfo:
+            c.get_string("qf1.secret.tampered.header")
+        message = str(excinfo.value)
+        assert "qf1-priv-" not in message
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises unable_to_decrypt for a qf1 secret whose keyset name is invalid even when that env var holds its key
+def test_raises_unable_to_decrypt_for_a_qf1_secret_whose_keyset_name_is_invalid_even_when_that_env_var_holds_its_key() -> (
+    None
+):
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigDecryptionError) as excinfo:
+            c.get_string("qf1.secret.keyset.name.invalid")
+        message = str(excinfo.value)
+        assert "qf1-priv-" not in message
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises unable_to_decrypt for a qf1 secret with a trailing colon
+def test_raises_unable_to_decrypt_for_a_qf1_secret_with_a_trailing_colon() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigDecryptionError) as excinfo:
+            c.get_string("qf1.secret.trailing.colon")
+        message = str(excinfo.value)
+        assert "qf1-priv-" not in message
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises unable_to_decrypt for a qf1 secret whose shared secret is all zero
+def test_raises_unable_to_decrypt_for_a_qf1_secret_whose_shared_secret_is_all_zero() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
+        c.init()
+        with pytest.raises(QuonfigDecryptionError) as excinfo:
+            c.get_string("qf1.secret.low.order.ephemeral")
+        message = str(excinfo.value)
+        assert "qf1-priv-" not in message
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# raises unable_to_decrypt for a value that still carries decryptWith
+def test_raises_unable_to_decrypt_for_a_value_that_still_carries_decryptwith() -> None:
     c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="error")
     c.init()
     with pytest.raises(QuonfigDecryptionError):
-        c.get_string("a.broken.secret.config")
+        c.get_string("qf1.legacy.decrypt.with")
 
 
 # raises an error if an env-var-provided duration 30s cannot be coerced

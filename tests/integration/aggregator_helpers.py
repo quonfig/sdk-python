@@ -43,10 +43,6 @@ ENV_ID = "Production"
 
 # Ensure the env vars referenced by the integration fixtures are set before
 # any evaluator runs.
-os.environ.setdefault(
-    "PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY",
-    "c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221",
-)
 os.environ.setdefault("IS_A_NUMBER", "1234")
 os.environ.setdefault("NOT_A_NUMBER", "not_a_number")
 os.environ.pop("MISSING_ENV_VAR", None)
@@ -320,6 +316,8 @@ def _config_type_label(stored_type: str) -> str:
     t = (stored_type or "").lower()
     if t == "feature_flag":
         return "FEATURE_FLAG"
+    if t == "secret":
+        return "SECRET"
     return "CONFIG"
 
 

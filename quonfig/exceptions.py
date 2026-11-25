@@ -1,3 +1,6 @@
+from typing import Optional
+
+
 class QuonfigError(Exception):
     """Base class for all Quonfig SDK errors."""
 
@@ -47,7 +50,18 @@ class QuonfigEnvVarNotSetError(QuonfigError):
 
 
 class QuonfigDecryptionError(QuonfigError):
-    """AES-256-GCM decryption of a confidential value failed."""
+    """A secret could not be decrypted.
+
+    ``code`` says why without parsing the message: a qf1 error class
+    (``malformed``, ``unsupported_version``, ``invalid_keyset_name``,
+    ``keyset_missing``, ``keyset_invalid``, ``key_not_held``,
+    ``invalid_ephemeral_key``, ``decrypt_failed``) or ``decrypt_with_unsupported``
+    for a value still in the old ``decryptWith`` format. ``None`` when not set.
+    """
+
+    def __init__(self, *args: object, code: Optional[str] = None) -> None:
+        super().__init__(*args)
+        self.code = code
 
 
 class QuonfigValueTypeError(QuonfigError):

@@ -19,10 +19,6 @@ DATADIR = os.path.join(
 
 @pytest.fixture(scope="module")
 def config_client():
-    os.environ.setdefault(
-        "PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY",
-        "c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221",
-    )
     os.environ.setdefault("IS_A_NUMBER", "1234")
     os.environ.setdefault("NOT_A_NUMBER", "not_a_number")
     os.environ.pop("MISSING_ENV_VAR", None)
@@ -214,3 +210,49 @@ def test_weighted_value_with_no_hash_property_is_random_on_every_evaluation_with
         for _ in range(200)
     }
     assert seen == {1, 2}, f"values seen over 200 evaluations: {seen}"
+
+
+# weighted json variant returns the json object
+def test_weighted_json_variant_returns_the_json_object(config_client) -> None:
+    c = config_client
+    result = c.get_json("weighted.variant.json", contexts={"user": {"tracking_id": "92a202f2"}})
+    assert result == {"variant": "json", "n": 1}
+
+
+# weighted duration variant returns the duration
+def test_weighted_duration_variant_returns_the_duration(config_client) -> None:
+    c = config_client
+    result = c.get_duration(
+        "weighted.variant.duration", contexts={"user": {"tracking_id": "92a202f2"}}
+    )
+    assert result == 90000 / 1000, f"Expected exactly 90000ms (90000 / 1000 s), got {result!r}s"
+
+
+# weighted ENV_VAR variant reads the env var coerced to int
+def test_weighted_env_var_variant_reads_the_env_var_coerced_to_int(config_client) -> None:
+    c = config_client
+    result = c.get_int(
+        "weighted.variant.provided.int", contexts={"user": {"tracking_id": "92a202f2"}}
+    )
+    assert result == 1234
+
+
+# weighted ENV_VAR variant with a missing env var returns the default
+def test_weighted_env_var_variant_with_a_missing_env_var_returns_the_default(config_client) -> None:
+    c = config_client
+    result = c.get_string(
+        "weighted.variant.provided.missing",
+        default="DEFAULT",
+        contexts={"user": {"tracking_id": "92a202f2"}},
+    )
+    assert result == "DEFAULT"
+
+
+# weighted ENV_VAR variant with a missing env var and no default returns nil
+def test_weighted_env_var_variant_with_a_missing_env_var_and_no_default_returns_nil() -> None:
+    c = Quonfig(datadir=DATADIR, environment="Production", on_no_default="warn")
+    c.init()
+    result = c.get_string(
+        "weighted.variant.provided.missing", contexts={"user": {"tracking_id": "92a202f2"}}
+    )
+    assert result is None

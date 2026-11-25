@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import os
 import re
 
 from .aggregator_helpers import aggregator_post, build_aggregator, feed_aggregator
@@ -29,6 +32,14 @@ class RedactedSelectedValue:
 
     def __repr__(self) -> str:
         return f"{{'string': <matches {self.PATTERN.pattern}>}}"
+
+
+def _qf1_test_keyset(*labels: str) -> str:
+    entries = []
+    for label in labels:
+        digest = hashlib.sha256(("qf1 test vector private key: " + label).encode("utf-8")).digest()
+        entries.append("qf1-priv-" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii"))
+    return ",".join(entries)
 
 
 # reason is STATIC for config with no targeting rules
@@ -456,22 +467,40 @@ def test_confidential_plain_string_is_redacted_in_selectedvalue() -> None:
     ]
 
 
-# confidential encrypted string is redacted using ciphertext hash
-def test_confidential_encrypted_string_is_redacted_using_ciphertext_hash() -> None:
-    agg = build_aggregator("evaluation_summary", {})
-    feed_aggregator(agg, "evaluation_summary", {"keys": ["a.secret.config"]}, contexts={})
-    assert aggregator_post(agg, "evaluation_summary", endpoint="/api/v1/telemetry") == [
-        {
-            "key": "a.secret.config",
-            "type": "CONFIG",
-            "value": "hello.world",
-            "value_type": "string",
-            "count": 1,
-            "reason": 1,
-            "selected_value": {"string": "*****936c9"},
-            "summary": {"config_row_index": 0, "conditional_value_index": 0},
-        }
-    ]
+# qf1 secret is redacted using the ciphertext hash and reported as a secret
+def test_qf1_secret_is_redacted_using_the_ciphertext_hash_and_reported_as_a_secret() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        agg = build_aggregator("evaluation_summary", {})
+        feed_aggregator(agg, "evaluation_summary", {"keys": ["qf1.secret.short"]}, contexts={})
+        assert aggregator_post(agg, "evaluation_summary", endpoint="/api/v1/telemetry") == [
+            {
+                "key": "qf1.secret.short",
+                "type": "SECRET",
+                "value": "hello",
+                "value_type": "string",
+                "count": 1,
+                "reason": 1,
+                "selected_value": {"string": "*****73985"},
+                "summary": {"config_row_index": 0, "conditional_value_index": 0},
+            }
+        ]
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 # confidential weighted variant is redacted in selectedValue
@@ -535,5 +564,32 @@ def test_non_confidential_env_var_provided_value_is_reported_as_its_resolved_val
             "reason": 1,
             "selected_value": {"int": 1234},
             "summary": {"config_row_index": 0, "conditional_value_index": 0},
+        }
+    ]
+
+
+# weighted ENV_VAR variant is reported as its resolved value with reason SPLIT
+def test_weighted_env_var_variant_is_reported_as_its_resolved_value_with_reason_split() -> None:
+    agg = build_aggregator("evaluation_summary", {})
+    feed_aggregator(
+        agg,
+        "evaluation_summary",
+        {"keys": ["weighted.variant.provided.int"]},
+        contexts={"user": {"tracking_id": "92a202f2"}},
+    )
+    assert aggregator_post(agg, "evaluation_summary", endpoint="/api/v1/telemetry") == [
+        {
+            "key": "weighted.variant.provided.int",
+            "type": "CONFIG",
+            "value": 1234,
+            "value_type": "int",
+            "count": 1,
+            "reason": 3,
+            "selected_value": {"int": 1234},
+            "summary": {
+                "config_row_index": 0,
+                "conditional_value_index": 0,
+                "weighted_value_index": 0,
+            },
         }
     ]

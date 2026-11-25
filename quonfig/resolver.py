@@ -4,10 +4,11 @@ import copy
 import hashlib
 import os
 import re
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
 import mmh3
 
+from . import _qf1
 from .duration import parse_duration_millis
 from .exceptions import (
     QuonfigDecryptionError,
@@ -22,41 +23,44 @@ from .types import Contexts, Value
 CONFIDENTIAL_PREFIX = "*****"
 
 
-def compute_reportable_value(value: Value) -> Optional[str]:
-    """Return the redacted telemetry form for a confidential / encrypted value.
+def compute_reportable_value(value: Value, config_type: str = "") -> Optional[str]:
+    """Return the redacted telemetry form for a confidential or secret value.
 
     Matches Reforge SDK ``reportable_wrapped_value`` (sdk-python
     ``config_value_unwrapper.py:69-78``):
 
-    * Trigger: ``value.confidential`` is True OR ``value.decrypt_with`` is set.
-    * Hash input: the raw ``value.value`` as a string. For ``decryptWith`` this
-      is the **ciphertext** as stored in the JSON config — the hash is NOT
-      computed over the decrypted plaintext. For plain ``confidential: true``
-      it's the plaintext as stored.
+    * Trigger: the config is a secret (``config_type == "secret"``, whether or
+      not its value carries ``confidential``), ``value.confidential`` is True,
+      or ``value.decrypt_with`` is set.
+    * Hash input: the raw ``value.value`` as a string, i.e. the value AS
+      STORED. For a secret that is the ``qf1:`` **ciphertext**; the hash is
+      never computed over the decrypted plaintext (qf1 spec 13.5). For plain
+      ``confidential: true`` it's the plaintext as stored.
     * Output: ``f"*****{md5(raw).hexdigest()[:5]}"`` (lowercase hex).
 
     Returns ``None`` when the value should not be redacted.
     """
     if value is None:
         return None
-    if not (value.confidential or value.decrypt_with):
+    if not (config_type == "secret" or value.confidential or value.decrypt_with):
         return None
     raw = value.value
     digest = hashlib.md5(str(raw).encode()).hexdigest()[:5]
     return f"{CONFIDENTIAL_PREFIX}{digest}"
 
 
-def compute_reportable_value_for(value: Value, weighted_value_index: int = -1) -> Optional[str]:
+def compute_reportable_value_for(
+    value: Value, weighted_value_index: int = -1, config_type: str = ""
+) -> Optional[str]:
     """Redacted telemetry form for an evaluation result's value.
 
     For a ``weighted_values`` Value the SELECTED variant decides: a rollout's
-    variants carry their own ``confidential`` / ``decryptWith``, and the outer
-    Value never does, so keying off the outer Value alone sent a confidential
-    variant (or, for ``decryptWith``, the decrypted secret) to telemetry in
-    plaintext (qfg-goi1.2.13). Matches sdk-go, whose ``reportableValueFor``
-    sees the selected Value. The hash input is the variant's stored raw value
-    (ciphertext for ``decryptWith``), as for a plain value. An outer Value that
-    is itself flagged stays redacted.
+    variants carry their own ``confidential``, and the outer Value never does,
+    so keying off the outer Value alone sent a confidential variant to
+    telemetry in plaintext (qfg-goi1.2.13). Matches sdk-go, whose
+    ``reportableValueFor`` sees the selected Value. The hash input is the
+    variant's stored raw value, as for a plain value. An outer Value that is
+    itself flagged stays redacted, and so does every value of a secret.
     """
     if value is not None and value.type == "weighted_values" and weighted_value_index >= 0:
         raw = value.value
@@ -65,10 +69,10 @@ def compute_reportable_value_for(value: Value, weighted_value_index: int = -1) -
             entry = variants[weighted_value_index]
             selected = entry.get("value") if isinstance(entry, dict) else None
             if isinstance(selected, dict):
-                redacted = compute_reportable_value(Value.from_dict(selected))
+                redacted = compute_reportable_value(Value.from_dict(selected), config_type)
                 if redacted is not None:
                     return redacted
-    return compute_reportable_value(value)
+    return compute_reportable_value(value, config_type)
 
 
 if TYPE_CHECKING:
@@ -105,8 +109,15 @@ class Resolver:
         weighted_value_index: int = -1,
         value_type: str = "",
         stored_form: bool = False,
+        config_type: str = "",
     ) -> Any:
         """Resolve a Value object to a Python native type.
+
+        ``config_type`` is the config's family. A ``secret`` (a document from
+        ``secrets/``, or a ``type: "secret"`` wire entry) is decrypted as qf1
+        here, lazily, on every get; a keyset problem fails only this read
+        (qf1 spec 8, 9.3). A value that still carries ``decryptWith`` always
+        fails: that format is no longer read (spec 13.3 R1).
 
         ``value_type`` is the config's declared valueType. An ENV_VAR-provided
         value is coerced to it strictly; an uncoercible value raises
@@ -123,6 +134,18 @@ class Resolver:
         a malformed duration raises ``QuonfigEnvVarCoerceError`` either way."""
         if value is None:
             return None
+
+        # Any decryptWith other than absent / null / "" (a string, number,
+        # list, object, true or false) fails; nothing is looked up (R1).
+        if value.decrypt_with is not None and value.decrypt_with != "":
+            raise QuonfigDecryptionError(
+                f"Config '{config_key}' has a value that still carries decryptWith; "
+                "this SDK no longer reads that format. Store it in secrets/ as a qf1 secret.",
+                code="decrypt_with_unsupported",
+            )
+
+        if config_type == "secret":
+            return self._resolve_secret(value, config_key, stored_form=stored_form)
 
         raw = value.value
         vtype = value.type
@@ -150,11 +173,27 @@ class Resolver:
                 stored_form=stored_form,
             )
 
-        # Handle decryption
-        if value.confidential and value.decrypt_with:
-            raw = self._decrypt_value(raw, value.decrypt_with, contexts, (config_key,))
-
         return self._coerce(raw, vtype, config_key, stored_form=stored_form)
+
+    def _resolve_secret(self, value: Value, config_key: str, stored_form: bool = False) -> Any:
+        """Decrypt one secret value (qf1 spec 8). A secret holds only string
+        rule values (spec 10.2); anything else fails closed rather than being
+        served. The error is re-raised OUTSIDE the ``except`` with the config
+        key added, so nothing is chained onto it."""
+        failure: Optional[_qf1.Qf1Error] = None
+        plaintext: Optional[str] = None
+        if value.type != "string" or not isinstance(value.value, str):
+            failure = _qf1.Qf1Error("malformed", "a secret value must be a qf1 string")
+        else:
+            try:
+                plaintext = _qf1.decrypt(value.value)
+            except _qf1.Qf1Error as e:
+                failure = e
+        if failure is not None or plaintext is None:
+            code = failure.code if failure is not None else "decrypt_failed"
+            detail = failure.detail if failure is not None else "no value"
+            raise _qf1.Qf1Error(code, f"{detail} (config '{config_key}')")
+        return self._coerce(plaintext, "string", config_key, stored_form=stored_form)
 
     def _resolve_provided(self, raw: Any) -> Any:
         """Handle ENV_VAR provided values."""
@@ -319,61 +358,6 @@ class Resolver:
                 stored_form=stored_form,
             )
         return selected
-
-    def _decrypt_value(
-        self,
-        raw: Any,
-        decrypt_with_key: str,
-        contexts: Contexts,
-        key_path: Tuple[str, ...] = (),
-    ) -> Any:
-        """Look up the encryption key config, evaluate it, and decrypt.
-
-        The key config is evaluated through the normal evaluator for the
-        client's effective environment, with criteria honored: env rules
-        first, then default (qfg-goi1.2.25). It used to take the first valued
-        rule across EVERY environment, so a non-production client could pick
-        the production key. Mirrors sdk-go ``resolveDecryption``.
-        """
-        from .crypto import decrypt
-        from .evaluator import Evaluator
-
-        if decrypt_with_key in key_path:
-            raise QuonfigDecryptionError(
-                f"Encryption key config '{decrypt_with_key}' is part of a decryptWith cycle"
-            )
-        key_config = self.store.get(decrypt_with_key)
-        if key_config is None:
-            raise QuonfigDecryptionError(
-                f"Encryption key config '{decrypt_with_key}' not found in store"
-            )
-        key_result = Evaluator(self.store).evaluate(decrypt_with_key, contexts)
-        key_value = self._resolve_key_value(
-            key_result.value, contexts, key_path + (decrypt_with_key,)
-        )
-        if not isinstance(key_value, str) or key_value == "":
-            raise QuonfigDecryptionError(
-                f"Could not retrieve encryption key from '{decrypt_with_key}'"
-            )
-        if not isinstance(raw, str):
-            raise QuonfigDecryptionError("Encrypted value must be a string")
-        return decrypt(raw, key_value)
-
-    def _resolve_key_value(
-        self, value: Optional[Value], contexts: Contexts, key_path: Tuple[str, ...]
-    ) -> Any:
-        """Resolve the matched key-config value: a plain string, an ENV_VAR,
-        or itself an encrypted value (cycle-guarded by ``key_path``)."""
-        if value is None:
-            return None
-        if value.type == "provided":
-            try:
-                return self._resolve_provided(value.value)
-            except QuonfigEnvVarNotSetError:
-                return None
-        if value.confidential and value.decrypt_with:
-            return self._decrypt_value(value.value, value.decrypt_with, contexts, key_path)
-        return value.value
 
     def _coerce(self, raw: Any, vtype: str, config_key: str = "", stored_form: bool = False) -> Any:
         """Coerce raw value to the appropriate Python type."""

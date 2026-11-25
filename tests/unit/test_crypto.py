@@ -1,11 +1,29 @@
-"""Tests for AES-256-GCM encryption/decryption round-trip."""
+"""Tests for the DEPRECATED old-format AES-256-GCM helpers in quonfig.crypto.
+
+The SDK no longer reads this format (qfg-8seuf.10); the module stays importable
+and unchanged in behaviour until a future major version, and warns on use.
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from quonfig.crypto import decrypt, encrypt, generate_new_b64_key
+from quonfig.crypto import decrypt, encrypt, generate_new_b64_key, generate_new_hex_key
 from quonfig.exceptions import QuonfigDecryptionError
+
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
+
+
+@pytest.mark.filterwarnings("default::DeprecationWarning")
+def test_every_helper_warns_deprecated() -> None:
+    with pytest.warns(DeprecationWarning, match="generate_new_hex_key"):
+        key = generate_new_hex_key()
+    with pytest.warns(DeprecationWarning, match="generate_new_b64_key"):
+        assert len(generate_new_b64_key()) == 64
+    with pytest.warns(DeprecationWarning, match="encrypt"):
+        ct = encrypt("x", key)
+    with pytest.warns(DeprecationWarning, match="decrypt"):
+        assert decrypt(ct, key) == "x"
 
 
 class TestEncryptionRoundTrip:

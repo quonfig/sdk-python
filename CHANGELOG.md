@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+### Changed
+
+- **Secrets are read from `secrets/` in the qf1 format; `decryptWith` is no
+  longer read.** (qfg-8seuf.10, spec `project/plans/secrets-qf1-spec.md`)
+  - Datadir mode loads `secrets/` as a fifth directory, LAST, so a secret
+    shadows a document with the same key still in `configs/`. A document
+    loaded from `secrets/` is a secret because of its directory. Over the
+    wire, `type: "secret"` entries are accepted.
+  - A secret value is `qf1:<KEYSET>:<fingerprint>:<payload>` (X25519,
+    HKDF-SHA256, AES-256-GCM). It is decrypted on each get with the private
+    keys in the environment variable named by `<KEYSET>`
+    (`QUONFIG_KEYSET`, `QUONFIG_KEYSET_PROD`, ...: names matching
+    `^QUONFIG_KEYSET(_[A-Z0-9]+)*$`). The variable holds comma-separated
+    `qf1-priv-...` entries; spaces, tabs, CR and LF around entries are
+    ignored. The key is picked by fingerprint, never by trying each one.
+  - A missing or invalid keyset, or a key this runtime does not hold, fails
+    only the values that need it, with `QuonfigDecryptionError` (default,
+    `None` or raise, exactly as for any failed read). It never fails `init()`
+    or stops config updates. The message starts `qf1 <class>: ` (for example
+    `qf1 keyset_missing`, `qf1 key_not_held`) and names the keyset and the
+    fingerprints needed and held, never key material or the value.
+  - **A value that still carries `decryptWith` now fails** with
+    `QuonfigDecryptionError` (message mentions `decryptWith`) instead of
+    being decrypted with the old `QUONFIG_ENCRYPTION_KEY*` key config. Move
+    such values to `secrets/` with `qfg secret migrate`. The old
+    `ciphertext--iv--tag` decryption and the key-config lookup are gone.
+  - Telemetry reports a secret's evaluations with type `secret`, and its
+    `selectedValue` is redacted like a confidential value (`*****` plus the
+    first 5 hex characters of the MD5 of the stored ciphertext), even when
+    the stored value lacks `confidential: true`.
+  - `QuonfigDecryptionError` has a `code` attribute so callers can tell
+    failures apart without parsing the message: the qf1 class (`malformed`,
+    `unsupported_version`, `invalid_keyset_name`, `keyset_missing`,
+    `keyset_invalid`, `key_not_held`, `invalid_ephemeral_key`,
+    `decrypt_failed`), `decrypt_with_unsupported` for a `decryptWith` value,
+    or `None`. Any `decryptWith` other than absent, `null` or `""` fails.
+  - An invalid keyset name in a value is never quoted in an error (only its
+    length is given); a valid one is truncated to 64 characters.
+  - A value that carries `decryptWith` fails even inside `secrets/` (it is
+    never decrypted). A runtime whose OpenSSL refuses X25519 (for example a
+    FIPS-restricted build) fails each secret with code `unsupported_runtime`.
+    A file in `secrets/` that cannot be loaded is skipped with a warning that
+    names the path and the error type only.
+  - **Minimum version.** Releases before this one do not read secrets. Over
+    the wire they return the raw `qf1:...` string as the value, with no
+    error. In datadir mode they never open `secrets/`: a key that exists only
+    there is missing, and a key still in `configs/` is served from that old
+    copy. Upgrade every backend that reads secrets before adding any.
+
+### Deprecated
+
+- `quonfig.crypto` (`encrypt`, `decrypt`, `generate_new_hex_key`,
+  `generate_new_b64_key`), the helpers for the old `decryptWith` format. They
+  are unchanged in behaviour but now emit `DeprecationWarning`, and nothing
+  in the SDK uses them. Removing the module is planned for a future major
+  version.
+
 ### Fixed
 
 - The Layer 2 HTTP fallback poller now runs under a restart supervisor, like
