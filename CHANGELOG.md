@@ -32,9 +32,27 @@
     `selectedValue` is redacted like a confidential value (`*****` plus the
     first 5 hex characters of the MD5 of the stored ciphertext), even when
     the stored value lacks `confidential: true`.
-  - Removed the undocumented module `quonfig.crypto` (`encrypt`, `decrypt`,
-    `generate_new_hex_key`, `generate_new_b64_key`): it implemented only the
-    old format, was never exported from `quonfig` and was not documented.
+  - `QuonfigDecryptionError` has a `code` attribute so callers can tell
+    failures apart without parsing the message: the qf1 class (`malformed`,
+    `unsupported_version`, `invalid_keyset_name`, `keyset_missing`,
+    `keyset_invalid`, `key_not_held`, `invalid_ephemeral_key`,
+    `decrypt_failed`), `decrypt_with_unsupported` for a `decryptWith` value,
+    or `None`. Any `decryptWith` other than absent, `null` or `""` fails.
+  - An invalid keyset name in a value is never quoted in an error (only its
+    length is given); a valid one is truncated to 64 characters.
+  - **Minimum version.** Releases before this one do not read secrets. Over
+    the wire they return the raw `qf1:...` string as the value, with no
+    error. In datadir mode they never open `secrets/`: a key that exists only
+    there is missing, and a key still in `configs/` is served from that old
+    copy. Upgrade every backend that reads secrets before adding any.
+
+### Deprecated
+
+- `quonfig.crypto` (`encrypt`, `decrypt`, `generate_new_hex_key`,
+  `generate_new_b64_key`), the helpers for the old `decryptWith` format. They
+  are unchanged in behaviour but now emit `DeprecationWarning`, and nothing
+  in the SDK uses them. Removing the module is planned for a future major
+  version.
 
 ### Fixed
 

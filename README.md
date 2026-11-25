@@ -99,6 +99,16 @@ token = client.get_string("stripe.webhook.secret")
 - Values that still use the old `decryptWith` format are no longer read:
   they fail with `QuonfigDecryptionError`. Migrate them with
   `qfg secret migrate`.
+- `QuonfigDecryptionError.code` names the failure (`keyset_missing`,
+  `key_not_held`, `decrypt_with_unsupported`, ...) without parsing the
+  message.
+- Older SDK releases do not read secrets: over the wire they return the raw
+  `qf1:...` string as the value, and in datadir mode they never open
+  `secrets/`, so a secret-only key is missing and a key still in `configs/`
+  is served from that old copy. Upgrade every backend that reads secrets
+  first.
+- `quonfig.crypto` (the old-format helpers) is deprecated and unused by the
+  SDK.
 
 ## Context
 
