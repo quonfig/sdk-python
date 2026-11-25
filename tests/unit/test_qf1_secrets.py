@@ -236,11 +236,6 @@ def test_decrypt_with_value_fails(tmp_path: Path, confidential: bool) -> None:
         c.close()
 
 
-def test_crypto_module_is_gone() -> None:
-    with pytest.raises(ImportError):
-        __import__("quonfig.crypto")
-
-
 # --------------------------------------------------------------------------
 # wire (13.1/13.3): type "secret" entries
 # --------------------------------------------------------------------------

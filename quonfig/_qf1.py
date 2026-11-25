@@ -30,7 +30,7 @@ import hmac
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Mapping, Optional, Tuple
 
 from cryptography.exceptions import InvalidTag
@@ -61,9 +61,10 @@ _ENV_STRIP = " \t\r\n"
 class Qf1Error(QuonfigDecryptionError):
     """A qf1 value could not be read. ``code`` is the spec 9.1 class."""
 
+    code: str
+
     def __init__(self, code: str, detail: str) -> None:
-        super().__init__(f"qf1 {code}: {detail}")
-        self.code = code
+        super().__init__(f"qf1 {code}: {detail}", code=code)
         self.detail = detail
 
 
@@ -192,18 +193,18 @@ def parse_private_key_entry(entry: str) -> bytes:
 
 @dataclass(frozen=True)
 class HeldKey:
-    private: bytes
-    public: bytes
+    private: bytes = field(repr=False)  # never in a repr, log or assertion diff
+    public: bytes = b""
 
 
 def parse_keyset_env(keyset: str, value: Optional[str]) -> Dict[str, HeldKey]:
     """Spec 6.2: the env var's value -> {fingerprint: key}."""
     if value is None:
-        raise Qf1Error("keyset_missing", f"this runtime has no {keyset}")
+        raise Qf1Error("keyset_missing", f"this runtime has no {_name(keyset)}")
     pieces = [p.strip(_ENV_STRIP) for p in value.split(",")]
     entries = [p for p in pieces if p]
     if not entries:
-        raise Qf1Error("keyset_missing", f"{keyset} is set but holds no keys")
+        raise Qf1Error("keyset_missing", f"{_name(keyset)} is set but holds no keys")
     held: Dict[str, HeldKey] = {}
     for position, entry in enumerate(entries, start=1):
         bad = False
@@ -213,7 +214,9 @@ def parse_keyset_env(keyset: str, value: Optional[str]) -> Dict[str, HeldKey]:
             bad = True
         if bad:
             # Raised outside the except: nothing chained.
-            raise Qf1Error("keyset_invalid", f"{keyset} entry {position} is not a qf1 private key")
+            raise Qf1Error(
+                "keyset_invalid", f"{_name(keyset)} entry {position} is not a qf1 private key"
+            )
         public = public_key(private)
         fp = fingerprint(public)
         existing = held.get(fp)
@@ -221,7 +224,7 @@ def parse_keyset_env(keyset: str, value: Optional[str]) -> Dict[str, HeldKey]:
             if existing.public == public:
                 continue  # one key written twice, or clamp-equivalent bytes
             raise Qf1Error(
-                "keyset_invalid", f"{keyset} holds two different keys with fingerprint {fp}"
+                "keyset_invalid", f"{_name(keyset)} holds two different keys with fingerprint {fp}"
             )
         held[fp] = HeldKey(private=private, public=public)
     return held
@@ -233,6 +236,7 @@ def parse_keyset_env(keyset: str, value: Optional[str]) -> Dict[str, HeldKey]:
 # read; failures are not cached at all. One entry per keyset name.
 _keyset_cache: Dict[str, Tuple[str, Dict[str, HeldKey]]] = {}
 _keyset_cache_lock = threading.Lock()
+KEYSET_CACHE_MAX = 64
 
 
 def _clear_keyset_cache() -> None:
@@ -242,14 +246,24 @@ def _clear_keyset_cache() -> None:
 
 def _held_keys(keyset: str, env: Mapping[str, str]) -> Dict[str, HeldKey]:
     value = env.get(keyset)
-    if value is None:
-        return parse_keyset_env(keyset, None)
     with _keyset_cache_lock:
         cached = _keyset_cache.get(keyset)
-    if cached is not None and cached[0] == value:
+        if cached is not None and cached[0] != value:
+            # Unset, emptied or changed since it was cached: drop it, so a
+            # name whose variable is now unset is never held in the cache.
+            del _keyset_cache[keyset]
+            cached = None
+    if cached is not None:
         return cached[1]
-    held = parse_keyset_env(keyset, value)
+    if value is None:
+        return parse_keyset_env(keyset, None)  # raises keyset_missing
+    held = parse_keyset_env(keyset, value)  # raises for empty / invalid: not cached
     with _keyset_cache_lock:
+        # Keyset names are writer-chosen (any valid name can appear in a
+        # value), so the cache is bounded; the oldest name is evicted.
+        _keyset_cache.pop(keyset, None)
+        while len(_keyset_cache) >= KEYSET_CACHE_MAX:
+            _keyset_cache.pop(next(iter(_keyset_cache)))
         _keyset_cache[keyset] = (value, held)
     return held
 
@@ -268,18 +282,10 @@ class Parsed:
     aad: bytes
 
 
-def _quote_name(name: str) -> str:
-    """Spec 9.2: a bad keyset name may be quoted, truncated to 64 characters,
-    with control characters escaped."""
-    out = []
-    for ch in name[:64]:
-        if ch == '"' or ch == "\\":
-            out.append("\\" + ch)
-        elif ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or ch in "  ":
-            out.append(f"\\u{ord(ch):04x}")
-        else:
-            out.append(ch)
-    return '"' + "".join(out) + ('..."' if len(name) > 64 else '"')
+def _name(keyset: str) -> str:
+    """A VALID keyset name as echoed in error text: truncated to 64
+    characters. An invalid name is never echoed at all (see ``parse``)."""
+    return keyset if len(keyset) <= 64 else keyset[:64] + "..."
 
 
 def parse(value: str) -> Parsed:
@@ -303,7 +309,10 @@ def parse(value: str) -> Parsed:
     if not KEYSET_NAME_RE.fullmatch(keyset):
         raise Qf1Error(
             "invalid_keyset_name",
-            f"keyset name {_quote_name(keyset)} does not match ^QUONFIG_KEYSET(_[A-Z0-9]+)*$",
+            # Never quoted: whatever a writer put in this field (a pasted key,
+            # a plaintext) would otherwise land in errors and logs.
+            f"the keyset field ({len(keyset)} characters) is not a valid keyset name "
+            "(^QUONFIG_KEYSET(_[A-Z0-9]+)*$)",
         )
     # 4. fingerprint
     if not _FINGERPRINT_RE.fullmatch(fp):
@@ -350,7 +359,7 @@ def decrypt(value: str, env: Optional[Mapping[str, str]] = None) -> str:
         # outside the except so nothing is chained.
         raise Qf1Error(
             lookup_error.code,
-            f"value is encrypted to {parsed.keyset} fingerprint {parsed.fingerprint}; "
+            f"value is encrypted to {_name(parsed.keyset)} fingerprint {parsed.fingerprint}; "
             f"{lookup_error.detail}",
         )
     key = held.get(parsed.fingerprint)
@@ -358,8 +367,8 @@ def decrypt(value: str, env: Optional[Mapping[str, str]] = None) -> str:
         held_list = ", ".join(sorted(held))
         raise Qf1Error(
             "key_not_held",
-            f"value is encrypted to {parsed.keyset} fingerprint {parsed.fingerprint}; "
-            f"this runtime holds {parsed.keyset} fingerprints [{held_list}]",
+            f"value is encrypted to {_name(parsed.keyset)} fingerprint {parsed.fingerprint}; "
+            f"this runtime holds {_name(parsed.keyset)} fingerprints [{held_list}]",
         )
     shared = x25519(key.private, parsed.ephemeral)
     if not any(shared):
@@ -376,7 +385,7 @@ def decrypt(value: str, env: Optional[Mapping[str, str]] = None) -> str:
     if plaintext_bytes is None:
         raise Qf1Error(
             "decrypt_failed",
-            f"authentication failed for a value on {parsed.keyset} "
+            f"authentication failed for a value on {_name(parsed.keyset)} "
             f"fingerprint {parsed.fingerprint}",
         )
     text: Optional[str] = None

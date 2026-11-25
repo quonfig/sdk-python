@@ -19,8 +19,9 @@ machine's real ``QUONFIG_KEYSET*`` variables.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
 
 import pytest
 from cryptography.hazmat.primitives import hashes
@@ -53,6 +54,20 @@ POSITIVE: List[Dict[str, Any]] = V["positive"]
 DECRYPT_ONLY: List[Dict[str, Any]] = V["decryptOnly"]
 NEGATIVE: List[Dict[str, Any]] = V["negative"]
 KEY_ENTRY = [c for c in V["keyEntryCases"] if c["kind"] in ("privateKeyEntry", "envValue")]
+
+
+@pytest.fixture(autouse=True)
+def _env_unchanged() -> Iterator[None]:
+    """These tests pass each case's env explicitly (names like ``HOME``, a
+    lower-case name or one with a newline included) and must never touch the
+    process env: snapshot it and fail if anything changed."""
+
+    def snap() -> Dict[str, str]:
+        return {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+
+    before = snap()
+    yield
+    assert snap() == before
 
 
 def _ids(cases: List[Dict[str, Any]]) -> List[str]:
@@ -309,14 +324,37 @@ def test_keyset_missing_names_keyset_and_fingerprint() -> None:
     assert parsed.fingerprint in str(info.value)
 
 
-def test_invalid_keyset_name_is_quoted_truncated_and_escaped() -> None:
-    long_name = "HOME\n" + "X" * 200
-    with pytest.raises(qf1.Qf1Error) as info:
-        qf1.parse(f"qf1:{long_name}:00000000:" + "A" * 64)
-    msg = str(info.value)
-    assert info.value.code == "invalid_keyset_name"
-    assert "\n" not in msg
-    assert "X" * 65 not in msg
+def test_invalid_keyset_name_is_never_echoed() -> None:
+    # A pasted key or plaintext in the keyset field must not reach errors
+    # or logs: only "invalid" and its length are reported.
+    for name in ("HOME\n" + "X" * 200, "qf1-priv-" + "Z" * 43, "hunter2", "QUONFIG_KEYSET_lower"):
+        with pytest.raises(qf1.Qf1Error) as info:
+            qf1.parse(f"qf1:{name}:00000000:" + "A" * 64)
+        msg = str(info.value)
+        assert info.value.code == "invalid_keyset_name"
+        assert name not in msg and name[:8] not in msg.split(":", 1)[1].replace(
+            "QUONFIG_KEYSET(", ""
+        )
+        assert f"({len(name)} characters)" in msg
+
+
+def test_valid_keyset_name_is_truncated_to_64_where_echoed() -> None:
+    long_valid = "QUONFIG_KEYSET_" + "A" * 200
+    case = POSITIVE[0]
+    head, _, payload = case["ciphertext"].rpartition(":")
+    _, _, fp = head.split(":")
+    value = f"qf1:{long_valid}:{fp}:{payload}"
+    for env in (
+        {},
+        {long_valid: ""},
+        {long_valid: "qf1-priv-bad"},
+        {long_valid: V["positiveEnv"][case["keyset"]]},
+    ):
+        with pytest.raises(qf1.Qf1Error) as info:
+            qf1.decrypt(value, env=env)
+        msg = str(info.value)
+        assert long_valid not in msg
+        assert long_valid[:64] + "..." in msg
 
 
 def test_non_string_value_is_malformed() -> None:

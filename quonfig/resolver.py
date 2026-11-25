@@ -135,10 +135,13 @@ class Resolver:
         if value is None:
             return None
 
-        if value.decrypt_with:
+        # Any decryptWith other than absent / null / "" (a string, number,
+        # list, object, true or false) fails; nothing is looked up (R1).
+        if value.decrypt_with is not None and value.decrypt_with != "":
             raise QuonfigDecryptionError(
                 f"Config '{config_key}' has a value that still carries decryptWith; "
-                "this SDK no longer reads that format. Store it in secrets/ as a qf1 secret."
+                "this SDK no longer reads that format. Store it in secrets/ as a qf1 secret.",
+                code="decrypt_with_unsupported",
             )
 
         if config_type == "secret":
