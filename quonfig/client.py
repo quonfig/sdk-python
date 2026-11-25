@@ -2127,6 +2127,7 @@ class Quonfig:
                 config_key=key,
                 weighted_value_index=result.weighted_value_index,
                 value_type=result.value_type,
+                config_type=result.config_type,
             )
         except Exception as e:  # noqa: BLE001 - every resolution error is a failed read
             return _NO_DEFAULT, e
@@ -2138,7 +2139,7 @@ class Quonfig:
             # the eval-summary aggregator sees it (matches Reforge SDK
             # reportable_wrapped_value pattern).
             result.reportable_value = compute_reportable_value_for(
-                result.value, result.weighted_value_index
+                result.value, result.weighted_value_index, result.config_type
             )
             try:
                 self._telemetry.record_evaluation(result)
@@ -2283,6 +2284,7 @@ class Quonfig:
                     weighted_value_index=result.weighted_value_index,
                     value_type=result.value_type,
                     stored_form=stored,
+                    config_type=result.config_type,
                 )
             except QuonfigEnvVarCoerceError as e:
                 # A malformed ENV_VAR value or stored duration: present, but
@@ -2318,7 +2320,7 @@ class Quonfig:
             if self._telemetry is not None:
                 result.resolved_value = resolved
                 result.reportable_value = compute_reportable_value_for(
-                    result.value, result.weighted_value_index
+                    result.value, result.weighted_value_index, result.config_type
                 )
                 try:
                     self._telemetry.record_evaluation(result)

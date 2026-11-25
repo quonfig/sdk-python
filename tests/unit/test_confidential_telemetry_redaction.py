@@ -1,4 +1,4 @@
-"""Regression guard (qfg-2agi.16): confidential and ``decryptWith`` values must
+"""Regression guard (qfg-2agi.16): confidential values and qf1 secrets must
 reach the telemetry wire only in their redacted ``*****<md5[:5]>`` form.
 
 Drives the PUBLIC client end to end: a datadir workspace, ``Quonfig.get`` for
@@ -18,10 +18,12 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from quonfig import Quonfig
-from quonfig.crypto import encrypt, generate_new_b64_key
+
+from .test_qf1_vectors import POSITIVE, V
 
 PLAIN_SECRET = "hunter2-plaintext-secret"
-DECRYPTED_SECRET = "decrypted-plaintext-secret"
+QF1 = POSITIVE[0]  # a qf1 test vector: ciphertext, keyset and plaintext
+DECRYPTED_SECRET = QF1["plaintext"]
 
 
 def _config(key: str, value: Dict[str, Any]) -> Dict[str, Any]:
@@ -37,27 +39,23 @@ def _config(key: str, value: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _make_datadir(tmp_path: Path, ciphertext: str, enc_key: str) -> str:
+def _make_datadir(tmp_path: Path, ciphertext: str) -> str:
     datadir = tmp_path / "workspace"
     (datadir / "configs").mkdir(parents=True)
+    (datadir / "secrets").mkdir(parents=True)
     (datadir / "quonfig.json").write_text(
         json.dumps({"environments": ["Production"]}), encoding="utf-8"
     )
     configs = [
         _config("secret.plain", {"type": "string", "value": PLAIN_SECRET, "confidential": True}),
-        _config(
-            "secret.encrypted",
-            {
-                "type": "string",
-                "value": ciphertext,
-                "confidential": True,
-                "decryptWith": "secret.enc-key",
-            },
-        ),
-        _config("secret.enc-key", {"type": "string", "value": enc_key}),
     ]
     for cfg in configs:
         (datadir / "configs" / f"{cfg['key']}.json").write_text(json.dumps(cfg), encoding="utf-8")
+    secret = _config(
+        "secret.encrypted", {"type": "string", "value": ciphertext, "confidential": True}
+    )
+    secret["type"] = "secret"
+    (datadir / "secrets" / "secret.encrypted.json").write_text(json.dumps(secret), encoding="utf-8")
     return str(datadir)
 
 
@@ -102,17 +100,17 @@ def _redacted(raw: str) -> str:
     return "*****" + hashlib.md5(raw.encode()).hexdigest()[:5]
 
 
-def test_confidential_and_decrypt_with_values_are_redacted_on_the_wire(
+def test_confidential_and_secret_values_are_redacted_on_the_wire(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     monkeypatch.delenv("QUONFIG_BACKEND_SDK_KEY", raising=False)
     monkeypatch.delenv("QUONFIG_DOMAIN", raising=False)
-    enc_key = generate_new_b64_key()
-    ciphertext = encrypt(DECRYPTED_SECRET, enc_key)
+    monkeypatch.setenv(QF1["keyset"], V["positiveEnv"][QF1["keyset"]])
+    ciphertext = QF1["ciphertext"]
     capture = _TelemetryCapture()
     client = Quonfig(
         sdk_key="qf_sk_development_0000_dead",
-        datadir=_make_datadir(tmp_path, ciphertext, enc_key),
+        datadir=_make_datadir(tmp_path, ciphertext),
         environment="Production",
         telemetry_url=capture.url,
     )
@@ -131,7 +129,7 @@ def test_confidential_and_decrypt_with_values_are_redacted_on_the_wire(
 
         selected = _selected_values(capture.posts)
         assert selected.get("secret.plain") == [{"string": _redacted(PLAIN_SECRET)}], selected
-        # decryptWith hashes the stored ciphertext, never the plaintext.
+        # A secret hashes the stored ciphertext, never the plaintext.
         assert selected.get("secret.encrypted") == [{"string": _redacted(ciphertext)}], selected
     finally:
         client.close()
@@ -139,7 +137,6 @@ def test_confidential_and_decrypt_with_values_are_redacted_on_the_wire(
 
 
 WEIGHTED_SECRET = "weighted-plaintext-secret"
-WEIGHTED_DECRYPTED = "weighted-decrypted-secret"
 
 
 def _weighted(variant: Dict[str, Any]) -> Dict[str, Any]:
@@ -156,15 +153,11 @@ def test_confidential_weighted_variant_is_redacted_on_the_wire(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     """qfg-goi1.2.13: redaction keyed off the OUTER ``weighted_values`` Value, so
-    a confidential / ``decryptWith`` variant inside a rollout went to telemetry
-    in plaintext (the decrypted secret, for ``decryptWith``). The selected
-    variant's own flags decide, matching sdk-go (which redacts the selected
-    Value)."""
+    a confidential variant inside a rollout went to telemetry in plaintext.
+    The selected variant's own flags decide, matching sdk-go (which redacts
+    the selected Value)."""
     monkeypatch.delenv("QUONFIG_BACKEND_SDK_KEY", raising=False)
     monkeypatch.delenv("QUONFIG_DOMAIN", raising=False)
-    enc_key = generate_new_b64_key()
-    ciphertext = encrypt(WEIGHTED_DECRYPTED, enc_key)
-
     datadir = tmp_path / "workspace"
     (datadir / "configs").mkdir(parents=True)
     (datadir / "quonfig.json").write_text(
@@ -175,18 +168,6 @@ def test_confidential_weighted_variant_is_redacted_on_the_wire(
             "secret.weighted-plain",
             _weighted({"type": "string", "value": WEIGHTED_SECRET, "confidential": True}),
         ),
-        _config(
-            "secret.weighted-encrypted",
-            _weighted(
-                {
-                    "type": "string",
-                    "value": ciphertext,
-                    "confidential": True,
-                    "decryptWith": "secret.enc-key",
-                }
-            ),
-        ),
-        _config("secret.enc-key", {"type": "string", "value": enc_key}),
     ]
     for cfg in configs:
         (datadir / "configs" / f"{cfg['key']}.json").write_text(json.dumps(cfg), encoding="utf-8")
@@ -204,14 +185,9 @@ def test_confidential_weighted_variant_is_redacted_on_the_wire(
         client.init()
         # The caller still gets the plaintext, on both getter paths.
         assert client.get("secret.weighted-plain", contexts=ctx) == WEIGHTED_SECRET
-        assert client.get("secret.weighted-encrypted", contexts=ctx) == WEIGHTED_DECRYPTED
         assert (
             client.get_string_details("secret.weighted-plain", contexts=ctx).value
             == WEIGHTED_SECRET
-        )
-        assert (
-            client.get_string_details("secret.weighted-encrypted", contexts=ctx).value
-            == WEIGHTED_DECRYPTED
         )
 
         client.flush()
@@ -219,15 +195,10 @@ def test_confidential_weighted_variant_is_redacted_on_the_wire(
         assert capture.posts, "flush() delivered no telemetry"
         wire = "\n".join(capture.posts)
         assert WEIGHTED_SECRET not in wire, f"weighted confidential plaintext leaked: {wire}"
-        assert WEIGHTED_DECRYPTED not in wire, f"weighted decrypted plaintext leaked: {wire}"
 
         selected = _selected_values(capture.posts)
         assert set(map(json.dumps, selected.get("secret.weighted-plain", []))) == {
             json.dumps({"string": _redacted(WEIGHTED_SECRET)})
-        }, selected
-        # decryptWith hashes the stored ciphertext, never the plaintext.
-        assert set(map(json.dumps, selected.get("secret.weighted-encrypted", []))) == {
-            json.dumps({"string": _redacted(ciphertext)})
         }, selected
     finally:
         client.close()

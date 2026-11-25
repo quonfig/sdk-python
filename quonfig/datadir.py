@@ -12,7 +12,11 @@ logger = logging.getLogger(__name__)
 # schemas/ is intentionally excluded: those files are raw JSON Schema documents,
 # not Configs, and SDKs do not consume them (qfg-uzsl). Matches api-delivery and
 # sdk-java.
-SUBDIRS = ["configs", "feature-flags", "segments", "log-levels"]
+#
+# secrets/ MUST stay LAST (qf1 spec 13.7): the store is a map by key and the
+# last write wins, so a secret shadows a same-key document still in configs/.
+SUBDIRS = ["configs", "feature-flags", "segments", "log-levels", "secrets"]
+SECRETS_SUBDIR = "secrets"
 
 
 def coerce_numeric_values(data: Any) -> Any:
@@ -79,6 +83,10 @@ def load_datadir(datadir: str, environment: str) -> ConfigEnvelope:
                 # lazily at resolve time and would miss a from_dict hook.
                 coerce_numeric_values(data)
                 config = ConfigResponse.from_dict(data)
+                if subdir == SECRETS_SUBDIR:
+                    # The directory, not the file's own ``type``, makes a
+                    # document a secret (qf1 spec 10.2, 13.7).
+                    config.type = "secret"
                 # Defense-in-depth: reject empty-key configs rather than silently
                 # producing a stub (qfg-uzsl). Mirrors api-delivery's loader.
                 if not config.key:
