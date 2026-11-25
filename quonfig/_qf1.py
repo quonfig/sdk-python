@@ -33,7 +33,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Dict, Mapping, Optional, Tuple
 
-from cryptography.exceptions import InvalidTag
+from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -131,8 +131,20 @@ def x25519(scalar: bytes, u: bytes) -> bytes:
     error propagates as the bug it is."""
     if len(scalar) != 32 or len(u) != 32:
         raise ValueError("x25519 needs 32-byte inputs")
-    private = X25519PrivateKey.from_private_bytes(scalar)
-    public = X25519PublicKey.from_public_bytes(u)
+    unsupported = False
+    try:
+        private = X25519PrivateKey.from_private_bytes(scalar)
+        public = X25519PublicKey.from_public_bytes(u)
+    except UnsupportedAlgorithm:
+        unsupported = True
+    if unsupported:
+        # A FIPS-restricted OpenSSL (or similar) refuses X25519. That is the
+        # runtime, not the key entry: fail each value with a clear reason.
+        raise Qf1Error(
+            "unsupported_runtime",
+            "this runtime's cryptography/OpenSSL build does not allow X25519 "
+            "(for example a FIPS-restricted OpenSSL), so qf1 secrets cannot be read here",
+        )
     try:
         return private.exchange(public)
     except ValueError:

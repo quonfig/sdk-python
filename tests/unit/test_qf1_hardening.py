@@ -35,7 +35,7 @@ def _cold_cache() -> Iterator[None]:
     qf1._clear_keyset_cache()
 
 
-def _doc(key: str, value: Dict[str, Any], doc_type: str = "config") -> Dict[str, Any]:
+def _doc(key: str, value: Dict[str, Any], doc_type: str = "config") -> Dict[str, Any]:  # noqa: E501
     rule = {"criteria": [{"operator": "ALWAYS_TRUE"}], "value": value}
     return {
         "id": key,
@@ -333,3 +333,273 @@ def test_read_path_never_imports_quonfig_crypto(tmp_path: Any) -> None:
     )
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip().endswith("OK")
+
+
+# --------------------------------------------------------------------------
+# A. R1 beats the secret path
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("confidential", [True, False])
+def test_decrypt_with_on_a_secret_fails_before_decryption(
+    monkeypatch: pytest.MonkeyPatch, confidential: bool
+) -> None:
+    # A genuine qf1 value the runtime CAN decrypt, but carrying decryptWith.
+    monkeypatch.setenv(SHORT["keyset"], V["positiveEnv"][SHORT["keyset"]])
+    value: Dict[str, Any] = {"type": "string", "value": SHORT["ciphertext"], "decryptWith": "k"}
+    if confidential:
+        value["confidential"] = True
+    calls: List[int] = []
+    real = qf1.decrypt
+    monkeypatch.setattr(qf1, "decrypt", lambda *a, **k: calls.append(1) or real(*a, **k))
+    c = _client([_doc("s", value, doc_type="secret")])
+    with pytest.raises(QuonfigDecryptionError) as info:
+        c.get("s")
+    assert info.value.code == "decrypt_with_unsupported"
+    assert calls == []
+    assert SHORT["plaintext"] not in str(info.value)
+
+
+def test_decrypt_with_on_a_datadir_secret_fails(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    monkeypatch.setenv(SHORT["keyset"], V["positiveEnv"][SHORT["keyset"]])
+    base = tmp_path / "ws"
+    (base / "secrets").mkdir(parents=True)
+    (base / "quonfig.json").write_text(json.dumps({"environments": [ENV]}))
+    doc = _doc(
+        "s",
+        {"type": "string", "value": SHORT["ciphertext"], "confidential": True, "decryptWith": "k"},
+        doc_type="secret",
+    )
+    (base / "secrets" / "s.json").write_text(json.dumps(doc))
+    c = Quonfig(
+        sdk_key="",
+        datadir=str(base),
+        environment=ENV,
+        on_no_default="error",
+        collect_evaluation_summaries=False,
+        context_upload_mode="none",
+        enable_quonfig_user_context=False,
+    )
+    c.init()
+    try:
+        with pytest.raises(QuonfigDecryptionError) as info:
+            c.get_string("s")
+        assert info.value.code == "decrypt_with_unsupported"
+    finally:
+        c.close()
+
+
+# --------------------------------------------------------------------------
+# B. authentication failure leaks no derived secret
+# --------------------------------------------------------------------------
+
+
+def _encodings(b: bytes) -> List[str]:
+    import base64
+
+    out = [b.hex(), b.hex().upper()]
+    for enc in (base64.b64encode, base64.urlsafe_b64encode):
+        t = enc(b).decode("ascii")
+        out += [t, t.rstrip("=")]
+    return out
+
+
+def test_tampered_tag_leaks_no_shared_secret_prk_okm_key_or_nonce(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import base64
+    import logging
+    import traceback
+
+    case = SHORT
+    head, _, payload = case["ciphertext"].rpartition(":")
+    blob = bytearray(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    blob[-1] ^= 0x01
+    tampered = head + ":" + base64.urlsafe_b64encode(bytes(blob)).rstrip(b"=").decode()
+    monkeypatch.setenv(case["keyset"], V["positiveEnv"][case["keyset"]])
+    # Every secret the failing decrypt derives.
+    priv = qf1.parse_private_key_entry(case["recipientPrivateKeyEntry"])
+    e = bytes(blob[:32])
+    shared = qf1.x25519(priv, e)
+    d = qf1.derive(shared, e, qf1.public_key(priv))
+    forbidden: List[str] = []
+    for secret in (shared, d.prk, d.okm, d.key, d.nonce, priv):
+        forbidden += _encodings(secret)
+    c = _client([_doc("t", {"type": "string", "value": tampered, "confidential": True}, "secret")])
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(QuonfigDecryptionError) as info:
+            c.get_string("t")
+        details = c.get_string_details("t")
+    err = info.value
+    assert err.code == "decrypt_failed"
+    assert err.__cause__ is None and err.__context__ is None
+    texts = [str(err), repr(err), repr(err.args), "".join(traceback.format_exception(err))]
+    texts += [details.error_message or "", caplog.text]
+    for t in texts:
+        for f in forbidden:
+            assert f not in t
+
+
+# --------------------------------------------------------------------------
+# C. the confidential flag survives the read
+# --------------------------------------------------------------------------
+
+
+def test_decrypted_read_keeps_the_stored_value_and_its_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The SDK exposes no per-value "confidential" field in details or
+    # metadata; what it exposes is config_type "secret". The stored Value
+    # keeps its flag and its ciphertext (the plaintext is never written back).
+    monkeypatch.setenv(SHORT["keyset"], V["positiveEnv"][SHORT["keyset"]])
+    c = _client(
+        [
+            _doc(
+                "s",
+                {"type": "string", "value": SHORT["ciphertext"], "confidential": True},
+                "secret",
+            )
+        ]
+    )
+    assert c.get_string("s") == SHORT["plaintext"]
+    d = c.get_string_details("s")
+    assert d.value == SHORT["plaintext"]
+    assert d.flag_metadata.get("config_type") == "secret"
+    assert c.evaluate_details("s").flag_metadata.get("config_type") == "secret"
+    stored = c._store.get("s")
+    assert stored is not None
+    v = stored.default.rules[0].value
+    assert v is not None and v.confidential is True and v.value == SHORT["ciphertext"]
+
+
+# --------------------------------------------------------------------------
+# D. junk in secrets/ never breaks startup and never logs content
+# --------------------------------------------------------------------------
+
+
+def test_secrets_dir_junk_is_skipped_with_path_only_warnings(
+    tmp_path: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    import json
+    import logging
+
+    from quonfig.datadir import load_datadir
+
+    base = tmp_path / "ws"
+    (base / "configs").mkdir(parents=True)
+    (base / "secrets" / "nested").mkdir(parents=True)
+    (base / "secrets" / "dir.json").mkdir()
+    (base / "quonfig.json").write_text(json.dumps({"environments": [ENV]}))
+    (base / "configs" / "ok.json").write_text(
+        json.dumps(_doc("ok", {"type": "string", "value": "v"}))
+    )
+    (base / "secrets" / "notes.txt").write_text("JUNK-CONTENT-1")
+    (base / "secrets" / "broken.json").write_text("{ JUNK-CONTENT-2 qf1-priv-")
+    (base / "secrets" / "nokey.json").write_text(json.dumps({"value": "JUNK-CONTENT-3"}))
+    (base / "secrets" / "list.json").write_text(json.dumps(["JUNK-CONTENT-4"]))
+    (base / "secrets" / "nested" / "deep.json").write_text(
+        json.dumps(_doc("deep", {"type": "string", "value": "x"}))
+    )
+    with caplog.at_level(logging.WARNING, logger="quonfig.datadir"):
+        env = load_datadir(str(base), ENV)
+    assert [c.key for c in env.configs] == ["ok"]
+    warned = [r.getMessage() for r in caplog.records]
+    for name in ("broken.json", "nokey.json", "list.json", "dir.json"):
+        assert sum(name in m for m in warned) == 1, warned
+    assert not any("notes.txt" in m or "deep.json" in m for m in warned)
+    assert "JUNK-CONTENT" not in caplog.text and "qf1-priv-" not in caplog.text
+
+
+# --------------------------------------------------------------------------
+# E. a runtime that refuses X25519
+# --------------------------------------------------------------------------
+
+
+def test_runtime_refusing_x25519_fails_per_value_with_a_clear_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cryptography.exceptions import UnsupportedAlgorithm
+
+    class Refusing:
+        @staticmethod
+        def from_private_bytes(_b: bytes) -> Any:
+            raise UnsupportedAlgorithm("X25519 is not supported by this version of OpenSSL.")
+
+    monkeypatch.setattr(qf1, "X25519PrivateKey", Refusing)
+    monkeypatch.setenv(SHORT["keyset"], V["positiveEnv"][SHORT["keyset"]])
+    c = _client(
+        [
+            _doc(
+                "s",
+                {"type": "string", "value": SHORT["ciphertext"], "confidential": True},
+                "secret",
+            ),
+            _doc("p", {"type": "string", "value": "plain"}),
+        ]
+    )
+    with pytest.raises(QuonfigDecryptionError) as info:
+        c.get_string("s")
+    msg = str(info.value)
+    assert info.value.code == "unsupported_runtime"
+    assert "X25519" in msg and "runtime" in msg
+    assert "entry" not in msg and "not a qf1 private key" not in msg
+    assert info.value.__context__ is None and info.value.__cause__ is None
+    assert c.get_string("p") == "plain"
+
+
+# --------------------------------------------------------------------------
+# F. regexp and env traps
+# --------------------------------------------------------------------------
+
+
+class _AnswerEverything(dict):  # type: ignore[type-arg]
+    """An env lookup that answers EVERY name with a valid keyset, recording
+    each name asked for."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads: List[str] = []
+
+    def get(self, k: str, default: Any = None) -> Any:
+        self.reads.append(k)
+        return V["positiveEnv"][SHORT["keyset"]]
+
+    def __getitem__(self, k: str) -> Any:
+        return self.get(k)
+
+    def __contains__(self, k: object) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["QUONFIG_KEYSET_TEST\n", "HOME\nQUONFIG_KEYSET", "QUONFIG_KEYSET\n", "\nQUONFIG_KEYSET"],
+)
+def test_newline_keyset_names_are_refused_with_no_env_read(name: str) -> None:
+    head, _, payload = SHORT["ciphertext"].rpartition(":")
+    fp = head.split(":")[2]
+    env = _AnswerEverything()
+    with pytest.raises(qf1.Qf1Error) as info:
+        qf1.decrypt(f"qf1:{name}:{fp}:{payload}", env=env)
+    assert info.value.code == "invalid_keyset_name"
+    assert env.reads == []
+
+
+TRAP_CHARS = ["\x0b", "\x0c", "\xa0", " ", " ", "﻿", "\x85", "　", "​", "\x00"]
+
+
+@pytest.mark.parametrize("where", ["leading", "trailing"])
+@pytest.mark.parametrize("ch", TRAP_CHARS, ids=[f"U+{ord(c):04X}" for c in TRAP_CHARS])
+def test_non_stripped_characters_around_an_entry_make_the_keyset_invalid(
+    ch: str, where: str
+) -> None:
+    good = V["positiveEnv"][SHORT["keyset"]]
+    value = ch + good if where == "leading" else good + ch
+    with pytest.raises(qf1.Qf1Error) as info:
+        qf1.parse_keyset_env(SHORT["keyset"], value)
+    assert info.value.code == "keyset_invalid"
+    assert good not in str(info.value)

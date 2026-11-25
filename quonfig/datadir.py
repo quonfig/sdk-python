@@ -93,7 +93,12 @@ def load_datadir(datadir: str, environment: str) -> ConfigEnvelope:
                     raise ValueError("config has empty key — file is not a Quonfig Config")
                 configs.append(config)
             except Exception as e:
-                logger.warning("Failed to load %s: %s", path, e)
+                if subdir == SECRETS_SUBDIR:
+                    # Name the path and the error type only: the message of a
+                    # parse error can quote the file's content.
+                    logger.warning("Failed to load %s: %s", path, type(e).__name__)
+                else:
+                    logger.warning("Failed to load %s: %s", path, e)
 
     if not configs:
         raise RuntimeError(f"No configs loaded from {datadir}")
