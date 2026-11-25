@@ -40,6 +40,11 @@
     or `None`. Any `decryptWith` other than absent, `null` or `""` fails.
   - An invalid keyset name in a value is never quoted in an error (only its
     length is given); a valid one is truncated to 64 characters.
+  - A value that carries `decryptWith` fails even inside `secrets/` (it is
+    never decrypted). A runtime whose OpenSSL refuses X25519 (for example a
+    FIPS-restricted build) fails each secret with code `unsupported_runtime`.
+    A file in `secrets/` that cannot be loaded is skipped with a warning that
+    names the path and the error type only.
   - **Minimum version.** Releases before this one do not read secrets. Over
     the wire they return the raw `qf1:...` string as the value, with no
     error. In datadir mode they never open `secrets/`: a key that exists only
