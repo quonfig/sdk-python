@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 
 import pytest
@@ -17,12 +19,16 @@ DATADIR = os.path.join(
 )
 
 
+def _qf1_test_keyset(*labels: str) -> str:
+    entries = []
+    for label in labels:
+        digest = hashlib.sha256(("qf1 test vector private key: " + label).encode("utf-8")).digest()
+        entries.append("qf1-priv-" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii"))
+    return ",".join(entries)
+
+
 @pytest.fixture(scope="module")
 def config_client():
-    os.environ.setdefault(
-        "PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY",
-        "c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221",
-    )
     os.environ.setdefault("IS_A_NUMBER", "1234")
     os.environ.setdefault("NOT_A_NUMBER", "not_a_number")
     os.environ.pop("MISSING_ENV_VAR", None)
@@ -1566,7 +1572,26 @@ def test_enabled_on_a_missing_bool_env_var_returns_false(config_client) -> None:
 
 
 # enabled on a decryption failure returns false
-def test_enabled_on_a_decryption_failure_returns_false(config_client) -> None:
-    c = config_client
-    result = c.is_feature_enabled("a.broken.secret.config")
-    assert result is False
+def test_enabled_on_a_decryption_failure_returns_false() -> None:
+    env_backup: dict[str, str | None] = {}
+    env_backup["QUONFIG_KEYSET"] = os.environ.get("QUONFIG_KEYSET")
+    os.environ["QUONFIG_KEYSET"] = _qf1_test_keyset("QUONFIG_KEYSET/1")
+    env_backup["QUONFIG_KEYSETX"] = os.environ.get("QUONFIG_KEYSETX")
+    os.environ["QUONFIG_KEYSETX"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST"] = os.environ.get("QUONFIG_KEYSET_TEST")
+    os.environ["QUONFIG_KEYSET_TEST"] = _qf1_test_keyset("QUONFIG_KEYSET_TEST/1")
+    env_backup["QUONFIG_KEYSET_TEST_PROD"] = os.environ.get("QUONFIG_KEYSET_TEST_PROD")
+    os.environ["QUONFIG_KEYSET_TEST_PROD"] = _qf1_test_keyset(
+        "QUONFIG_KEYSET_TEST_PROD/new", "QUONFIG_KEYSET_TEST_PROD/old"
+    )
+    try:
+        c = Quonfig(datadir=DATADIR, environment="Production", on_init_failure="return_zero_value")
+        c.init()
+        result = c.is_feature_enabled("qf1.secret.key.not.held")
+        assert result is False
+    finally:
+        for k, v in env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v

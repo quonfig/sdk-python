@@ -19,10 +19,6 @@ DATADIR = os.path.join(
 
 @pytest.fixture(scope="module")
 def config_client():
-    os.environ.setdefault(
-        "PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY",
-        "c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221",
-    )
     os.environ.setdefault("IS_A_NUMBER", "1234")
     os.environ.setdefault("NOT_A_NUMBER", "not_a_number")
     os.environ.pop("MISSING_ENV_VAR", None)
