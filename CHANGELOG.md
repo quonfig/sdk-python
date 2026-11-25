@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Changed
+
+- **Secrets are read from `secrets/` in the qf1 format; `decryptWith` is no
+  longer read.** (qfg-8seuf.10, spec `project/plans/secrets-qf1-spec.md`)
+  - Datadir mode loads `secrets/` as a fifth directory, LAST, so a secret
+    shadows a document with the same key still in `configs/`. A document
+    loaded from `secrets/` is a secret because of its directory. Over the
+    wire, `type: "secret"` entries are accepted.
+  - A secret value is `qf1:<KEYSET>:<fingerprint>:<payload>` (X25519,
+    HKDF-SHA256, AES-256-GCM). It is decrypted on each get with the private
+    keys in the environment variable named by `<KEYSET>`
+    (`QUONFIG_KEYSET`, `QUONFIG_KEYSET_PROD`, ...: names matching
+    `^QUONFIG_KEYSET(_[A-Z0-9]+)*$`). The variable holds comma-separated
+    `qf1-priv-...` entries; spaces, tabs, CR and LF around entries are
+    ignored. The key is picked by fingerprint, never by trying each one.
+  - A missing or invalid keyset, or a key this runtime does not hold, fails
+    only the values that need it, with `QuonfigDecryptionError` (default,
+    `None` or raise, exactly as for any failed read). It never fails `init()`
+    or stops config updates. The message starts `qf1 <class>: ` (for example
+    `qf1 keyset_missing`, `qf1 key_not_held`) and names the keyset and the
+    fingerprints needed and held, never key material or the value.
+  - **A value that still carries `decryptWith` now fails** with
+    `QuonfigDecryptionError` (message mentions `decryptWith`) instead of
+    being decrypted with the old `QUONFIG_ENCRYPTION_KEY*` key config. Move
+    such values to `secrets/` with `qfg secret migrate`. The old
+    `ciphertext--iv--tag` decryption and the key-config lookup are gone.
+  - Telemetry reports a secret's evaluations with type `secret`, and its
+    `selectedValue` is redacted like a confidential value (`*****` plus the
+    first 5 hex characters of the MD5 of the stored ciphertext), even when
+    the stored value lacks `confidential: true`.
+  - Removed the undocumented module `quonfig.crypto` (`encrypt`, `decrypt`,
+    `generate_new_hex_key`, `generate_new_b64_key`): it implemented only the
+    old format, was never exported from `quonfig` and was not documented.
+
 ### Fixed
 
 - The Layer 2 HTTP fallback poller now runs under a restart supervisor, like

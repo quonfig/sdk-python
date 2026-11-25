@@ -67,6 +67,39 @@ A wrong decryption key or an unset ENV_VAR therefore degrades to your defaults
 with one WARN per key. If a broken config must stop your service, read it
 without a default under `on_no_default="error"` so the getter raises.
 
+## Secrets
+
+Secrets live in your workspace's `secrets/` directory, encrypted to a public
+key with the qf1 format (`qf1:<KEYSET>:<fingerprint>:...`); the `qfg secret`
+commands write them. The SDK decrypts them on read with private keys it
+finds in an environment variable named after the keyset:
+
+```bash
+export QUONFIG_KEYSET_PROD="qf1-priv-..."            # one key
+export QUONFIG_KEYSET_PROD="qf1-priv-...,qf1-priv-..." # during a rotation
+```
+
+```python
+token = client.get_string("stripe.webhook.secret")
+```
+
+- Keyset names match `^QUONFIG_KEYSET(_[A-Z0-9]+)*$`. The SDK reads only the
+  variable named by the value it decrypts.
+- Entries are comma-separated; spaces, tabs, CR and LF around entries are
+  ignored. One unparseable entry makes the whole keyset invalid.
+- A missing keyset, an invalid one, or a key this runtime does not hold fails
+  only the secrets that need it, as `QuonfigDecryptionError` (see the table
+  above). The SDK still starts and serves every other key. The message
+  starts `qf1 <class>:` and names the keyset and fingerprints, never key
+  material or the value.
+- In datadir mode `secrets/` is read last, so a secret replaces a document
+  with the same key still in `configs/`.
+- Telemetry reports secrets with type `secret` and only a hash of the stored
+  ciphertext.
+- Values that still use the old `decryptWith` format are no longer read:
+  they fail with `QuonfigDecryptionError`. Migrate them with
+  `qfg secret migrate`.
+
 ## Context
 
 ```python
